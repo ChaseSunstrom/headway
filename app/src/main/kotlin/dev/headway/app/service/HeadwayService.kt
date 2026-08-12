@@ -197,6 +197,11 @@ open class HeadwayService : Service() {
                         onStep = ::step,
                     )
                     val profile = session.connect()
+                    // SessionSupervisor emits LinkState.Connected only once
+                    // runSession *returns*, i.e. after the session has ended, so
+                    // the notification would otherwise read "Connecting" for the
+                    // entire drive. This is the only place that knows the link is
+                    // actually up.
                     updateNotification(
                         "Connected to ${profile.displayName ?: car.name ?: car.address}"
                     )
