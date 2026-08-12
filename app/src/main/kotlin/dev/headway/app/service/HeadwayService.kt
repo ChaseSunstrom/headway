@@ -31,6 +31,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import dev.headway.app.BuildConfig
 import dev.headway.app.R
 import dev.headway.app.link.BluetoothCarLink
 import dev.headway.app.link.CarWifiNetwork
@@ -171,6 +172,12 @@ open class HeadwayService : Service() {
      */
     @SuppressLint("MissingPermission")
     private suspend fun runSession() {
+        // Which build produced this log. Every real-car diagnosis so far has had
+        // to start by guessing that from which log messages are present, and
+        // guessing wrong sends the reader after a bug that was already fixed --
+        // especially while a signing problem is keeping people on older builds.
+        step("Headway build ${BuildConfig.VERSION_CODE} (${BuildConfig.VERSION_NAME})")
+
         val adapter = BluetoothCarLink.adapterOf(this)
             ?: throw IllegalStateException("this device has no Bluetooth adapter")
         if (!adapter.isEnabled) throw IllegalStateException("Bluetooth is off")

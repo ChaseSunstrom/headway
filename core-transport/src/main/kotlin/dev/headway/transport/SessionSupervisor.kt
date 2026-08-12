@@ -109,9 +109,22 @@ class SessionSupervisor(
                 consecutiveFailures = 0
                 null
             } catch (e: CancellationException) {
-                // The service is shutting down. Never retry a cancellation --
-                // that would resurrect a session the user just ended.
-                throw e
+                // Not every CancellationException means the user stopped.
+                //
+                // `withTimeout` reports a timeout by throwing
+                // TimeoutCancellationException, which is a CancellationException
+                // -- so a head unit that merely took too long arrived here
+                // looking exactly like a shutdown. Rethrowing it ended the
+                // supervisor permanently, with no retry and, because the state
+                // callback is only invoked on the failure path, no log line
+                // either. The link simply went quiet and stayed quiet.
+                //
+                // ensureActive() is the distinction: it throws when *this*
+                // coroutine has been cancelled, which is the real shutdown, and
+                // returns when the cancellation came from inside the attempt.
+                coroutineContext.ensureActive()
+                consecutiveFailures++
+                e
             } catch (e: Exception) {
                 consecutiveFailures++
                 e

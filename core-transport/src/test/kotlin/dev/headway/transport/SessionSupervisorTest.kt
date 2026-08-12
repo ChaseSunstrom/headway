@@ -18,7 +18,14 @@
 package dev.headway.transport
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -37,7 +44,19 @@ class SessionSupervisorTest {
     private class Harness {
         val slept = mutableListOf<Long>()
         val states = mutableListOf<LinkState>()
-        suspend fun sleep(millis: Long) { slept += millis }
+
+        /**
+         * Records the delay instead of taking it, but still suspends.
+         *
+         * The yield is not decoration. Without it the retry loop contains no
+         * suspension point at all, so on `runBlocking`'s single thread a
+         * supervisor with no attempt limit spins forever and starves the test
+         * that is trying to stop it — including the timeout meant to bound it.
+         */
+        suspend fun sleep(millis: Long) {
+            slept += millis
+            yield()
+        }
     }
 
     @Test
@@ -100,17 +119,61 @@ class SessionSupervisorTest {
     }
 
     @Test
-    fun `cancellation ends the supervisor rather than being retried`() {
+    fun `cancelling the supervisor ends it rather than being retried`() = runBlocking {
         // A user stopping the service must not have the session resurrected.
+        // Note this cancels the supervisor's own coroutine, which is what
+        // stopping the service actually does -- a CancellationException merely
+        // *thrown* by the session is a different thing entirely, covered below.
         val h = Harness()
+        val running = CompletableDeferred<Unit>()
+        val job = launch {
+            SessionSupervisor(
+                runSession = {
+                    running.complete(Unit)
+                    awaitCancellation()
+                },
+                onState = { h.states += it },
+                sleep = h::sleep,
+            ).run()
+        }
+
+        running.await()
+        job.cancelAndJoin()
+
+        assertTrue(job.isCancelled)
+        assertTrue(h.slept.isEmpty(), "cancellation must not schedule a retry")
+    }
+
+    @Test
+    fun `a session that times out is retried instead of killing the supervisor`() = runBlocking {
+        // The bug this exists for, and it was invisible by construction.
+        //
+        // withTimeout reports a timeout by throwing TimeoutCancellationException,
+        // which is a CancellationException -- so a head unit that merely took too
+        // long was indistinguishable from the user pressing stop. The supervisor
+        // rethrew it, reconnection ended permanently, and because the state
+        // callback only fires on the failure path, nothing was logged. The link
+        // went quiet mid-handshake and stayed quiet.
+        val h = Harness()
+        var calls = 0
         val supervisor = SessionSupervisor(
-            runSession = { throw CancellationException("service stopped") },
+            runSession = {
+                calls++
+                // A real timeout, produced the way the link produces one.
+                if (calls < 3) withTimeout(1) { delay(10_000) }
+            },
             onState = { h.states += it },
             sleep = h::sleep,
+            maxAttempts = 3,
         )
-        assertThrows(CancellationException::class.java) { runBlocking { supervisor.run() } }
-        assertEquals(1, supervisor.attempts)
-        assertTrue(h.slept.isEmpty(), "cancellation must not schedule a retry")
+
+        supervisor.run()
+
+        assertEquals(3, calls, "a timed-out attempt must be retried")
+        assertTrue(
+            h.states.any { it is LinkState.WaitingToRetry },
+            "a timeout must be reported, not swallowed: ${h.states}",
+        )
     }
 
     @Test
@@ -122,14 +185,23 @@ class SessionSupervisorTest {
         val supervisor = SessionSupervisor(
             runSession = {
                 call++
-                if (call < 50) throw EOFException("still out of range")
-                throw CancellationException("stop the test")
+                throw EOFException("still out of range")
             },
             onState = { h.states += it },
             sleep = h::sleep,
         )
-        assertThrows(CancellationException::class.java) { runBlocking { supervisor.run() } }
-        assertEquals(50, supervisor.attempts, "the supervisor must not give up on its own")
+
+        // Stopped by cancelling it, which is the only thing that stops it now --
+        // a thrown CancellationException is a failed attempt, not a shutdown.
+        val job = launch { supervisor.run() }
+        withTimeout(10_000) { while (call < 50) yield() }
+        job.cancelAndJoin()
+
+        assertTrue(supervisor.attempts >= 50, "the supervisor must not give up on its own")
+        assertTrue(
+            h.states.none { it is LinkState.GaveUp },
+            "an unbounded supervisor must never report giving up",
+        )
     }
 
     @Test

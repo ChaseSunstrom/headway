@@ -34,6 +34,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.io.EOFException
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -167,15 +168,45 @@ class BluetoothCarLink(
             )
             transport = wrapped
 
+            val startedAt = System.nanoTime()
             try {
                 onStep("RFCOMM up ($label); waiting for the head unit to speak")
                 return withTimeout(handshakeTimeoutMillis) {
                     WirelessHandshake(wrapped, onStep).perform()
                 }
             } catch (e: Throwable) {
+                val elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000
+
+                // Say what happened. A head unit that accepts the socket and
+                // then drops it produces no other trace at all: the read fails,
+                // the exception unwinds, and the log goes silent mid-handshake
+                // with the last line still reading "waiting for the head unit to
+                // speak" -- which reads as a hang, not a refusal.
+                if (e is EOFException) {
+                    onStep(
+                        "head unit closed the $label RFCOMM link after ${elapsedMillis}ms " +
+                            "without sending anything (${e.message})"
+                    )
+                } else {
+                    onStep("$label handshake failed after ${elapsedMillis}ms: ${e.message}")
+                }
+
                 // Any failure past connect leaves a half-open socket that would
                 // block the next attempt's SDP lookup on some stacks.
                 close()
+
+                // A link dropped this fast was refused, not broken, and the
+                // remaining mode is worth a try: aa-proxy-rs and aawgd both
+                // register this service without authentication, and a unit that
+                // does the same can accept a secure socket and then drop it
+                // rather than refuse it outright.
+                val refusedImmediately =
+                    e is EOFException && elapsedMillis < IMMEDIATE_DROP_MILLIS
+                if (refusedImmediately && useSecure && modes.size > 1) {
+                    lastFailure = e
+                    closed.set(false) // close() retired the link; the loop reuses it
+                    continue
+                }
                 throw e
             }
         }
@@ -257,6 +288,16 @@ class BluetoothCarLink(
          * `WirelessAndroidAutoDongle/.../bluetoothHandler.cpp` L24.
          */
         val SERVICE_UUID: UUID = UUID.fromString(WirelessHandshake.AA_WIRELESS_SERVICE_UUID)
+
+        /**
+         * Below this, a dropped link reads as a refusal rather than a fault.
+         *
+         * A head unit that was going to talk sends its version request within a
+         * few hundred milliseconds -- the observed Chevrolet took 115 ms and
+         * 75 ms across two captures -- so a link that dies inside this window
+         * never had a session to lose.
+         */
+        const val IMMEDIATE_DROP_MILLIS: Long = 2_000
 
         /** Null on a device with no Bluetooth hardware, which CI emulators are. */
         fun adapterOf(context: Context): BluetoothAdapter? =
