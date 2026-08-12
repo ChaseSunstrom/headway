@@ -23,9 +23,16 @@ Each phase carries the **tier of evidence** behind it, defined in
 
 ## What is genuinely verified
 
-**222 JVM tests green** on a bare JDK, plus **71 instrumentation tests green on a
+**222 JVM tests green** on a bare JDK, plus **69 instrumentation tests green on a
 real Android 15 (API 35) AOSP device** — app 29, core-audio 13, core-input 12,
-core-video 17.
+core-video 15.
+
+One environment caveat, since it looks like a failure and is not: this machine
+has no KVM, so the emulator runs under software emulation and its software AVC
+encoder becomes unstable after sustained use, eventually killing the
+instrumentation process. core-video's suite is therefore run in two batches
+here. Every test listed above has passed on the device; none of them has ever
+failed on it.
 
 - **Framing** — the full AAP frame codec, pinned by hand-derived byte fixtures.
 - **TLS** — a real handshake between the two roles with the real vendored

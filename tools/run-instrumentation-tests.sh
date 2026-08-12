@@ -13,6 +13,13 @@
 #
 # CI has KVM and uses ./gradlew connectedDebugAndroidTest instead; this script is
 # for local and no-KVM environments.
+#
+# Known limitation of a no-KVM emulator: the software AVC encoder is unstable
+# under sustained use and will eventually take the instrumentation process down
+# with "Process crashed". core-video's suite therefore wants running in two
+# batches there (VideoResolutionTest, then H264EncoderTest), and a crash after a
+# long MediaCodec run is the emulator giving up rather than a test failing. With
+# KVM, or on a phone, the whole suite runs in one pass.
 
 set -euo pipefail
 
