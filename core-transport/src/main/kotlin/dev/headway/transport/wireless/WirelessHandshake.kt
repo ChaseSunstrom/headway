@@ -23,13 +23,16 @@ import aap_protobuf.aaw.WifiInfoResponseOuterClass.WifiInfoResponse
 import aap_protobuf.service.wifiprojection.message.AccessPointTypeOuterClass.AccessPointType
 import aap_protobuf.service.wifiprojection.message.WifiSecurityModeOuterClass.WifiSecurityMode
 import aap_protobuf.aaw.WifiStartRequestOuterClass.WifiStartRequest
-import aap_protobuf.aaw.WifiVersionResponseOuterClass.WifiVersionResponse
+import headway.aaw.AawVersion.AawWifiVersionRequest
+import headway.aaw.AawVersion.AawWifiVersionResponse
+import headway.aaw.AawVersion.WifiProjectionProtocolInfo
 import com.google.protobuf.MessageLite
 import dev.headway.protocol.io.Transport
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /** Raised when the head unit's Bluetooth handshake fails or is malformed. */
 class WirelessHandshakeException(message: String) : RuntimeException(message)
@@ -155,6 +158,22 @@ data class CarNetworkCredentials(
 class WirelessHandshake(
     private val transport: Transport,
     private val onStep: (String) -> Unit = {},
+    /**
+     * Whether to populate `selected_wifi_channel_type` (response field 5).
+     *
+     * Off, because the field's *meaning* is not established. aa-proxy-rs reads
+     * it out of real phone-side frames, so real phones do send it, but no
+     * reference records an observed value and the name says "channel type",
+     * which is not obviously the MHz frequency the head unit advertised. aasdk's
+     * schema stops at field 4 and does not have it at all.
+     *
+     * CLAUDE.md's rule for exactly this situation is to implement the
+     * aasdk-documented behaviour, make it configurable and log loudly — and the
+     * bug this class was just fixed for was putting a guessed value into a field
+     * whose meaning was unknown. Doing it again one field along would not be an
+     * improvement. Turn this on only with a log from a unit that needs it.
+     */
+    private val announceSelectedWifiChannel: Boolean = false,
 ) {
 
     /**
@@ -171,9 +190,11 @@ class WirelessHandshake(
     ): CarNetworkCredentials = coroutineScope {
         var endpoint: WifiStartRequest? = null
         var info: WifiInfoResponse? = null
+        var projectionEndpoint: WifiProjectionProtocolInfo? = null
         val heardSomething = AtomicBoolean(false)
+        val lastActivity = AtomicLong(System.nanoTime())
 
-        // Prod a silent head unit rather than blocking forever.
+        // Prod a head unit that stops talking, rather than blocking forever.
         //
         // Every reference has the head unit speak first, and aa-proxy-rs even
         // buffers "HU pre-bootstrap frames captured before phone arrived"
@@ -182,19 +203,33 @@ class WirelessHandshake(
         // then sending nothing at all for twenty seconds, so that expectation
         // does not hold universally.
         //
-        // Rather than bet on one reading of an under-documented handshake, ask.
-        // Both probes are messages the head unit is known to understand, and a
-        // unit that was going to speak first will have done so before the first
-        // probe fires. The prodding runs in its own coroutine because cancelling
-        // a blocked read is not an option: Android's BluetoothSocket read is not
+        // The trigger is idleness, not "has never spoken". Silence in the middle
+        // of the exchange is the more likely stall of the two: aa-proxy-rs
+        // records head units that omit WifiStartRequest entirely and simply wait
+        // for the phone to ask (bluetooth.rs L2042-L2060), and a prodder that
+        // disarmed on the first message would hang against exactly those units,
+        // having just answered their version request.
+        //
+        // The prodding runs in its own coroutine because cancelling a blocked
+        // read is not an option: Android's BluetoothSocket read is not
         // interruptible, so a timed-out read would still be sitting on the
         // socket and would swallow the reply we are waiting for.
         val prodder = launch {
-            for (probe in SILENCE_PROBES) {
-                delay(silenceProbeMillis)
-                if (heardSomething.get()) return@launch
-                onStep("head unit silent; probing with ${probe.name}")
+            val tick = (silenceProbeMillis / 4).coerceAtLeast(20)
+            var sent = 0
+            while (sent < MAX_SILENCE_PROBES) {
+                delay(tick)
+                val idleMillis = (System.nanoTime() - lastActivity.get()) / 1_000_000
+                if (idleMillis < silenceProbeMillis) continue
+                // A unit that has never spoken may not have started its side of
+                // the exchange; one that has is only missing the credentials.
+                val probe =
+                    if (heardSomething.get()) MessageId.WIFI_INFO_REQUEST
+                    else SILENCE_PROBES[sent.coerceAtMost(SILENCE_PROBES.lastIndex)]
+                onStep("head unit idle for ${idleMillis}ms; probing with ${probe.name}")
                 send(probe, probeBody(probe))
+                lastActivity.set(System.nanoTime())
+                sent++
             }
         }
 
@@ -202,6 +237,7 @@ class WirelessHandshake(
         repeat(maxMessages) {
             val message = RfcommMessage.read(transport)
             heardSomething.set(true)
+            lastActivity.set(System.nanoTime())
             onStep(
                 "rx id=${message.messageId} " +
                     "(${MessageId.forNumber(message.messageId)?.name ?: "unknown"}) " +
@@ -221,18 +257,90 @@ class WirelessHandshake(
                 }
 
                 MessageId.WIFI_VERSION_REQUEST -> {
-                    // Answer with the same shape the references send. The four
-                    // fields are named unknown_value_* in aasdk's schema because
-                    // nobody has established what they mean; echoing the
-                    // observed values is the only defensible option.
-                    send(
-                        MessageId.WIFI_VERSION_RESPONSE,
-                        WifiVersionResponse.newBuilder()
-                            .setUnknownValueA(1)
-                            .setUnknownValueB(1)
-                            .setUnknownValueD(2)
-                            .build(),
+                    // Field 4 of the response is a STATUS, and this is where an
+                    // earlier version of Headway silently killed every session:
+                    // it sent 2 there. A real Chevrolet Infotainment 3 unit
+                    // answered its version request, read a non-zero status, and
+                    // stopped talking -- with no error, because from its point
+                    // of view the phone had declined.
+                    //
+                    // aasdk's schema is what led us there: it names these fields
+                    // unknown_value_a..d and declares the *request* as an empty
+                    // message, so there was nothing to suggest field 4 meant
+                    // anything. See headway/aaw_version.proto for the corrected
+                    // schema and its provenance.
+                    val request = AawWifiVersionRequest.parseFrom(message.payload)
+                    val frequencies = advertisedFrequencies(request)
+                    onStep(
+                        "head unit speaks AA Wireless " +
+                            "${request.majorVersion}.${request.minorVersion}; " +
+                            "offers $frequencies MHz"
                     )
+
+                    // A head unit may put the projection endpoint here and never
+                    // send WifiStartRequest at all -- but the competing schema
+                    // revision puts HeadUnitInfo at the same field number, and
+                    // its field 1 is a string too, so "Chevrolet" parses happily
+                    // as an ip_address. Believe it only if it looks like one.
+                    val carried = usableEndpoint(request)
+                    if (carried != null) {
+                        projectionEndpoint = carried
+                        onStep(
+                            "version request carries the endpoint " +
+                                "${carried.ipAddress}:${carried.port}"
+                        )
+                    }
+
+                    val reply = AawWifiVersionResponse.newBuilder()
+                        // Mirror the version the head unit announced rather than
+                        // asserting our own; the exchange is the unit telling us
+                        // what it speaks, not a negotiation.
+                        .setMajorVersion(request.majorVersion)
+                        .setMinorVersion(request.minorVersion)
+                        .setStatus(STATUS_SUCCESS)
+
+                    // Optionally tell it which of its frequencies we accept. 0
+                    // appears in real advertisements as a placeholder, so pick
+                    // the first real one; a 5 GHz unit offers e.g. 5745 MHz.
+                    // See the constructor parameter for why this is off.
+                    if (announceSelectedWifiChannel) {
+                        frequencies.firstOrNull { it > 0 }?.let {
+                            onStep("announcing selected wifi channel type $it (unverified field)")
+                            reply.setSelectedWifiChannelType(it)
+                        }
+                    }
+
+                    send(MessageId.WIFI_VERSION_RESPONSE, reply.build())
+
+                    // A unit that put its endpoint here may be waiting for the
+                    // phone rather than about to send WifiStartRequest, so ask
+                    // now instead of stalling until the idle probe. aa-proxy-rs
+                    // does the same thing on a 3s timer (bluetooth.rs L2042-L2060).
+                    if (carried != null && info == null) {
+                        send(
+                            MessageId.WIFI_INFO_REQUEST,
+                            aap_protobuf.aaw.WifiInfoRequestOuterClass.WifiInfoRequest
+                                .getDefaultInstance(),
+                        )
+                    }
+                }
+
+                MessageId.WIFI_VERSION_RESPONSE -> {
+                    // Only reachable when the silence probe asked first. Worth
+                    // decoding rather than dropping: if a head unit ever refuses
+                    // *us*, this status is the only place it says so.
+                    val response = AawWifiVersionResponse.parseFrom(message.payload)
+                    onStep(
+                        "head unit answered the version probe with " +
+                            "${response.majorVersion}.${response.minorVersion}, " +
+                            "status ${response.status}"
+                    )
+                    if (response.hasStatus() && response.status != STATUS_SUCCESS) {
+                        throw WirelessHandshakeException(
+                            "head unit rejected the version exchange with status " +
+                                "${response.status}"
+                        )
+                    }
                 }
 
                 MessageId.WIFI_CONNECTION_STATUS -> {
@@ -249,17 +357,21 @@ class WirelessHandshake(
                 else -> onStep("ignoring unknown RFCOMM message id ${message.messageId}")
             }
 
-            val e = endpoint
+            // A head unit that put its endpoint in the version request may
+            // never send WifiStartRequest, so accept either source. Prefer the
+            // explicit one when both arrive.
             val i = info
-            if (e != null && i != null) {
+            val host = endpoint?.ipAddress ?: projectionEndpoint?.ipAddress
+            val tcpPort = endpoint?.port ?: projectionEndpoint?.port
+            if (i != null && host != null && tcpPort != null) {
                 return@coroutineScope CarNetworkCredentials(
                     ssid = i.ssid,
                     passphrase = i.password,
                     bssid = i.bssid,
                     securityMode = i.securityMode,
                     accessPointType = i.accessPointType,
-                    ipAddress = e.ipAddress,
-                    port = e.port,
+                    ipAddress = host,
+                    port = tcpPort,
                 )
             }
         }
@@ -273,12 +385,60 @@ class WirelessHandshake(
                 // different problem from one that talked and gave us the wrong
                 // thing.
                 "head unit accepted the RFCOMM connection but sent nothing, including " +
-                    "after ${SILENCE_PROBES.size} probe(s). Check that Android Auto is " +
+                    "after $MAX_SILENCE_PROBES probe(s). Check that Android Auto is " +
                     "enabled for this phone in the car's Bluetooth device settings."
             }
         )
         } finally {
             prodder.cancel()
+        }
+    }
+
+    /**
+     * Every Wi-Fi frequency the head unit advertised, in MHz.
+     *
+     * Two schema revisions are in circulation: one repeats the frequencies at
+     * field 3, the other adds a second varint at field 4. The target Chevrolet
+     * uses both at once -- it sent `field 3 = 0, field 4 = 5745` -- so reading
+     * only field 3 yields a placeholder and nothing usable.
+     */
+    private fun advertisedFrequencies(request: AawWifiVersionRequest): List<Int> =
+        buildList {
+            addAll(request.supportedWifiChannelsList)
+            if (request.hasSupportedWifiChannelAlt()) add(request.supportedWifiChannelAlt)
+        }
+
+    /**
+     * The projection endpoint from a version request, if there really is one.
+     *
+     * Mirrors `wifi_projection_info_looks_valid` in `aa-proxy-rs/src/bluetooth.rs`
+     * L1412-L1421: the other schema revision puts a `HeadUnitInfo` at this field
+     * number, and its first field is a string as well, so an unguarded read
+     * turns a car's make into an IP address and sends the phone off to connect
+     * to "Chevrolet".
+     */
+    private fun usableEndpoint(request: AawWifiVersionRequest): WifiProjectionProtocolInfo? {
+        if (!request.hasProjection()) return null
+        val candidate = request.projection
+        if (candidate.port <= 0 || candidate.port > 65535) return null
+        if (!looksLikeLiteralAddress(candidate.ipAddress)) return null
+        return candidate
+    }
+
+    /**
+     * Whether a string is an IP literal.
+     *
+     * Deliberately not `InetAddress.getByName`, which resolves anything that is
+     * not a literal -- and this runs on a phone attached to a car with no
+     * internet, where a DNS attempt is a stall, not an answer.
+     */
+    private fun looksLikeLiteralAddress(value: String): Boolean {
+        if (value.isEmpty()) return false
+        if (value.contains(':')) return true // IPv6; the head unit endpoints seen are v4
+        val parts = value.split('.')
+        return parts.size == 4 && parts.all { part ->
+            part.isNotEmpty() && part.length <= 3 && part.all(Char::isDigit) &&
+                part.toInt() in 0..255
         }
     }
 
@@ -298,6 +458,14 @@ class WirelessHandshake(
 
     companion object {
         /**
+         * Field 4 of `AawWifiVersionResponse`, per `Status.proto` STATUS_SUCCESS.
+         *
+         * Anything else and a real head unit stops the handshake without saying
+         * why, because a non-zero status is the phone declining.
+         */
+        const val STATUS_SUCCESS: Int = 0
+
+        /**
          * How long to let the head unit speak before prompting it.
          *
          * Every reference has the head unit open the conversation immediately,
@@ -313,9 +481,20 @@ class WirelessHandshake(
          * itself carry the projection endpoint, and that strict units may then
          * omit `WifiStartRequest` entirely. Asking for the credentials is the
          * fallback, since it is the one message whose reply we need regardless.
+         *
+         * Only used before the head unit has said anything. Once it has, the
+         * only thing worth asking for again is the credentials.
          */
         val SILENCE_PROBES: List<MessageId> =
             listOf(MessageId.WIFI_VERSION_REQUEST, MessageId.WIFI_INFO_REQUEST)
+
+        /**
+         * How many times to prod before giving up on the whole attempt.
+         *
+         * Reconnection depends on failing promptly, so this is a bound on how
+         * long a wedged head unit can hold the attempt open, not a retry budget.
+         */
+        const val MAX_SILENCE_PROBES: Int = 3
 
         /**
          * The AA Wireless RFCOMM service UUID.

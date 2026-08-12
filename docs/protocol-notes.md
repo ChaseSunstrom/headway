@@ -49,7 +49,7 @@ defeat the purpose of the document:
 |---|---|
 | 1. Framing | **Implemented, pinned by byte fixtures, and independently re-verified.** 61 of 66 constants confirmed exactly against the cited files; every numeric value checked out. The 5 exceptions are citation-precision problems, not wrong values — see below. |
 | 2. Version handshake and TLS | Extracted and cited; not yet exercised against a live peer. |
-| 3. Wireless Bluetooth handshake | Extracted and cited. The two constants Phase 1 turns on — the RFCOMM service UUID and the TCP port — were confirmed by hand in three and two references respectively. |
+| 3. Wireless Bluetooth handshake | Extracted and cited, and **partly confirmed against a real vehicle**: the RFCOMM service UUID, the framing and the `WifiVersionRequest` field layout are all corroborated by a live capture from a 2021 Chevrolet Infotainment 3 unit. The RFCOMM UUID and TCP port were also confirmed by hand in three and two references respectively. |
 | 4. Control channel and service discovery | Extracted and cited; not yet exercised against a live peer. |
 | 5. Video channel | Extracted and cited; not implemented (Phase 2). |
 | 6. Input channel | Extracted and cited; not implemented (Phase 3). |
@@ -79,10 +79,95 @@ reader is not misled by an imprecise citation.
 - **AACS client reassembly loop** — cited correctly but described more strongly
   than the code supports.
 
-Nothing here has been validated against a real head unit. See
-[`BLOCKERS.md`](../BLOCKERS.md) B-001: no vehicle, phone, or radio exists in the
-build environment. A green CI run demonstrates self-consistency, not
-compatibility with a Chevrolet Infotainment 3 unit.
+No vehicle, phone, or radio exists in the build environment — see
+[`BLOCKERS.md`](../BLOCKERS.md) B-001 — so a green CI run demonstrates
+self-consistency, not compatibility with a Chevrolet Infotainment 3 unit. The one
+exception is the Bluetooth version exchange, which has now been observed against
+a real vehicle; that capture is below.
+
+## Evidence from a real head unit
+
+A 2021 Chevrolet Infotainment 3 unit was captured over RFCOMM from a phone
+running Headway. This is the only real-hardware evidence in the project, and it
+falsified an assumption the code was built on.
+
+### The capture
+
+```text
+rx id=4 (WIFI_VERSION_REQUEST)   08 01 10 00 18 00 20 f1 2c
+tx id=5 (WIFI_VERSION_RESPONSE)  08 01 10 01 20 02
+                                 ...head unit then sent nothing further
+```
+
+Decoded under the field layout in §3.2 — which this document had recorded
+correctly all along, from `aa-proxy-rs/src/bluetooth.rs` L1438-L1493:
+
+| Field | Wire | Value | Meaning |
+|---|---|---|---|
+| 1 | varint | 1 | `major_version` |
+| 2 | varint | 0 | `minor_version` |
+| 3 | varint | 0 | `supported_wifi_channels[0]`, a placeholder |
+| 4 | varint | 5745 | a second frequency in MHz — 5745 MHz is 5 GHz channel 149 |
+
+Note 5745 is a **frequency, not a port**. The resemblance to a TCP port number is
+a coincidence worth naming, because it is an easy misreading.
+
+### What went wrong, and why the citation did not prevent it
+
+Headway's reply set field 4 to `2`. Field 4 of the *response* is a **status**, and
+`STATUS_SUCCESS` is `0` (`aa-proxy-rs/src/bluetooth.rs` L1619-L1639, and §3.2).
+The head unit read a non-success status, concluded the phone had declined, and
+stopped — with no error message, because from its point of view nothing had gone
+wrong.
+
+The failure was not a missing citation. §3.2 already carried the correct field
+layout for both messages. The failure was that the *code* was generated from
+aasdk's schemas instead, and aasdk
+
+- declares `WifiVersionRequest` as an **empty message**, so the four fields the
+  car actually sent decoded to nothing and there was no way to notice; and
+- names the response fields `unknown_value_a` through `unknown_value_d`, so
+  field 4 looked like a free slot rather than a status.
+
+Preferring aasdk's protobufs is the rule in `CLAUDE.md`, and it is the right
+default — but aasdk is explicitly *unfinished* for these two messages, and an
+"unknown" field name is not a licence to put anything in it. The corrected
+schemas live in `core-protocol/src/main/proto/headway/aaw_version.proto`, which
+cites this section, and the captured bytes above are pinned as a test fixture in
+`WirelessHandshakeTest` so the decode cannot regress.
+
+### What Headway now sends, and what it deliberately does not
+
+The response carries fields 1, 2 and 4 — the three aasdk marks `required` — with
+the major and minor mirrored back from what the head unit announced, and the
+status set to `0`.
+
+Field 5, `selected_wifi_channel_type`, is **left out by default**. aa-proxy-rs
+reads it from real phone-side frames, so real phones do send it, but no reference
+records an observed *value*, and the name says "channel type", which is not
+obviously the MHz frequency the head unit advertised. aasdk's schema stops at
+field 4 and does not have the field at all. Filling an unverified field with a
+plausible-looking number is precisely what produced the bug above, one field
+earlier, so the `announceSelectedWifiChannel` flag on `WirelessHandshake` exists
+and is off. Turn it on only against a log from a unit that needs it.
+
+### The field 4/5 ambiguity, and the trap in it
+
+Two schema revisions circulate. Decompiled Gearhead puts
+`WifiProjectionProtocolInfo` at request field 5; MBUX captures put `HeadUnitInfo`
+there and a frequency varint at field 4. The observed Chevrolet matches the MBUX
+shape.
+
+Both `WifiProjectionProtocolInfo` and `HeadUnitInfo` begin with a
+length-delimited string at field 1 — `ip_address` in one, `car_make` in the
+other. So a `HeadUnitInfo` read as a projection endpoint yields
+`ip_address = "Chevrolet"` and no port, and an unguarded implementation will try
+to connect to it. Headway requires the address to parse as an IP literal and the
+port to be non-zero before believing it, mirroring
+`wifi_projection_info_looks_valid` (`aa-proxy-rs/src/bluetooth.rs` L1412-L1421).
+Deliberately not `InetAddress.getByName`, which would resolve a non-literal —
+and the phone is attached to a car with no internet, where a DNS attempt is a
+stall rather than an answer.
 
 ## The one thing to check first when a real car fails
 

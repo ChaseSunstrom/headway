@@ -24,6 +24,9 @@ import aap_protobuf.aaw.WifiInfoResponseOuterClass.WifiInfoResponse
 import aap_protobuf.service.wifiprojection.message.AccessPointTypeOuterClass.AccessPointType
 import aap_protobuf.service.wifiprojection.message.WifiSecurityModeOuterClass.WifiSecurityMode
 import aap_protobuf.aaw.WifiStartRequestOuterClass.WifiStartRequest
+import headway.aaw.AawVersion.AawWifiVersionRequest
+import headway.aaw.AawVersion.AawWifiVersionResponse
+import headway.aaw.AawVersion.WifiProjectionProtocolInfo
 import dev.headway.protocol.io.Transport
 import dev.headway.transport.LoopbackTransport
 import kotlinx.coroutines.Dispatchers
@@ -252,6 +255,204 @@ class WirelessHandshakeTest {
 
             val error = withTimeout(15_000) { phone.await() }.exceptionOrNull()
             assertTrue(error != null, "expected a handshake failure, got $error")
+        }
+    }
+
+    /**
+     * The exact bytes a 2021 Chevrolet Infotainment 3 head unit sent as its
+     * `WifiVersionRequest`, captured from the target vehicle over RFCOMM.
+     *
+     * ```text
+     * 08 01   field 1 varint 1      major_version
+     * 10 00   field 2 varint 0      minor_version
+     * 18 00   field 3 varint 0      supported_wifi_channels[0]
+     * 20 f1 2c field 4 varint 5745  supported_wifi_channel_alt (5 GHz channel 149)
+     * ```
+     */
+    private val malibuVersionRequest = byteArrayOf(
+        0x08, 0x01, 0x10, 0x00, 0x18, 0x00, 0x20, 0xf1.toByte(), 0x2c,
+    )
+
+    @Test
+    fun `the car's real version request decodes under the corrected schema`() {
+        // aasdk declares WifiVersionRequest as an empty message, so these bytes
+        // decode to nothing under it and there is no way to notice.
+        val request = AawWifiVersionRequest.parseFrom(malibuVersionRequest)
+
+        assertEquals(1, request.majorVersion)
+        assertEquals(0, request.minorVersion)
+        assertEquals(listOf(0), request.supportedWifiChannelsList)
+        assertTrue(request.hasSupportedWifiChannelAlt(), "field 4 must be readable")
+        assertEquals(5745, request.supportedWifiChannelAlt, "5745 MHz is 5 GHz channel 149")
+
+        // And nothing in it may be mistaken for a projection endpoint.
+        assertTrue(!request.hasProjection())
+    }
+
+    @Test
+    fun `the version response carries a success status`() = runBlocking {
+        // The bug this exists for. Headway used to answer the car's version
+        // request with status = 2 in field 4, because aasdk names that field
+        // `unknown_value_d` and nothing suggested it meant anything. The head
+        // unit read a non-success status, concluded the phone had declined, and
+        // stopped talking -- silently, with no error anywhere.
+        LoopbackTransport.pair().use { pair ->
+            val phone = async(Dispatchers.IO) {
+                runCatching { WirelessHandshake(pair.phone).perform(maxMessages = 1) }
+            }
+            pair.headUnit.write(
+                RfcommMessage(MessageId.WIFI_VERSION_REQUEST.number, malibuVersionRequest).encode()
+            )
+
+            val reply = withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }
+            assertEquals(MessageId.WIFI_VERSION_RESPONSE.number, reply.messageId)
+
+            val response = AawWifiVersionResponse.parseFrom(reply.payload)
+            assertEquals(
+                WirelessHandshake.STATUS_SUCCESS, response.status,
+                "a non-zero status makes a real head unit give up without saying why",
+            )
+            assertEquals(1, response.majorVersion, "mirror the version the head unit announced")
+            assertEquals(0, response.minorVersion)
+
+            // Field 5 stays absent by default. Its meaning is not established,
+            // and putting a guessed value into an unverified field is the exact
+            // mistake that produced the status = 2 bug one field earlier.
+            assertTrue(
+                !response.hasSelectedWifiChannelType(),
+                "an unverified field must be left out, not filled with a guess",
+            )
+
+            pair.headUnit.close()
+            phone.await()
+            Unit
+        }
+    }
+
+    @Test
+    fun `the selected wifi channel can be announced when a head unit needs it`() = runBlocking {
+        // The escape hatch, off by default: 0 is a placeholder in the observed
+        // advertisement, so the value picked must be the real frequency.
+        LoopbackTransport.pair().use { pair ->
+            val phone = async(Dispatchers.IO) {
+                runCatching {
+                    WirelessHandshake(pair.phone, announceSelectedWifiChannel = true)
+                        .perform(maxMessages = 1)
+                }
+            }
+            pair.headUnit.write(
+                RfcommMessage(MessageId.WIFI_VERSION_REQUEST.number, malibuVersionRequest).encode()
+            )
+
+            val reply = withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }
+            val response = AawWifiVersionResponse.parseFrom(reply.payload)
+            assertEquals(WirelessHandshake.STATUS_SUCCESS, response.status)
+            assertEquals(5745, response.selectedWifiChannelType, "0 is a placeholder, 5745 is real")
+
+            pair.headUnit.close()
+            phone.await()
+            Unit
+        }
+    }
+
+    @Test
+    fun `a projection endpoint in the version request is used when there is no start request`() =
+        runBlocking {
+            // Some head units never send WifiStartRequest at all.
+            LoopbackTransport.pair().use { pair ->
+                val phone = async(Dispatchers.IO) { WirelessHandshake(pair.phone).perform() }
+
+                send(
+                    pair.headUnit, MessageId.WIFI_VERSION_REQUEST,
+                    AawWifiVersionRequest.newBuilder()
+                        .setMajorVersion(1)
+                        .setMinorVersion(1)
+                        .setProjection(
+                            WifiProjectionProtocolInfo.newBuilder()
+                                .setIpAddress("192.168.43.1")
+                                .setPort(5288)
+                        )
+                        .build(),
+                )
+                RfcommMessage.read(pair.headUnit) // the version response
+                send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
+
+                val result = withTimeout(10_000) { phone.await() }
+                assertEquals("192.168.43.1", result.ipAddress)
+                assertEquals(5288, result.port)
+            }
+        }
+
+    @Test
+    fun `a head unit description at the projection field is not mistaken for an address`() =
+        runBlocking {
+            // The trap: the competing schema revision puts HeadUnitInfo at field
+            // 5, and its field 1 is a string too. Unguarded, "Chevrolet" reads
+            // as an ip_address and the phone tries to connect to it.
+            LoopbackTransport.pair().use { pair ->
+                val phone = async(Dispatchers.IO) {
+                    runCatching { WirelessHandshake(pair.phone).perform(maxMessages = 2) }
+                }
+
+                send(
+                    pair.headUnit, MessageId.WIFI_VERSION_REQUEST,
+                    AawWifiVersionRequest.newBuilder()
+                        .setMajorVersion(1)
+                        .setProjection(
+                            // What HeadUnitInfo{car_make: "Chevrolet"} looks like
+                            // when read as a WifiProjectionProtocolInfo.
+                            WifiProjectionProtocolInfo.newBuilder().setIpAddress("Chevrolet")
+                        )
+                        .build(),
+                )
+                RfcommMessage.read(pair.headUnit) // the version response
+                send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
+
+                // Credentials arrived but no believable endpoint did, so the
+                // attempt must fail rather than dial a car manufacturer.
+                val outcome = withTimeout(10_000) { phone.await() }
+                assertTrue(
+                    outcome.exceptionOrNull() is WirelessHandshakeException,
+                    "expected a handshake failure, got $outcome",
+                )
+            }
+        }
+
+    @Test
+    fun `a head unit that goes quiet mid-exchange is prodded again`() = runBlocking {
+        // The stall the idle-based prodder exists for. aa-proxy-rs records head
+        // units that omit WifiStartRequest entirely and wait for the phone to
+        // ask (bluetooth.rs L2042-L2060). A prodder that disarmed on the first
+        // message would sit here forever, having just answered a version
+        // request, with the car equally patiently waiting for us.
+        LoopbackTransport.pair().use { pair ->
+            val phone = async(Dispatchers.IO) {
+                WirelessHandshake(pair.phone).perform(silenceProbeMillis = 200)
+            }
+
+            // Speak once -- enough to disarm a "has it ever spoken" check -- and
+            // deliberately omit any endpoint, so nothing is proactively asked.
+            pair.headUnit.write(
+                RfcommMessage(MessageId.WIFI_VERSION_REQUEST.number, malibuVersionRequest).encode()
+            )
+            assertEquals(
+                MessageId.WIFI_VERSION_RESPONSE.number,
+                withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }.messageId,
+            )
+
+            // Now go quiet. The phone must ask for the credentials itself.
+            val probe = withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }
+            assertEquals(
+                MessageId.WIFI_INFO_REQUEST.number, probe.messageId,
+                "after the head unit has spoken, the useful probe is the info request",
+            )
+
+            send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
+            send(
+                pair.headUnit, MessageId.WIFI_START_REQUEST,
+                WifiStartRequest.newBuilder().setIpAddress("192.168.43.1").setPort(5288).build(),
+            )
+            assertEquals("192.168.43.1", withTimeout(10_000) { phone.await() }.ipAddress)
         }
     }
 

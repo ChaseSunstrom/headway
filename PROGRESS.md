@@ -14,7 +14,7 @@ Each phase carries the **tier of evidence** behind it, defined in
 | Phase | Title | Status | Evidence |
 |-------|-------|--------|----------|
 | 0 | Test harness | **Done** | A — the emulator drives every acceptance test in CI |
-| 1 | Handshake | **Done (CI half)** | A — full bring-up 20/20 over the fake transport *and* over real TCP; D for the real BT/Wi-Fi half |
+| 1 | Handshake | **Done (CI half)** | A — full bring-up 20/20 over the fake transport *and* over real TCP; the Bluetooth version exchange is now pinned to bytes captured from a real Chevrolet head unit; D for the rest of the real BT/Wi-Fi half |
 | 2 | Video out | **Done** | A — 10 min of 30 fps stream in order, byte-identical, real NAL parsing; B — device encodes real H.264 with SPS/PPS; C for `MediaProjection` capture |
 | 3 | Input | **Done** | A — event decode and letterbox transform; B — gesture building on-device; C for gesture *dispatch* (needs an enabled service) |
 | 4 | Audio + focus | **Done** | A — three sinks, focus duck/resume asserted on the wire; B — resampling and AudioManager focus on-device; D for real A2DP |
@@ -40,7 +40,11 @@ failed on it.
 - **Session** — version, TLS, auth, service discovery and channel open, 20/20
   consecutive over the in-process fake **and** over genuine kernel sockets.
 - **Bluetooth handshake** — the RFCOMM credentials exchange over the fake
-  transport, including the malformed and hostile cases.
+  transport, including the malformed and hostile cases, plus the version
+  exchange pinned to **bytes captured from a real 2021 Chevrolet Infotainment 3
+  head unit**. That capture found a real bug: Headway was answering the car's
+  version request with a non-success status, and the car was quietly giving up.
+  See `docs/protocol-notes.md` § "Evidence from a real head unit".
 - **Video channel** — ten minutes of 30 fps stream time, in order, with no gap
   over one second, H.264 bytes bit-identical, and real Annex-B NAL parsing.
 - **Input channel** — event decode and a letterbox-aware coordinate transform.
@@ -61,9 +65,12 @@ failed on it.
 
 Stated so the gap between "CI green" and "works in a car" is never implied away.
 
-- **No car, no phone, no radio.** Bluetooth and Wi-Fi association,
+- **No car, no phone, no radio in the build environment.** Wi-Fi association,
   `MediaCodec` screen capture, `AccessibilityService` gesture dispatch and A2DP
-  coexistence are compiled and type-checked, never executed. See B-001.
+  coexistence are compiled and type-checked, never executed. See B-001. The one
+  exception is the Bluetooth version exchange, which a user has now run against
+  a real vehicle and whose bytes are pinned as a fixture — everything after it
+  on the real link is still unrun.
 - **The public phone certificate expired in 2022** and cannot be reissued
   without Google's CA key. This is the single most likely reason a real Malibu
   refuses the session. See B-003.

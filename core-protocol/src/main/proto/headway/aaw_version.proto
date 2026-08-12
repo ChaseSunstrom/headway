@@ -1,0 +1,106 @@
+// This file is part of Headway.
+// Copyright (C) 2026 The Headway Authors
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Corrected schemas for the AA Wireless version exchange.
+//
+// aasdk's own schemas are not usable for this exchange. Its
+// `aap_protobuf/aaw/WifiVersionRequest.proto` declares an EMPTY message, and its
+// `WifiVersionResponse.proto` names four fields `unknown_value_a` through
+// `unknown_value_d`. Both are wrong in ways that matter: a real 2021 Chevrolet
+// Infotainment 3 head unit sends four populated fields in its version request,
+// and field 4 of the response is a status code that decides whether the head
+// unit continues at all.
+//
+// Field numbers and meanings here are transcribed from aa-proxy-rs's
+// hand-written wire inspectors, which were derived from real captures:
+//   - `aa-proxy-rs/src/bluetooth.rs` `inspect_wifi_version_request`         L1423-L1505
+//   - `aa-proxy-rs/src/bluetooth.rs` `inspect_wifi_version_head_unit_info`  L1515-L1556
+//   - `aa-proxy-rs/src/bluetooth.rs` `inspect_wifi_projection_protocol_info` L1559-L1601
+//   - `aa-proxy-rs/src/bluetooth.rs` `inspect_wifi_version_response`        L1604-L1657
+//   - `aa-proxy-rs/src/bluetooth.rs` `inspect_wifi_version_device_info`     L1659-L1694
+//
+// The response layout is corroborated by aasdk despite its placeholder names:
+// `unknown_value_c = 3` is a `string` where aa-proxy-rs reads `device_serial`,
+// and `unknown_value_d = 4` is a `uint32` where aa-proxy-rs reads `status`.
+//
+// Corroborated further against a capture from the target vehicle, which sent:
+//
+//   08 01 10 00 18 00 20 f1 2c
+//   field 1 varint = 1      major_version
+//   field 2 varint = 0      minor_version
+//   field 3 varint = 0      supported_wifi_channels[0]
+//   field 4 varint = 5745   supported_wifi_channel_alt  (5745 MHz = channel 149)
+//
+// which reads consistently under this schema and not at all under aasdk's.
+
+syntax = "proto2";
+
+option optimize_for = LITE_RUNTIME;
+
+package headway.aaw;
+
+// The projection endpoint some head units carry inside the version request
+// instead of sending a separate WifiStartRequest.
+message WifiProjectionProtocolInfo {
+  optional string ip_address = 1;
+  optional uint32 port = 2;
+}
+
+// Sent by the head unit, usually as the first message on the RFCOMM link.
+//
+// Two revisions exist in the wild and they disagree about fields 4 and 5.
+// Protobuf cannot express "varint or message at the same field number", so this
+// schema commits to the revision the target vehicle speaks and relies on
+// protobuf's wire-type mismatch handling for the other: a length-delimited
+// field 4 from a head unit using the alternate revision lands in unknown fields
+// and is skipped rather than throwing. Nothing Headway needs for the handshake
+// lives in that HeadUnitInfo blob.
+message AawWifiVersionRequest {
+  optional uint32 major_version = 1;
+  optional uint32 minor_version = 2;
+
+  // Frequencies in MHz, not 802.11 channel numbers: the observed vehicle sends
+  // 5745, the centre frequency of 5 GHz channel 149. Unpacked in the observed
+  // capture, though aa-proxy-rs also accepts a packed encoder, so both forms are
+  // handled on the wire.
+  repeated uint32 supported_wifi_channels = 3;
+
+  // A second frequency-like varint that MBUX traces (and the target Chevrolet)
+  // carry here. In the other revision this number holds a HeadUnitInfo message
+  // instead -- see the note above.
+  optional uint32 supported_wifi_channel_alt = 4;
+
+  // Present on head units that omit WifiStartRequest entirely. The other
+  // revision puts HeadUnitInfo here, whose field 1 is also a string, so a
+  // populated `projection` is not on its own evidence of an endpoint: the
+  // ip_address must parse as a literal address and the port must be non-zero
+  // before it can be believed. aa-proxy-rs guards this identically in
+  // `wifi_projection_info_looks_valid` (L1412-L1421).
+  optional WifiProjectionProtocolInfo projection = 5;
+}
+
+// Identifies the phone. Optional in practice -- the observed head unit does not
+// require it -- but a head unit that logs the connected device reads it here.
+message WifiDeviceInfo {
+  optional string device_id = 1;
+  optional string connectivity_lifetime_id = 2;
+}
+
+// The phone's reply.
+//
+// Field 4 is the one that matters. It is a status code, and a non-zero value
+// tells the head unit the phone is refusing -- at which point a real unit stops
+// talking and the session never starts. Zero is success, matching
+// `aap_protobuf/aaw/Status.proto` STATUS_SUCCESS.
+message AawWifiVersionResponse {
+  optional uint32 major_version = 1;
+  optional uint32 minor_version = 2;
+  optional string device_serial = 3;
+  optional int32 status = 4;
+
+  // Which of the head unit's advertised frequencies the phone accepts.
+  optional uint32 selected_wifi_channel_type = 5;
+
+  optional WifiDeviceInfo device_info = 6;
+}

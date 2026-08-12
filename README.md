@@ -8,12 +8,12 @@ by fully on-device speech recognition.
 
 No Google services. No network. No root. No system privileges.
 
-> **Status: in development. Nothing here has ever been connected to a car.**
-> The protocol stack, the test harness and the voice pipeline are built and
-> exercised in CI; the Android adapters that touch real radios and real hardware
-> encoders are written but never executed. [`PROGRESS.md`](PROGRESS.md) records
-> the tier of evidence behind every phase — read it before believing anything
-> here works.
+> **Status: in development. Only the Bluetooth handshake has ever reached a
+> real car.** The protocol stack, the test harness and the voice pipeline are
+> built and exercised in CI; the Android adapters that touch real radios and
+> real hardware encoders are written but, past the Bluetooth exchange, never
+> executed. [`PROGRESS.md`](PROGRESS.md) records the tier of evidence behind
+> every phase — read it before believing anything here works.
 
 ## Why
 
@@ -110,7 +110,10 @@ car — a real phone, real sockets, real TLS, real video off a real encoder.
 
 Two honest caveats. `--self-test` shares protocol code with the phone side, so it
 proves self-consistency rather than correctness ([ADR 0002](docs/adr/0002-jvm-headunit-emulator.md)).
-And none of it is evidence about a Chevrolet; only a Chevrolet is.
+And none of it is evidence about a Chevrolet; only a Chevrolet is. When one was
+finally asked, it disagreed — see
+[`docs/protocol-notes.md`](docs/protocol-notes.md) § "Evidence from a real head
+unit" for what a single real capture cost and bought.
 
 ## How much of this is actually tested
 
