@@ -51,6 +51,12 @@ defeat the purpose of the document:
 | 2. Version handshake and TLS | Extracted and cited; not yet exercised against a live peer. |
 | 3. Wireless Bluetooth handshake | Extracted and cited. The two constants Phase 1 turns on — the RFCOMM service UUID and the TCP port — were confirmed by hand in three and two references respectively. |
 | 4. Control channel and service discovery | Extracted and cited; not yet exercised against a live peer. |
+| 5. Video channel | Extracted and cited; not implemented (Phase 2). |
+| 6. Input channel | Extracted and cited; not implemented (Phase 3). |
+
+Sections 5 and 6 are recorded ahead of the phases that use them so the extraction
+happens once, while the references are to hand, rather than being repeated later.
+The audio and car-microphone channels are not yet documented.
 
 ### Framing constants flagged on re-verification
 
@@ -2129,3 +2135,1375 @@ The switch in ControlServiceChannel.cpp L197-235 has no cases for MESSAGE_CAR_CO
 **Channel numbering is static in aasdk but dynamic in the real protocol**
 
 aasdk/include/aasdk/Messenger/ChannelId.hpp L22-27 carries an explicit TODO: "In AA, Channel Id's are dynamic. We use ChannelId here for a static implementation, which, while acceptable, may cause more channels to be open than needs to be." So the fixed CONTROL=0..WIFI_PROJECTION=18 mapping is an aasdk convention, not a protocol constant — the only value the protocol actually pins is that the control channel is 0 (AACS hardcodes channel 0 for all control traffic, AaCommunicator.cpp L82/L103/L267). Everything else is whatever id the head unit puts in Service.id.
+
+---
+
+## 5. Video channel
+
+Message ids, VideoConfiguration, AV channel setup, and how H.264 frames are carried. Not yet implemented -- Phase 2.
+
+### 5.1 Sequence
+
+```text
+VIDEO CHANNEL LIFECYCLE (head-unit / sink perspective, from aasdk/src/Channel/MediaSink/Video/VideoMediaSinkService.cpp L102-L203 and openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp).
+
+STEP 0 - ADVERTISE. Before any video message, the head unit advertises the video service in ServiceDiscoveryResponse: one Service whose media_sink_service (MediaSinkService) has available_type = MEDIA_CODEC_VIDEO_H264_BP and a repeated video_configs list of VideoConfiguration entries. openauto pushes exactly ONE entry, filling codec_resolution, frame_rate, height_margin, width_margin, density (openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp L75-L92: "auto *videoConfig1 = videoChannel->add_video_configs(); videoConfig1->set_codec_resolution(...); ... videoConfig1->set_density(videoOutput_->getScreenDPI());"). aa-proxy-rs fills the full set including decoder_additional_depth=0, viewing_distance, pixel_aspect_ratio_e4=10000, real_density and video_codec_type=MEDIA_CODEC_VIDEO_H264_BP (aa-proxy-rs/src/display.rs L192-L203). THE INDEX OF EACH ENTRY IN THIS repeated LIST IS THE "configuration index" referenced later.
+
+STEP 1 - CHANNEL OPEN. Phone sends ControlMessageType::MESSAGE_CHANNEL_OPEN_REQUEST (a CONTROL-type message id) on the video channel; the head unit replies ChannelOpenResponse with status STATUS_SUCCESS (openauto VideoMediaSinkService.cpp L129-L149). Note aasdk sends this one reply with messenger::MessageType::CONTROL while every subsequent video message uses MessageType::SPECIFIC (aasdk VideoMediaSinkService.cpp L53-L54 vs L66-L67).
+
+STEP 2 - SETUP REQUEST (phone -> HU). Message id 0x8000 MEDIA_MESSAGE_SETUP, payload = Setup { required MediaCodecType type = 1 }. For video, type = MEDIA_CODEC_VIDEO_H264_BP (3). AACS emits this literally as bytes 80 00 08 03 (AACS/AAServer/src/VideoChannelHandler.cpp L138-L145). aasdk dispatches it via handleChannelSetupRequest (aasdk VideoMediaSinkService.cpp L112-L113, L137-L146).
+
+STEP 3 - SETUP RESPONSE / CONFIG (HU -> phone). Message id 0x8003 MEDIA_MESSAGE_CONFIG, payload = Config { status, max_unacked, configuration_indices }. status is STATUS_READY (2) if the video output initialised, STATUS_WAIT (1) otherwise. configuration_indices is a repeated uint32 listing WHICH indices into the advertised video_configs array the head unit is willing to use; openauto sends exactly [0] and max_unacked = 1 (openauto VideoMediaSinkService.cpp L109-L125). aasdk's sender is literally named sendChannelSetupResponse. AACS's phone side simply blocks until it sees message id 0x8003 (its "SetupResponse") without parsing it.
+
+STEP 4 - VIDEO FOCUS. openauto chains a VideoFocusNotification (id 0x8008) immediately onto the successful send of the CONFIG response, with focus = VIDEO_FOCUS_PROJECTED and unsolicited = false (openauto VideoMediaSinkService.cpp L120-L125 promise->then(sendVideoFocusIndication), L233-L245). AACS's phone side treats the arrival of 0x8008 as its cue to send the Start indication (AACS/AAServer/src/VideoChannelHandler.cpp L181-L183: "else if (messageType == MediaMessageType::VideoFocusIndication) { sendStartIndication(); }"). Later the phone may send VideoFocusRequestNotification (id 0x8007, fields: deprecated disp_channel_id=1, mode=2, reason=3); openauto answers with another VideoFocusNotification and, if mode == VIDEO_FOCUS_NATIVE, relinquishes the display (openauto VideoMediaSinkService.cpp L207-L231).
+
+STEP 5 - START INDICATION (phone -> HU). Message id 0x8001 MEDIA_MESSAGE_START, payload = Start { required int32 session_id = 1; required uint32 configuration_index = 2 }. configuration_index selects one of the indices the head unit offered in Config.configuration_indices, i.e. it picks which VideoConfiguration from the advertised repeated list the phone will actually encode for. AACS hardcodes 08 00 10 00 => session_id 0, configuration_index 0 (AACS/AAServer/src/VideoChannelHandler.cpp L152-L161). The head unit stores session_id for use in every subsequent Ack (openauto VideoMediaSinkService.cpp L151-L160).
+
+STEP 6a - CODEC CONFIG (phone -> HU). Message id 0x0001 MEDIA_MESSAGE_CODEC_CONFIG. Payload after the 2-byte id is raw codec configuration bytes (H.264 SPS/PPS) with NO timestamp header — aasdk routes it directly to eventHandler->onMediaIndication(payload) (aasdk VideoMediaSinkService.cpp L121-L123), and openauto forwards it into the same write path with timestamp 0 (openauto VideoMediaSinkService.cpp L190-L193). aa-proxy-rs treats it as a distinct "codec config" blob cached separately and re-emitted with pts 0 (aa-proxy-rs/src/media_tap.rs L1029-L1039, L148-L152).
+
+STEP 6b - VIDEO FRAMES (phone -> HU). Message id 0x0000 MEDIA_MESSAGE_DATA. Wire layout is: [2 bytes message id, big-endian][8 bytes presentation timestamp, unsigned 64-bit, BIG-ENDIAN, MICROSECONDS][H.264 Annex-B byte-stream bytes]. Evidence: aasdk gates on payload.size >= sizeof(Timestamp::ValueType) (uint64_t) and offsets the media buffer by that size (aasdk VideoMediaSinkService.cpp L181-L192); byte order comes from boost::endian big_to_native/native_to_big (aasdk/src/Messenger/Timestamp.cpp L29-L38); units and the exact 8-byte header are named explicitly in aa-proxy-rs ("const TIMESTAMP_HEADER: usize = 8; let pts_us = u64::from_be_bytes(payload[..TIMESTAMP_HEADER]...)", aa-proxy-rs/src/media_tap.rs L1041-L1046) and the construction side "Vec::with_capacity(2 + 8 + adapted.len()); push_media_message_id(...); payload.extend_from_slice(&pts_us.to_be_bytes())" (aa-proxy-rs/src/bt_sco_media_bridge.rs L442-L445). AACS's sender divides GStreamer's nanosecond PTS by 1000 before writing the header and its receiver multiplies by 1000 on the way back (AACS/AAServer/src/VideoChannelHandler.cpp L33-L39; AACS/AAClient/src/VideoChannelHandler.cpp L42-L51: "auto ts = bytesToUInt64(data, 2); ... pushDataToPipeline(localTs * 1000, vector(data.begin() + 2 + 8, data.end()));" — note the explicit skip of 2 + 8 bytes). These messages are sent with the BULK frame type (FrameType::First|Last) and ENCRYPTED, and are fragmented by the lower framing layer when larger than the transport MTU (AACS L44-L46; aa-proxy-rs reassembles with reassemble_media_packet before tapping, mitm.rs L2627).
+
+STEP 6c - ACK (HU -> phone). For each received frame the head unit sends message id 0x8004 MEDIA_MESSAGE_ACK with Ack { session_id = the session_id from Start, ack = 1 }. openauto sends it immediately after handing the buffer to the video output (openauto VideoMediaSinkService.cpp L177-L187); aa-proxy-rs builds the same message with an incrementing ack counter (aa-proxy-rs/src/display.rs L324-L331). Config.max_unacked from step 3 is the flow-control window: how many frames the phone may have outstanding before it must wait for an Ack. Ack also has an optional repeated uint64 receive_timestamp_ns = 3, which neither openauto nor aa-proxy-rs populates.
+
+STEP 7 - STOP. Message id 0x8002 MEDIA_MESSAGE_STOP, payload = the empty Stop message. openauto just re-arms its receive (openauto VideoMediaSinkService.cpp L162-L169).
+
+CODEC / PROFILE. The negotiated codec is MEDIA_CODEC_VIDEO_H264_BP = 3, "BP" = Baseline Profile; AACS's encoder pins gst caps to profile=baseline, stream-format=byte-stream (AACS/AAServer/src/VideoChannelHandler.cpp L75-L78) and openauto's Raspberry Pi decoder is configured for OMX_VIDEO_CodingAVC (openauto/src/autoapp/Projection/OMXVideoOutput.cpp L272). NO reference states an H.264 LEVEL. NO reference states a protocol-mandated keyframe interval; the only concrete cadence in any reference is AACS's encoder setting key-int-max = 25 (AACS/AAServer/src/VideoChannelHandler.cpp L74). aa-proxy-rs detects keyframes structurally by Annex-B NAL type 5 = IDR, 1 = non-IDR slice (aa-proxy-rs/src/media_tap.rs L884-L905) and its consumers wait for a live IDR before starting playback — which implies (but does not specify) that the phone emits an IDR at the start of every session and after every focus regain (aa-proxy-rs/src/mitm.rs L2644-L2669).
+```
+
+### 5.2 Constants
+
+| Constant | Value | Meaning | Source |
+|---|---|---|---|
+| `MEDIA_MESSAGE_DATA` | 0 (0x0000) | Video/audio frame payload message id. On the video channel the payload after this 2-byte id is an 8-byte timestamp followed by the H.264 Annex-B bytes. | `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto` L5-L13 |
+| `MEDIA_MESSAGE_CODEC_CONFIG` | 1 (0x0001) | Codec configuration message id (for video: the SPS/PPS blob). Carries NO timestamp header — aasdk routes it straight to onMediaIndication and openauto re-enters the timestamped path with timestamp 0. | `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto` L7-L8 |
+| `MEDIA_MESSAGE_SETUP` | 32768 (0x8000) | Phone -> head unit: AV/media channel setup request. Payload is the `Setup` message (required MediaCodecType type = 1). | `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto` L9 |
+| `MEDIA_MESSAGE_START` | 32769 (0x8001) | Phone -> head unit: AV channel start indication. Payload is `Start` { session_id, configuration_index }. | `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto` L10 |
+| `MEDIA_MESSAGE_STOP` | 32770 (0x8002) | Phone -> head unit: AV channel stop indication. Payload is the empty `Stop` message. | `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto` L11 |
+| `MEDIA_MESSAGE_CONFIG` | 32771 (0x8003) | Head unit -> phone: the setup RESPONSE. Payload is `Config` { status, max_unacked, configuration_indices }. aasdk's send function for this id is literally named sendChannelSetupResponse(). | `aasdk/src/Channel/MediaSink/Video/VideoMediaSinkService.cpp` L62-L74 |
+| `MEDIA_MESSAGE_ACK` | 32772 (0x8004) | Head unit -> phone: media frame acknowledgement. Payload is `Ack` { session_id, ack, receive_timestamp_ns }. | `aasdk/src/Channel/MediaSink/Video/VideoMediaSinkService.cpp` L76-L88 |
+| `MEDIA_MESSAGE_MICROPHONE_REQUEST` | 32773 (0x8005) | Microphone request id in the same media message-id space (not used on the video channel). | `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto` L14 |
+| `MEDIA_MESSAGE_MICROPHONE_RESPONSE` | 32774 (0x8006) | Microphone response id in the same media message-id space (not used on the video channel). | `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto` L15 |
+| `MEDIA_MESSAGE_VIDEO_FOCUS_REQUEST` | 32775 (0x8007) | Phone -> head unit: VideoFocusRequestNotification. aasdk dispatches this to handleVideoFocusRequest. | `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto` L16 |
+| `MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION` | 32776 (0x8008) | Head unit -> phone: VideoFocusNotification (focus granted/changed). aasdk sends it via sendVideoFocusIndication(). | `aasdk/src/Channel/MediaSink/Video/VideoMediaSinkService.cpp` L90-L97 |
+| `MEDIA_MESSAGE_UPDATE_UI_CONFIG_REQUEST` | 32777 (0x8009) | Runtime UI-config push. aa-proxy-rs documents this as inbound (Phone->HU) and notes the same schema is used outbound with id 0x800A. | `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto` L18-L20 |
+| `MEDIA_MESSAGE_UPDATE_UI_CONFIG_REPLY` | 32778 (0x800A) | Reply/outbound half of the runtime UI-config push. | `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto` L19 |
+| `MEDIA_MESSAGE_AUDIO_UNDERFLOW_NOTIFICATION` | 32779 (0x800B) | Audio underflow notification (audio sinks only); last id present in aasdk's enum. | `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto` L20-L21 |
+| `MEDIA_MESSAGE_ACTION_TAKEN_NOTIFICATION .. MEDIA_MESSAGE_CRITICAL_UI_NOTIFICATION` | 32780..32789 (0x800C..0x8015) | Extended media message ids present ONLY in aa-proxy-rs (absent from aasdk): ACTION_TAKEN=32780, INTEGRATED_OVERLAY_PARAMETERS=32781, INTEGRATED_OVERLAY_START=32782, INTEGRATED_OVERLAY_STOP=32783, INTEGRATED_OVERLAY_SESSION_DATA_UPDATE=32784, UPDATE_HU_UI_CONFIG_REQUEST=32785, UPDATE_HU_UI_CONFIG_RESPONSE=32786, MEDIA_STATS=32787, MEDIA_OPTIONS=32788, CRITICAL_UI_NOTIFICATION=32789. | `aa-proxy-rs/src/protos/protos.proto` L1592-L1601 |
+| `VIDEO_800x480` | 1 | VideoCodecResolutionType: 800 x 480 pixels (landscape). openauto maps this enum to QRect(0,0,800,480). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoCodecResolutionType.proto` L5-L15 |
+| `VIDEO_1280x720` | 2 | VideoCodecResolutionType: 1280 x 720 pixels. openauto maps this enum value to QRect(0,0,1280,720). | `openauto/src/autoapp/Service/ServiceFactory.cpp` L99-L112 |
+| `VIDEO_1920x1080` | 3 | VideoCodecResolutionType: 1920 x 1080 pixels. Confirmed by openauto's QRect(0,0,1920,1080) mapping. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoCodecResolutionType.proto` L8 |
+| `VIDEO_2560x1440` | 4 | VideoCodecResolutionType: 2560 x 1440 pixels. aa-proxy-rs parses the alias "1440p" to this value. | `aa-proxy-rs/src/config_types.rs` L121-L133 |
+| `VIDEO_3840x2160` | 5 | VideoCodecResolutionType: 3840 x 2160 pixels (4K, landscape). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoCodecResolutionType.proto` L10 |
+| `VIDEO_720x1280` | 6 | VideoCodecResolutionType: 720 x 1280 pixels (portrait 720p). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoCodecResolutionType.proto` L11 |
+| `VIDEO_1080x1920` | 7 | VideoCodecResolutionType: 1080 x 1920 pixels (portrait 1080p). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoCodecResolutionType.proto` L12 |
+| `VIDEO_1440x2560` | 8 | VideoCodecResolutionType: 1440 x 2560 pixels (portrait 1440p). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoCodecResolutionType.proto` L13 |
+| `VIDEO_2160x3840` | 9 | VideoCodecResolutionType: 2160 x 3840 pixels (portrait 4K). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoCodecResolutionType.proto` L14 |
+| `Resolution enum name encodes WIDTHxHEIGHT` | strip "VIDEO_", split on 'X' -> (width, height) | aa-proxy-rs derives the pixel dimensions programmatically from the enum NAME, confirming that VIDEO_<W>x<H> literally denotes W pixels wide by H pixels high. | `aa-proxy-rs/src/sdr_ui.rs` L1158-L1167 |
+| `VIDEO_FPS_60` | 1 | VideoFrameRateType: 60 frames per second. NOTE the counter-intuitive ordering — 60 is 1, 30 is 2. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoFrameRateType.proto` L5-L8 |
+| `VIDEO_FPS_30` | 2 | VideoFrameRateType: 30 frames per second. This is openauto's default frame rate. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoFrameRateType.proto` L7 |
+| `MEDIA_CODEC_VIDEO_H264_BP` | 3 | MediaCodecType for video: H.264 Baseline Profile. This is the value openauto advertises as available_type on the video sink and the value AACS sends in its Setup request (0x08 0x03). | `aasdk/protobuf/aap_protobuf/service/media/shared/message/MediaCodecType.proto` L5-L14 |
+| `MEDIA_CODEC_VIDEO_VP9` | 5 | MediaCodecType alternative video codec: VP9. | `aasdk/protobuf/aap_protobuf/service/media/shared/message/MediaCodecType.proto` L11 |
+| `MEDIA_CODEC_VIDEO_AV1` | 6 | MediaCodecType alternative video codec: AV1. | `aasdk/protobuf/aap_protobuf/service/media/shared/message/MediaCodecType.proto` L12 |
+| `MEDIA_CODEC_VIDEO_H265` | 7 | MediaCodecType alternative video codec: H.265/HEVC. | `aasdk/protobuf/aap_protobuf/service/media/shared/message/MediaCodecType.proto` L13 |
+| `Config.Status.STATUS_WAIT` | 1 | Setup-response status meaning the head unit is not yet ready to receive video. | `aasdk/protobuf/aap_protobuf/service/media/shared/message/Config.proto` L5-L13 |
+| `Config.Status.STATUS_READY` | 2 | Setup-response status meaning the head unit's video output initialised successfully and it will accept frames. | `openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp` L109-L118 |
+| `openauto Config.max_unacked` | 1 | openauto's head-unit setup response advertises a flow-control window of exactly 1 unacknowledged media frame, i.e. it acks every frame before the next is expected. | `openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp` L117-L118 |
+| `openauto Config.configuration_indices` | [0] | Head unit accepts video configuration index 0, i.e. the first (and only) entry of the repeated video_configs list it advertised in ServiceDiscoveryResponse. | `openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp` L118 |
+| `aa-proxy-rs Config.configuration_indices` | [0] | Independent confirmation: aa-proxy-rs's synthesized READY Config also pushes a single configuration index 0. | `aa-proxy-rs/src/display.rs` L308-L316 |
+| `AACS Start indication payload bytes` | 08 00 10 00 | AACS (phone side) hand-encodes the Start message as field 1 (session_id) varint 0 and field 2 (configuration_index) varint 0 — direct wire confirmation of Start's field numbering and that configuration_index 0 selects the first advertised video config. | `AACS/AAServer/src/VideoChannelHandler.cpp` L152-L161 |
+| `AACS Setup request payload bytes` | 08 03 | AACS hand-encodes the Setup message as field 1 (type) varint 3 = MEDIA_CODEC_VIDEO_H264_BP — wire confirmation that Setup.type is field 1 and that the video channel negotiates H.264 Baseline. | `AACS/AAServer/src/VideoChannelHandler.cpp` L138-L145 |
+| `Video frame timestamp width` | 8 bytes (uint64) | The timestamp header preceding the H.264 payload in a MEDIA_MESSAGE_DATA message is a 64-bit value. aasdk gates parsing on payload.size >= sizeof(Timestamp::ValueType) and offsets the media buffer by the same size. | `aasdk/src/Channel/MediaSink/Video/VideoMediaSinkService.cpp` L181-L192 |
+| `Timestamp::ValueType` | uint64_t | aasdk's declared type for the media frame timestamp. | `aasdk/include/aasdk/Messenger/Timestamp.hpp` L26-L30 |
+| `Video frame timestamp byte order` | big-endian (network order) | aasdk converts the 8 header bytes with boost::endian::big_to_native on receive and native_to_big on send. | `aasdk/src/Messenger/Timestamp.cpp` L29-L38 |
+| `Video frame timestamp units` | microseconds | aa-proxy-rs names the parsed value pts_us and the constant TIMESTAMP_HEADER = 8, reading it with u64::from_be_bytes over the first 8 payload bytes. | `aa-proxy-rs/src/media_tap.rs` L1041-L1046 |
+| `Video frame timestamp units (AACS sender confirmation)` | microseconds (GStreamer ns PTS / 1000) | AACS's phone-side encoder divides the GStreamer nanosecond PTS by 1000 before writing the 8-byte header, and its head-unit-side client multiplies the received value back by 1000 to get nanoseconds — both consistent with microsecond units. | `AACS/AAServer/src/VideoChannelHandler.cpp` L33-L39 |
+| `Video DATA wire layout` | [2-byte msg id BE][8-byte pts_us BE][media bytes] | Explicit construction of a MEDIA_MESSAGE_DATA payload in aa-proxy-rs, capacity 2 + 8 + data. | `aa-proxy-rs/src/bt_sco_media_bridge.rs` L442-L445 |
+| `MessageId size / byte order` | 2 bytes, big-endian | Every channel-specific message (including all video messages) is prefixed by a 2-byte big-endian message id. | `aasdk/include/aasdk/Messenger/MessageId.hpp` L34 |
+| `MessageId big-endian encoding` | boost::endian::native_to_big | Confirms the 2-byte id is serialised network order; AACS's pushBackInt16 does the same by hand ((num >> 8) then (num >> 0)). | `aasdk/src/Messenger/MessageId.cpp` L30-L42 |
+| `MessageType::SPECIFIC (aasdk)` | 0 | All video channel messages except the ChannelOpenResponse are sent with MessageType::SPECIFIC; the ChannelOpenResponse uses MessageType::CONTROL (= 1 << 2 = 4). | `aasdk/include/aasdk/Messenger/MessageType.hpp` L26-L29 |
+| `VIDEO_FOCUS_PROJECTED` | 1 | VideoFocusMode: Android Auto projection owns the display. openauto replies with this after setup and on every focus request. | `aasdk/protobuf/aap_protobuf/service/media/video/message/VideoFocusMode.proto` L5-L11 |
+| `VIDEO_FOCUS_NATIVE` | 2 | VideoFocusMode: head unit's own (native) UI owns the display. openauto treats a request with this mode as 'return to OS'. | `aasdk/protobuf/aap_protobuf/service/media/video/message/VideoFocusMode.proto` L8 |
+| `VIDEO_FOCUS_NATIVE_TRANSIENT` | 3 | VideoFocusMode: native UI takes the display temporarily. | `aasdk/protobuf/aap_protobuf/service/media/video/message/VideoFocusMode.proto` L9 |
+| `VIDEO_FOCUS_PROJECTED_NO_INPUT_FOCUS` | 4 | VideoFocusMode: projection is displayed but does not hold input focus. | `aasdk/protobuf/aap_protobuf/service/media/video/message/VideoFocusMode.proto` L10 |
+| `VideoFocusReason.UNKNOWN / PHONE_SCREEN_OFF / LAUNCH_NATIVE` | 0 / 1 / 2 | Reason codes carried in VideoFocusRequestNotification field 3. | `aasdk/protobuf/aap_protobuf/service/media/video/message/VideoFocusReason.proto` L5-L10 |
+| `DISPLAY_TYPE_MAIN / CLUSTER / AUXILIARY` | 0 / 1 / 2 | MediaSinkService.display_type (field 7) values distinguishing the main projection display from the instrument cluster and auxiliary displays. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/DisplayType.proto` L5-L9 |
+| `UI_THEME_AUTOMATIC / LIGHT / DARK` | 0 / 1 / 2 | UiConfig.ui_theme (field 4) values inside VideoConfiguration.ui_config. | `aasdk/protobuf/aap_protobuf/service/media/shared/message/UiTheme.proto` L5-L9 |
+| `openauto default screen DPI (VideoConfiguration.density)` | 140 | openauto's default value written into VideoConfiguration.density (field 5). | `openauto/src/autoapp/Configuration/Configuration.cpp` L127-L132 |
+| `openauto default video margins` | width 0, height 0 | openauto defaults VideoConfiguration.width_margin and height_margin to 0. | `openauto/src/autoapp/Configuration/Configuration.cpp` L181-L185 |
+| `aa-proxy-rs default density (DPI)` | 160 | Default VideoConfiguration.density used by aa-proxy-rs when synthesising an injected display's video config. | `aa-proxy-rs/src/inject_displays.rs` L16-L30 |
+| `aa-proxy-rs default viewing_distance` | 300 | Default VideoConfiguration.viewing_distance (field 7) value used by aa-proxy-rs. | `aa-proxy-rs/src/inject_displays.rs` L28-L30 |
+| `pixel_aspect_ratio_e4 for square pixels` | 10000 | Field 8 is the pixel aspect ratio scaled by 1e4; aa-proxy-rs sets 10000 (= 1.0000) for square pixels. Same code sets decoder_additional_depth to 0. | `aa-proxy-rs/src/display.rs` L192-L203 |
+| `width_margin / height_margin relationship to UiConfig.margins insets` | width_margin = margins.left + margins.right; height_margin = margins.top + margins.bottom | aa-proxy-rs derives the scalar VideoConfiguration margin fields (3 and 4) by summing the opposing edges of the UiConfig.margins Insets — i.e. they are total margins, not per-edge. | `aa-proxy-rs/src/sdr_ui.rs` L675-L687 |
+| `UiConfig.margins split from scalar margins` | top = bottom = height_margin / 2; left = right = width_margin / 2 | The inverse mapping, in aa-proxy-rs's display-service builder: the scalar margins are split evenly across opposing edges. | `aa-proxy-rs/src/display.rs` L180-L183 |
+| `openauto Ack.ack value` | 1 | openauto acknowledges each received video frame with Ack { session_id = <session from Start>, ack = 1 }, sent immediately after handing the frame to the video output. | `openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp` L177-L186 |
+| `openauto session_id source` | Start.session_id | The session id echoed in every Ack is taken verbatim from the Start indication; openauto initialises it to -1 before Start arrives. | `openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp` L151-L159 |
+| `CODEC_CONFIG treated as timestamp-0 media` | timestamp 0 | openauto funnels MEDIA_MESSAGE_CODEC_CONFIG (which has no timestamp header) into the same write path with timestamp 0. aa-proxy-rs likewise broadcasts codec config with pts 0 and consumers skip pts==0 items as non-frames. | `openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp` L190-L193 |
+| `H.264 stream format on the wire` | Annex-B byte-stream | AACS's phone-side encoder pins the caps to video/x-h264, stream-format=byte-stream, profile=baseline; the head-unit-side appsrc declares the identical byte-stream caps. aa-proxy-rs's IDR detector likewise scans for 3- or 4-byte Annex-B start codes. | `AACS/AAServer/src/VideoChannelHandler.cpp` L75-L78 |
+| `AACS encoder key-int-max (GOP / keyframe interval)` | 25 | AACS configures x264enc with key-int-max=25, i.e. an IDR at least every 25 frames (~0.83 s at 30 fps). This is the only explicit keyframe-cadence setting in any reference; no reference states a protocol-mandated keyframe requirement. | `AACS/AAServer/src/VideoChannelHandler.cpp` L73-L74 |
+| `H.264 IDR NAL unit type` | 5 (nal_type = byte & 0x1F); non-IDR slice = 1 | aa-proxy-rs identifies keyframes in the video payload by walking Annex-B start codes and testing nal_type == 5 (IDR) vs 1 (non-IDR coded slice). | `aa-proxy-rs/src/media_tap.rs` L884-L905 |
+| `Head unit H.264 decoder compression format (Raspberry Pi OMX)` | OMX_VIDEO_CodingAVC | openauto's OMX video output configures the hardware decoder input port for AVC/H.264 — no profile or level is specified anywhere in openauto. | `openauto/src/autoapp/Projection/OMXVideoOutput.cpp` L267-L275 |
+| `AACS MediaMessageType.MediaWithTimestampIndication` | 0x0000 | AACS's independent name for MEDIA_MESSAGE_DATA — explicitly stating that message id 0 carries a timestamp. Its sibling MediaIndication = 0x0001 (= MEDIA_MESSAGE_CODEC_CONFIG in aasdk) carries none. | `AACS/include/enums.h` L39-L47 |
+| `AACS pushBackInt64 (timestamp serialiser)` | MSB-first, 8 bytes | Independent confirmation of big-endian 64-bit timestamp encoding on the wire (and bytesToUInt64 does the mirror decode). | `AACS/src/utils.cpp` L39-L48 |
+| `AACS VideoResolution.Enum` | None=0, H480=1, H720=2, H1080=3 | AACS's legacy resolution enum. Values 1/2/3 line up with aasdk's VIDEO_800x480 / VIDEO_1280x720 / VIDEO_1920x1080, but AACS adds a None=0 and names them by height only. | `AACS/proto/VideoResolution.proto` L7-L15 |
+| `AACS VideoFps.Enum` | None=0, F30=1, F60=2 | AACS's legacy frame-rate enum. CONTRADICTS aasdk/aa-proxy-rs, which have VIDEO_FPS_60 = 1 and VIDEO_FPS_30 = 2. Use aasdk. | `AACS/proto/VideoFps.proto` L7-L15 |
+| `ChannelId::MEDIA_SINK_VIDEO (openauto static assignment)` | 3 (implicit ordinal — 4th entry of an enum with no explicit initialisers, CONTROL=0) | openauto uses a static channel-id table and advertises the video service under static_cast<uint32_t>(ChannelId::MEDIA_SINK_VIDEO). aasdk's own TODO in the same header states real AA channel ids are dynamic, so this number is an openauto convention, NOT a protocol constant. | `aasdk/include/aasdk/Messenger/ChannelId.hpp` L29-L38 |
+
+### 5.3 Message definitions
+
+
+#### `VideoConfiguration (canonical, aasdk)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoConfiguration.proto`
+
+```proto
+syntax="proto2";
+
+import "aap_protobuf/service/media/shared/message/MediaCodecType.proto";
+import "aap_protobuf/service/media/sink/message/VideoFrameRateType.proto";
+import "aap_protobuf/service/media/sink/message/VideoCodecResolutionType.proto";
+import "aap_protobuf/service/media/shared/message/UiConfig.proto";
+
+package aap_protobuf.service.media.sink.message;
+
+message VideoConfiguration {
+    optional VideoCodecResolutionType codec_resolution = 1;
+    optional VideoFrameRateType frame_rate = 2;
+    optional uint32 width_margin = 3;
+    optional uint32 height_margin = 4;
+    optional uint32 density = 5;
+    optional uint32 decoder_additional_depth = 6;
+    optional uint32 viewing_distance = 7;
+    optional uint32 pixel_aspect_ratio_e4 = 8;
+    optional uint32 real_density = 9;
+    optional shared.message.MediaCodecType video_codec_type = 10;
+    optional shared.message.UiConfig ui_config = 11;
+}
+```
+
+#### `VideoCodecResolutionType (enum)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoCodecResolutionType.proto`
+
+```proto
+enum VideoCodecResolutionType {
+  VIDEO_800x480 = 1;
+  VIDEO_1280x720 = 2;
+  VIDEO_1920x1080 = 3;
+  VIDEO_2560x1440 = 4;
+  VIDEO_3840x2160 = 5;
+  VIDEO_720x1280 = 6;
+  VIDEO_1080x1920 = 7;
+  VIDEO_1440x2560 = 8;
+  VIDEO_2160x3840 = 9;
+}
+```
+
+#### `VideoFrameRateType (enum)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoFrameRateType.proto`
+
+```proto
+enum VideoFrameRateType {
+    VIDEO_FPS_60 = 1;
+    VIDEO_FPS_30 = 2;
+}
+```
+
+#### `MediaCodecType (enum)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/shared/message/MediaCodecType.proto`
+
+```proto
+enum MediaCodecType
+{
+    MEDIA_CODEC_AUDIO_PCM = 1;
+    MEDIA_CODEC_AUDIO_AAC_LC = 2;
+    MEDIA_CODEC_VIDEO_H264_BP = 3;
+    MEDIA_CODEC_AUDIO_AAC_LC_ADTS = 4;
+    MEDIA_CODEC_VIDEO_VP9 = 5;
+    MEDIA_CODEC_VIDEO_AV1 = 6;
+    MEDIA_CODEC_VIDEO_H265 = 7;
+}
+```
+
+#### `MediaMessageId (enum)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/sink/MediaMessageId.proto`
+
+```proto
+enum MediaMessageId
+{
+    MEDIA_MESSAGE_DATA = 0;
+    MEDIA_MESSAGE_CODEC_CONFIG = 1;
+    MEDIA_MESSAGE_SETUP = 32768;
+    MEDIA_MESSAGE_START = 32769;
+    MEDIA_MESSAGE_STOP = 32770;
+    MEDIA_MESSAGE_CONFIG = 32771;
+    MEDIA_MESSAGE_ACK = 32772;
+    MEDIA_MESSAGE_MICROPHONE_REQUEST = 32773;
+    MEDIA_MESSAGE_MICROPHONE_RESPONSE = 32774;
+    MEDIA_MESSAGE_VIDEO_FOCUS_REQUEST = 32775;
+    MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION = 32776;
+    MEDIA_MESSAGE_UPDATE_UI_CONFIG_REQUEST = 32777;
+    MEDIA_MESSAGE_UPDATE_UI_CONFIG_REPLY = 32778;
+    MEDIA_MESSAGE_AUDIO_UNDERFLOW_NOTIFICATION = 32779;
+}
+```
+
+#### `MediaSinkService (the ServiceDiscoveryResponse entry that advertises video_configs)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/sink/MediaSinkService.proto`
+
+```proto
+message MediaSinkService
+{
+    optional shared.message.MediaCodecType available_type = 1 [default = MEDIA_CODEC_AUDIO_PCM];;
+    optional message.AudioStreamType audio_type = 2;
+    repeated shared.message.AudioConfiguration audio_configs = 3;
+    repeated message.VideoConfiguration video_configs = 4;
+    optional bool available_while_in_call = 5;
+    optional uint32 display_id = 6;
+    optional message.DisplayType display_type = 7;
+    optional message.KeyCode initial_content_keycode = 8;
+}
+```
+
+#### `Setup (== AVChannelSetupRequest, msg id 0x8000)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/shared/message/Setup.proto`
+
+```proto
+message Setup
+{
+    required service.media.shared.message.MediaCodecType type = 1;
+}
+```
+
+#### `Config (== AVChannelSetupResponse, msg id 0x8003)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/shared/message/Config.proto`
+
+```proto
+message Config {
+  required Status status = 1;
+  enum Status {
+    STATUS_WAIT = 1;
+    STATUS_READY = 2;
+  }
+
+  optional uint32 max_unacked = 2;
+  repeated uint32 configuration_indices = 3;
+}
+```
+
+#### `Start (== AVChannelStartIndication, msg id 0x8001)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/shared/message/Start.proto`
+
+```proto
+message Start {
+    required int32 session_id = 1;
+    required uint32 configuration_index = 2;
+}
+```
+
+#### `Stop (msg id 0x8002)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/shared/message/Stop.proto`
+
+```proto
+message Stop
+{
+
+}
+```
+
+#### `Ack (== AVMediaAckIndication, msg id 0x8004)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/source/message/Ack.proto`
+
+```proto
+message Ack {
+  required int32 session_id = 1;
+  optional uint32 ack = 2;
+  repeated uint64 receive_timestamp_ns = 3;
+}
+```
+
+#### `UiConfig (VideoConfiguration field 11)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/shared/message/UiConfig.proto`
+
+```proto
+message UiConfig {
+  optional Insets margins = 1;
+  optional Insets content_insets = 2;
+  optional Insets stable_content_insets = 3;
+  optional UiTheme ui_theme = 4;
+}
+```
+
+#### `Insets`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/shared/message/Insets.proto`
+
+```proto
+message Insets {
+  optional uint32 top = 1;
+  optional uint32 bottom = 2;
+  optional uint32 left = 3;
+  optional uint32 right = 4;
+}
+```
+
+#### `UiTheme (enum)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/shared/message/UiTheme.proto`
+
+```proto
+enum UiTheme {
+  UI_THEME_AUTOMATIC = 0;
+  UI_THEME_LIGHT = 1;
+  UI_THEME_DARK = 2;
+}
+```
+
+#### `DisplayType (enum)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/sink/message/DisplayType.proto`
+
+```proto
+enum DisplayType {
+  DISPLAY_TYPE_MAIN = 0;
+  DISPLAY_TYPE_CLUSTER = 1;
+  DISPLAY_TYPE_AUXILIARY = 2;
+}
+```
+
+#### `VideoFocusRequestNotification (msg id 0x8007, phone -> HU)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/video/message/VideoFocusRequestNotification.proto`
+
+```proto
+message VideoFocusRequestNotification {
+    optional int32 disp_channel_id = 1 [deprecated = true];
+    optional VideoFocusMode mode = 2;
+    optional VideoFocusReason reason = 3;
+}
+```
+
+#### `VideoFocusNotification (msg id 0x8008, HU -> phone)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/video/message/VideoFocusNotification.proto`
+
+```proto
+message VideoFocusNotification {
+    optional VideoFocusMode focus = 1;
+    optional bool unsolicited = 2;
+}
+```
+
+#### `VideoFocusMode (enum)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/video/message/VideoFocusMode.proto`
+
+```proto
+enum VideoFocusMode
+{
+    VIDEO_FOCUS_PROJECTED = 1;
+    VIDEO_FOCUS_NATIVE = 2;
+    VIDEO_FOCUS_NATIVE_TRANSIENT = 3;
+    VIDEO_FOCUS_PROJECTED_NO_INPUT_FOCUS = 4;
+}
+```
+
+#### `VideoFocusReason (enum)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/video/message/VideoFocusReason.proto`
+
+```proto
+enum VideoFocusReason
+{
+    UNKNOWN = 0;
+    PHONE_SCREEN_OFF = 1;
+    LAUNCH_NATIVE = 2;
+}
+```
+
+#### `GalVerificationVideoFocus (control channel, GAL verification)`
+
+Source: `aasdk/protobuf/aap_protobuf/channel/control/GalVerificationVideoFocus.proto`
+
+```proto
+message GalVerificationVideoFocus {
+  required media.video.message.VideoFocusMode video_focus_mode = 1;
+  optional bool deny = 2;
+  optional bool unsolicited = 3;
+}
+```
+
+#### `AdditionalVideoConfig (aa-proxy-rs ONLY — claimed real wire schema for VideoConfiguration field 11)`
+
+Source: `aa-proxy-rs/src/protos/protos.proto`
+
+```proto
+// Real wire schema for VideoConfiguration field 11 / UpdateUiConfigRequest field 1
+// (APK class wcb/wcm), per open-android-auto deep-trace verification. Distinct
+// from the legacy UiConfig above: fields 1-3 are resolution ranges, not insets;
+// margins/insets live in margin_configs (field 7).
+message AdditionalVideoConfig {
+  optional VideoResolutionRange min_resolution = 1;
+  optional VideoResolutionRange max_resolution = 2;
+  optional VideoResolutionRange preferred_resolution = 3;
+  optional UiTheme ui_theme = 4;
+  repeated UIElement hidden_ui_elements = 5;
+  repeated VideoResizeAction resize_actions = 6;
+  repeated VideoMarginConfig margin_configs = 7;
+}
+```
+
+#### `VideoResolutionRange / VideoResizeAction / VideoMarginConfig / VideoInsets / UIElement / ResizeActionType (aa-proxy-rs ONLY)`
+
+Source: `aa-proxy-rs/src/protos/protos.proto`
+
+```proto
+message VideoResolutionRange {
+  optional uint32 width = 1;
+  optional uint32 height = 2;
+  optional uint32 density = 3;
+  optional uint32 fps = 4;
+}
+
+enum UIElement {
+  UI_ELEMENT_UNKNOWN = 0;
+  UI_ELEMENT_CLOCK = 1;
+  UI_ELEMENT_BATTERY_LEVEL = 2;
+  UI_ELEMENT_PHONE_SIGNAL = 3;
+  UI_ELEMENT_NATIVE_UI_AFFORDANCE = 4;
+  UI_ELEMENT_NAVIGATION_TURN_DATA_AVAILABLE = 5;
+}
+
+enum ResizeActionType {
+  ACTION_UNKNOWN = 0;
+  ACTION_RESIZE_TO_SMALLER = 1;
+  ACTION_RESIZE_TO_LARGER = 2;
+}
+
+message VideoResizeAction {
+  optional ResizeActionType action = 1;
+}
+
+message VideoMarginConfig {
+  optional VideoInsets insets = 1;
+}
+
+message VideoInsets {
+  optional uint32 left = 1;
+  optional uint32 top = 2;
+  optional uint32 right = 3;
+  optional uint32 bottom = 4;
+}
+```
+
+#### `UpdateUiConfigRequest / UpdateUiConfigReply (aa-proxy-rs ONLY)`
+
+Source: `aa-proxy-rs/src/protos/protos.proto`
+
+```proto
+// Bidirectional runtime UI config push (APK class wci). Wire ID is 0x8009
+// inbound (Phone->HU) and 0x800A outbound (HU->Phone) -- same message, same
+// schema, direction-dependent ID. Field 1 is required by the phone; missing
+// it triggers PROTOCOL_WRONG_MESSAGE / INVALID_UI_CONFIG.
+message UpdateUiConfigRequest { optional AdditionalVideoConfig config = 1; }
+
+message UpdateUiConfigReply { optional UiConfig ui_config = 1; }
+```
+
+#### `VideoConfig (AACS legacy variant of VideoConfiguration)`
+
+Source: `AACS/proto/VideoConfig.proto`
+
+```proto
+message VideoConfig
+{
+    required VideoResolution.Enum video_resolution = 1;
+    required VideoFps.Enum video_fps = 2;
+    required uint32 margin_width = 3;
+    required uint32 margin_height = 4;
+    required uint32 dpi = 5;
+    optional uint32 additional_depth = 6;
+}
+```
+
+#### `MediaChannel (AACS legacy variant of MediaSinkService)`
+
+Source: `AACS/proto/MediaChannel.proto`
+
+```proto
+message MediaChannel
+{
+    required MediaStreamType.Enum media_type = 1;
+    optional AudioType.Enum audio_type = 2;
+    repeated AudioConfig audio_configs = 3;
+    repeated VideoConfig video_configs = 4;
+}
+```
+
+#### `MediaChannelSetupResponse (AACS legacy, un-decoded variant of Config)`
+
+Source: `AACS/proto/MediaChannelSetupResponse.proto`
+
+```proto
+message MediaChannelSetupResponse
+{
+    required uint32 unknown_field_1 = 1;
+    required uint32 unknown_field_2 = 2;
+    required uint32 unknown_field_3 = 3;
+}
+```
+
+### 5.4 Where the references disagree
+
+
+**Frame rate enum values REVERSED between AACS and aasdk/aa-proxy-rs**
+
+aasdk (aasdk/protobuf/aap_protobuf/service/media/sink/message/VideoFrameRateType.proto L5-L8) and aa-proxy-rs (src/protos/protos.proto L1387-L1390) both define VIDEO_FPS_60 = 1 and VIDEO_FPS_30 = 2. AACS (AACS/proto/VideoFps.proto L9-L14) defines None = 0, F30 = 1, F60 = 2 — the 30/60 assignment is swapped. Two independent references agree against AACS; per the rules, USE aasdk: 60 fps = 1, 30 fps = 2. Getting this backwards silently negotiates the wrong frame rate.
+
+**AACS VideoConfig omits fields 7-11 and uses `required` where aasdk uses `optional`**
+
+AACS/proto/VideoConfig.proto L10-L18 stops at field 6 (additional_depth) and marks fields 1-5 required. aasdk's VideoConfiguration.proto L10-L22 has all fields optional and adds viewing_distance = 7, pixel_aspect_ratio_e4 = 8, real_density = 9, video_codec_type = 10, ui_config = 11. Field NUMBERS 1-6 line up, but the names differ: margin_width/margin_height (AACS) vs width_margin/height_margin (aasdk); dpi (AACS) vs density (aasdk); additional_depth (AACS) vs decoder_additional_depth (aasdk). Use aasdk.
+
+**AACS VideoResolution adds a None = 0 value**
+
+AACS/proto/VideoResolution.proto L11 defines None = 0. aasdk's VideoCodecResolutionType (L5-L15) has no zero value and starts at 1. Values 1/2/3 agree in meaning (480p/720p/1080p heights), but AACS names them by height only (H480/H720/H1080) and has no entries for the 1440p/2160p or portrait resolutions 4-9.
+
+**AACS MediaChannelSetupResponse is an un-decoded stand-in for Config**
+
+AACS/proto/MediaChannelSetupResponse.proto L7-L13 declares three required uint32 fields named unknown_field_1/2/3. These are field numbers 1/2/3, which map onto aasdk's Config { status = 1, max_unacked = 2, configuration_indices = 3 }. AACS never actually parses it (AAServer/src/VideoChannelHandler.cpp L178-L180 only checks the message id). Use aasdk's Config — note field 3 is `repeated`, not a scalar uint32 as AACS's placeholder implies.
+
+**aasdk's MediaMessageId enum is TRUNCATED relative to aa-proxy-rs**
+
+aasdk (MediaMessageId.proto L5-L21) stops at MEDIA_MESSAGE_AUDIO_UNDERFLOW_NOTIFICATION = 32779 (0x800B). aa-proxy-rs (src/protos/protos.proto L1577-L1602, corroborated by its own name table at src/mitm.rs L816-L844) continues to 32789 (0x8015) with ACTION_TAKEN, four INTEGRATED_OVERLAY ids, UPDATE_HU_UI_CONFIG request/response, MEDIA_STATS, MEDIA_OPTIONS and CRITICAL_UI_NOTIFICATION. This is an extension, not a contradiction — the 0-32779 range is identical in both. Values 32780+ are unverified by aasdk.
+
+**VideoConfiguration field 11 semantics disputed: UiConfig vs AdditionalVideoConfig**
+
+aasdk declares field 11 as shared.message.UiConfig { margins=1, content_insets=2, stable_content_insets=3, ui_theme=4 } (VideoConfiguration.proto L21, UiConfig.proto L8-L13). aa-proxy-rs ships BOTH: the same legacy UiConfig (protos.proto L128-L133) AND an AdditionalVideoConfig (protos.proto L142-L154) with a comment asserting AdditionalVideoConfig is the "Real wire schema for VideoConfiguration field 11 / UpdateUiConfigRequest field 1 (APK class wcb/wcm), per open-android-auto deep-trace verification" where fields 1-3 are VideoResolutionRange, not Insets. Critically, aa-proxy-rs's OWN production code still writes UiConfig into field 11 (src/display.rs L185-L203, src/sdr_ui.rs L640-L687), so the AdditionalVideoConfig claim is unexercised in that codebase. Per the rules, use aasdk's UiConfig for field 11 and treat AdditionalVideoConfig as an unconfirmed alternative.
+
+**width_margin/height_margin semantics are not stated in any .proto**
+
+No proto documents whether width_margin is per-edge or total. aa-proxy-rs is the only reference that resolves it, and it treats them as TOTALS: width_margin = margins.left + margins.right, height_margin = margins.top + margins.bottom (src/sdr_ui.rs L676-L677), with the inverse split top=bottom=height_margin/2, left=right=width_margin/2 (src/display.rs L180-L183). openauto just copies a QRect's width()/height() straight through with no interpretation (src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp L89-L91). Unverified by aasdk.
+
+**Message-type flag polarity inverted between aasdk and AACS**
+
+aasdk defines MessageType { SPECIFIC = 0, CONTROL = 1 << 2 } (include/aasdk/Messenger/MessageType.hpp L26-L29). AACS defines MessageTypeFlags { Control = 0, Specific = 1 << 2 } (AACS/include/enums.h L16-L19). These directly contradict. This is a framing-layer concern rather than a video-channel one, but it changes the flag byte on every video message sent. Not resolved within this domain — flag bit 2 must be cross-checked against the framing/transport extraction.
+
+**Video channel ID is not a protocol constant**
+
+openauto advertises the video service with service->set_id(static_cast<uint32_t>(channel_->getId())) where getId() returns ChannelId::MEDIA_SINK_VIDEO (openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp L76, aasdk/src/Channel/MediaSink/Video/Channel/VideoChannel.cpp L24). ChannelId is an unvalued C++ enum class whose ordering makes MEDIA_SINK_VIDEO the 4th entry (= 3), but aasdk's own TODO comment at include/aasdk/Messenger/ChannelId.hpp L22-L27 states: "In AA, Channel Id's are dynamic. We use ChannelId here for a static implementation." A clean-room implementation must NOT hardcode 3; the channel id is whatever the head unit assigns in ServiceDiscoveryResponse. AACS confirms this by passing channelId in as a runtime constructor argument (AAServer/src/VideoChannelHandler.cpp L57).
+
+**Timestamp units are asserted, not specified — and one reference hedges**
+
+Microseconds is supported by aa-proxy-rs naming the variable pts_us (src/media_tap.rs L1045) and by AACS dividing GStreamer's ns PTS by 1000 on send and multiplying by 1000 on receive (AAServer L38, AAClient L48). BUT aa-proxy-rs's own MPEG-TS muxer explicitly refuses to trust it: "The unit is inferred from early frame deltas so the muxer can handle ns/us/ms/90k timestamps without hard-coding a scale" (src/mpegts.rs L322-L329), defaulting to Microseconds only when inference fails (L343-L345). aasdk stores the value as an opaque uint64 and openauto's Qt output discards it entirely (src/autoapp/Projection/QtVideoOutput.cpp L80, unnamed first parameter). Microseconds is the best-supported reading; a decoder should tolerate drift.
+
+**No H.264 level is stated anywhere; keyframe requirement is inferred only**
+
+MEDIA_CODEC_VIDEO_H264_BP names the Baseline Profile and AACS's encoder caps say profile=baseline (AAServer/src/VideoChannelHandler.cpp L76-L77), but NO reference in this tree states an H.264 level (no level_idc, no "Level 3.1" etc.). Likewise no reference states a protocol keyframe requirement: AACS's key-int-max=25 (L74) is one implementation's encoder choice, and aa-proxy-rs's IDR handling (src/media_tap.rs L1057-L1082, src/mitm.rs L2644-L2669) only shows that a decoder must wait for an IDR to start, implying but not proving that the phone emits one at session start and after each focus regain.
+
+**Empty aasdk_proto directory — no legacy VideoConfig protos in this checkout**
+
+The task brief asks to compare aasdk/aasdk_proto/ against aasdk/protobuf/aap_protobuf/. In this checkout aasdk/aasdk_proto/ contains ONLY five Wifi protos (WifiChannelMessageIdsEnum, WifiInfoRequestMessage, WifiInfoResponseMessage, WifiSecurityRequestMessage, WifiSecurityResponseMessage). There is no VideoConfig*, AVChannel*, or MediaMessageId proto there, so no aasdk-internal comparison was possible. Similarly, no file anywhere under references/ defines a message literally named AVChannelSetupRequest / AVChannelSetupResponse / AVChannelStartIndication — those legacy aasdk names survive only as C++ method names (aasdk/src/Channel/MediaSource/MediaSourceService.cpp L84, L128 handleAVChannelSetupRequest) and now map onto Setup / Config / Start respectively.
+
+---
+
+## 6. Input channel
+
+Touch, key and rotary events, which the phone RECEIVES from the head unit. Not yet implemented -- Phase 3.
+
+### 6.1 Sequence
+
+```text
+INPUT CHANNEL LIFECYCLE (phone is the receiver of input; head unit is the InputSource).
+
+STEP 1 - Head unit advertises the input channel in ServiceDiscoveryResponse.
+The HU adds a Service entry whose field 4 (input_source_service) is an InputSourceService descriptor.
+It carries: keycodes_supported (field 1, packed repeated int32 - the raw KeyCode numbers the HU can generate), zero or more TouchScreen sub-messages (field 2: required width=1, required height=2, optional TouchScreenType type=3, optional bool is_secondary=4), zero or more TouchPad sub-messages (field 3), feedback_events_supported (field 4), and display_id (field 5).
+Cite: aasdk/protobuf/aap_protobuf/service/Service.proto L26; aasdk/protobuf/aap_protobuf/service/inputsource/InputSourceService.proto L8-L33.
+Concrete producer: openauto/src/autoapp/Service/InputSource/InputSourceService.cpp L62-L84 - it does `service->set_id(channel_->getId())`, `auto *inputChannel = service->mutable_input_source_service()`, loops `inputChannel->add_keycodes_supported(buttonCode)` over the configured button codes, then if `inputDevice_->hasTouchscreen()` adds one touchscreen with only width/height set (type and is_secondary left unset).
+Second concrete producer: aa-proxy-rs/src/display.rs L222-L246 - sets keycodes_supported to [19,20,21,22,23] for a cluster display or [3,4,5,6,84,85,87,88,126,127,65537,65538,65540] for an auxiliary display, sets touchscreen width/height, `set_type(TouchScreenType::RESISTIVE)`, `set_is_secondary(...)`, and `set_display_id(...)`.
+Note: it is the HEAD UNIT that advertises keycodes_supported. The phone does not advertise keycodes; it selects from what the HU offered.
+
+STEP 2 - Phone opens the channel.
+Phone sends ControlMessageType::MESSAGE_CHANNEL_OPEN_REQUEST (ChannelOpenRequest{service_id, priority}) on the input channel. The HU replies MESSAGE_CHANNEL_OPEN_RESPONSE with MessageStatus STATUS_SUCCESS (=0), sent as EncryptionType::ENCRYPTED + MessageType::CONTROL.
+Cite: aasdk/src/Channel/InputSource/InputSourceService.cpp L70-L81 and L115-L124; openauto/src/autoapp/Service/InputSource/InputSourceService.cpp L86-L100.
+
+STEP 3 - Phone sends KeyBindingRequest (message id 32770 / 0x8002).
+Payload: KeyBindingRequest { repeated int32 keycodes = 1 [packed=true] }. This is how the phone declares WHICH keycodes it wants delivered. AACS's phone side does exactly this, echoing back the button list the HU advertised: AACS/AAServer/src/InputChannelHandler.cpp L22-L38 (`pushBackInt16(plainMsg, InputChannelMessageType::HandshakeRequest)` where HandshakeRequest = 0x8002, then `handshakeRequest.add_available_buttons(...)` for each of `available_buttons` taken from `ch.input_channel().available_buttons()` in AACS/AAServer/src/AaCommunicator.cpp L119-L124).
+
+STEP 4 - Head unit validates and replies KeyBindingResponse (message id 32771 / 0x8003).
+Payload: KeyBindingResponse { required int32 status = 1 }. openauto walks every requested keycode and, if any is absent from its supported list, sets status = MessageStatus::STATUS_KEYCODE_NOT_BOUND (-18) and breaks; otherwise STATUS_SUCCESS (0) and it starts the input device.
+Cite: openauto/src/autoapp/Service/InputSource/InputSourceService.cpp L102-L132; aasdk/src/Channel/InputSource/InputSourceService.cpp L57-L68 (framing: ENCRYPTED + SPECIFIC).
+AACS's HU-side stub answers 0x8003 with the raw 2 bytes 0x08 0x00 = field 1 varint 0 = STATUS_SUCCESS: AACS/AAClient/src/InputChannelHandler.cpp L50-L59.
+
+STEP 5 - Head unit streams InputReport messages (message id 32769 / 0x8001) for the rest of the session.
+Wire form: 2-byte big-endian message id 0x8001 followed by the serialized InputReport; flags ENCRYPTED | FRAME_TYPE_FIRST | FRAME_TYPE_LAST (aa-proxy-rs/src/mitm.rs L3574-L3592), or in aasdk terms EncryptionType::ENCRYPTED + MessageType::SPECIFIC (aasdk/src/Channel/InputSource/InputSourceService.cpp L43-L55).
+InputReport always carries `required uint64 timestamp = 1` plus exactly one of the event sub-messages:
+  - touch_event (3) / touchpad_event (7): TouchEvent{ repeated Pointer pointer_data = 1 {x=1, y=2, pointer_id=3}; optional uint32 action_index = 2; optional PointerAction action = 3 }.
+  - key_event (4): KeyEvent{ repeated Key keys = 1 { keycode=1, down=2, metastate=3, longpress=4 } }.
+  - absolute_event (5): AbsoluteEvent{ repeated Abs data = 1 { keycode=1, value=2 } }.
+  - relative_event (6): RelativeEvent{ repeated Rel data = 1 { keycode=1, delta=2 } }.
+  - disp_channel_id (2) is deprecated.
+
+STEP 5a - Touch semantics.
+`action` is a PointerAction: ACTION_DOWN(0) first finger down, ACTION_UP(1) last finger up, ACTION_MOVED(2) drag, ACTION_POINTER_DOWN(5) an extra finger went down, ACTION_POINTER_UP(6) one of several fingers lifted. `action_index` is the index (into pointer_data) of the pointer whose state changed; it is 0 for DOWN/UP/MOVED and the changed-pointer index for POINTER_DOWN/POINTER_UP.
+Reference multi-touch producer: openauto/src/autoapp/Projection/InputDevice.cpp L257-L377 - QEvent::TouchBegin -> ACTION_DOWN with actionIndex 0; TouchEnd -> ACTION_UP with actionIndex = index of released point; TouchUpdate with a newly pressed point -> ACTION_POINTER_DOWN + that index; TouchUpdate with a released point -> ACTION_POINTER_UP + that index; otherwise ACTION_MOVED with actionIndex 0; TouchCancel is mapped to ACTION_UP because "Android Auto protocol doesn't support ACTION_CANCEL" (L333-L340).
+pointer_id is a small sequential id assigned per finger and reused across the gesture (openauto InputDevice.cpp L379-L398, `touchPointIdMap_`). Coordinates are scaled from the physical touchscreen geometry into the projected display geometry: `x = (pos.x() / touchscreenGeometry_.width()) * displayGeometry_.width()` (same file L391-L392), i.e. x/y are in the projected video's pixel space, not the panel's.
+Every pointer currently down is sent in pointer_data on every report; points in the Released state are skipped unless the action is ACTION_UP/ACTION_POINTER_UP (openauto InputDevice.cpp L347-L366).
+
+STEP 5b - Button semantics.
+A button press becomes key_event with one Key: keycode = the KeyCode value, down = true on press / false on release, metastate = 0, longpress = false in the openauto and aa-proxy-rs producers. openauto/src/autoapp/Service/InputSource/InputSourceService.cpp L157-L163; aa-proxy-rs/src/mitm.rs L3561-L3565.
+Press and release are separate InputReports; aa-proxy-rs's injector sends DOWN then UP as two packets with the SAME timestamp (mitm.rs L3554-L3603).
+
+STEP 5c - Rotary semantics.
+KEYCODE_ROTARY_CONTROLLER (65536) is NOT delivered as a key_event. It is delivered as relative_event with one Rel { keycode = 65536, delta = signed step count }. openauto sends delta -1 for a left/counter-clockwise detent and +1 otherwise (InputSourceService.cpp L153-L156); aa-proxy-rs documents "absolute value of 1 = single UI step, scales linearly", positive = clockwise (mitm.rs L3608-L3619). openauto additionally only emits the rotary event on key RELEASE, to avoid doubling (InputDevice.cpp L191-L194).
+
+STEP 6 - Timestamp.
+`required uint64 timestamp = 1`. No unit is stated in any .proto. Implementations use MICROSECONDS since the epoch: openauto uses `std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count()` (InputSourceService.cpp L145-L151 for buttons, L177-L183 for touch); aa-proxy-rs uses `SystemTime::now().duration_since(UNIX_EPOCH).as_micros() as u64` in send_key_event (mitm.rs L3554-L3557) and send_rotary_event (mitm.rs L3612-L3615). One aa-proxy-rs helper (send_input_key, mitm.rs L3655) uses milliseconds instead - see discrepancies.
+
+STEP 7 - InputFeedback (message id 32772 / 0x8004).
+InputFeedback { optional FeedbackEvent event = 1 } with FeedbackEvent in {FEEDBACK_SELECT=1, FEEDBACK_FOCUS_CHANGE=2, FEEDBACK_DRAG_SELECT=3, FEEDBACK_DRAG_START=4, FEEDBACK_DRAG_END=5}. The HU declares which of these it understands via InputSourceService.feedback_events_supported (field 4). No reference here sends or handles this message; only aa-proxy-rs's packet pretty-printer decodes it (aa-proxy-rs/src/mitm_prettyprint.rs L949-L959). Direction is therefore unverified in these sources.
+
+SECONDARY INPUT PATHS (also HU -> phone, not on the input channel):
+- PhoneStatus channel, PHONE_STATUS_INPUT = 32770: PhoneStatusInput { InstrumentClusterInput input = 1; string caller_number = 2; string caller_id = 3 }.
+- MediaBrowser channel, MEDIA_BROWSE_INPUT = 32774: MediaBrowserInput { InstrumentClusterInput input = 1; string path = 2 }.
+InstrumentClusterInput carries a single required InstrumentClusterAction in {UNKNOWN=0, UP=1, DOWN=2, LEFT=3, RIGHT=4, ENTER=5, BACK=6, CALL=7}. These are the rotary-controller / cluster-knob navigation actions for cars without a touchscreen.
+- Control channel, GAL_VERIFICATION_INJECT_INPUT: GalVerificationInjectInput { required InputReport input = 1 } - a certification-harness path for injecting a synthetic InputReport.
+
+CHANNEL DISPATCH ON THE RECEIVER SIDE.
+A phone implementing this channel must switch on the 2-byte big-endian message id at the head of the payload and route: 32770 -> KeyBindingRequest, 32771 -> KeyBindingResponse, 32769 -> InputReport, 32772 -> InputFeedback, plus the control ids MESSAGE_CHANNEL_OPEN_REQUEST/RESPONSE which also arrive on this channel. aasdk's HU-side switch is aasdk/src/Channel/InputSource/InputSourceService.cpp L83-L102; aa-proxy-rs's exhaustive match is aa-proxy-rs/src/mitm_prettyprint.rs L949-L960.
+```
+
+### 6.2 Constants
+
+| Constant | Value | Meaning | Source |
+|---|---|---|---|
+| `INPUT_MESSAGE_INPUT_REPORT` | 32769 (0x8001) | Input channel message id for an input event report (HU -> phone). Payload is a serialized InputReport. This is the message the phone RECEIVES for every touch / key / rotary event. | `aasdk/protobuf/aap_protobuf/service/inputsource/InputMessageId.proto` L5-L11 |
+| `INPUT_MESSAGE_KEY_BINDING_REQUEST` | 32770 (0x8002) | Phone -> HU. Payload is KeyBindingRequest { repeated int32 keycodes }. The phone asks the head unit to bind (deliver) the listed keycodes. | `aasdk/protobuf/aap_protobuf/service/inputsource/InputMessageId.proto` L5-L11 |
+| `INPUT_MESSAGE_KEY_BINDING_RESPONSE` | 32771 (0x8003) | HU -> phone. Payload is KeyBindingResponse { required int32 status }. status is a MessageStatus value. | `aasdk/protobuf/aap_protobuf/service/inputsource/InputMessageId.proto` L5-L11 |
+| `INPUT_MESSAGE_INPUT_FEEDBACK` | 32772 (0x8004) | Input channel feedback message. Payload is InputFeedback { optional FeedbackEvent event = 1 }. Present in the protos and decoded by aa-proxy-rs; never sent or handled by aasdk/openauto in these references. | `aasdk/protobuf/aap_protobuf/service/inputsource/InputMessageId.proto` L5-L11 |
+| `InputChannelMessageType::Event (AACS name for 32769)` | 0x8001 | AACS's name for the input event message on the input channel; numerically identical to INPUT_MESSAGE_INPUT_REPORT. | `AACS/include/enums.h` L49-L54 |
+| `InputChannelMessageType::HandshakeRequest (AACS name for 32770)` | 0x8002 | AACS's name for KeyBindingRequest. AACS's phone-side (AAServer) sends this with the list of buttons it wants. | `AACS/include/enums.h` L49-L54 |
+| `InputChannelMessageType::HandshakeResponse (AACS name for 32771)` | 0x8003 | AACS's name for KeyBindingResponse. AACS's HU-side stub replies with a 2-byte body 0x08 0x00 (proto field 1 varint = 0 = STATUS_SUCCESS). | `AACS/AAClient/src/InputChannelHandler.cpp` L50-L59 |
+| `ACTION_DOWN` | 0 | PointerAction: first finger down (aasdk canonical name). Equivalent to AACS TouchAction::Press. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/PointerAction.proto` L5-L12 |
+| `ACTION_UP` | 1 | PointerAction: last finger up. Equivalent to AACS TouchAction::Release. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/PointerAction.proto` L5-L12 |
+| `ACTION_MOVED` | 2 | PointerAction: pointer(s) moved / drag. Equivalent to AACS TouchAction::Drag. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/PointerAction.proto` L5-L12 |
+| `ACTION_POINTER_DOWN` | 5 | PointerAction: an additional (non-primary) finger went down; action_index identifies which pointer. Equivalent to AACS TouchAction::Down. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/PointerAction.proto` L5-L12 |
+| `ACTION_POINTER_UP` | 6 | PointerAction: one finger lifted while others remain; action_index identifies which pointer. Equivalent to AACS TouchAction::Up. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/PointerAction.proto` L5-L12 |
+| `TouchAction::Press (AACS)` | 0 | AACS spelling of PointerAction ACTION_DOWN. | `AACS/proto/TouchAction.proto` L7-L14 |
+| `TouchAction::Release (AACS)` | 1 | AACS spelling of PointerAction ACTION_UP. | `AACS/proto/TouchAction.proto` L7-L14 |
+| `TouchAction::Drag (AACS)` | 2 | AACS spelling of PointerAction ACTION_MOVED. | `AACS/proto/TouchAction.proto` L7-L14 |
+| `TouchAction::Down (AACS)` | 5 | AACS spelling of PointerAction ACTION_POINTER_DOWN. | `AACS/proto/TouchAction.proto` L7-L14 |
+| `TouchAction::Up (AACS)` | 6 | AACS spelling of PointerAction ACTION_POINTER_UP. | `AACS/proto/TouchAction.proto` L7-L14 |
+| `TouchScreenType::CAPACITIVE` | 1 | Value for InputSourceService.TouchScreen.type (field 3) in service discovery. Note there is no 0 value defined. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/TouchScreenType.proto` L5-L9 |
+| `TouchScreenType::RESISTIVE` | 2 | Value for InputSourceService.TouchScreen.type. aa-proxy-rs hard-codes this for injected displays. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/TouchScreenType.proto` L5-L9 |
+| `TouchScreenType::INFRARED` | 3 | Value for InputSourceService.TouchScreen.type. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/TouchScreenType.proto` L5-L9 |
+| `FeedbackEvent::FEEDBACK_SELECT` | 1 | Feedback event kind, used in InputSourceService.feedback_events_supported (field 4) and InputFeedback.event (field 1). | `aasdk/protobuf/aap_protobuf/service/inputsource/message/FeedbackEvent.proto` L5-L11 |
+| `FeedbackEvent::FEEDBACK_FOCUS_CHANGE` | 2 | Feedback event kind. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/FeedbackEvent.proto` L5-L11 |
+| `FeedbackEvent::FEEDBACK_DRAG_SELECT` | 3 | Feedback event kind. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/FeedbackEvent.proto` L5-L11 |
+| `FeedbackEvent::FEEDBACK_DRAG_START` | 4 | Feedback event kind. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/FeedbackEvent.proto` L5-L11 |
+| `FeedbackEvent::FEEDBACK_DRAG_END` | 5 | Feedback event kind. | `aasdk/protobuf/aap_protobuf/service/inputsource/message/FeedbackEvent.proto` L5-L11 |
+| `Service.input_source_service field number` | 4 | In the ServiceDiscoveryResponse Service descriptor, the InputSourceService sub-message occupies field 4. This is how a channel is declared to be the input channel. | `aasdk/protobuf/aap_protobuf/service/Service.proto` L21-L30 |
+| `Channel.input_channel field number (AACS)` | 4 | AACS's equivalent of Service.input_source_service; same field number 4, confirming wire compatibility. | `AACS/proto/Channel.proto` L18-L24 |
+| `ChannelId::INPUT_SOURCE` | 8 (positional ordinal - the C++ enum has no explicit initializers; count from CONTROL = 0) | aasdk's internal logical channel identifier used as the AAP channel number for the input service. NOTE: the enum is unnumbered, so 8 follows from its position; the value is NOT written literally in the file. | `aasdk/include/aasdk/Messenger/ChannelId.hpp` L29-L51 |
+| `MessageStatus::STATUS_SUCCESS` | 0 | KeyBindingResponse.status value when all requested keycodes are bound. | `aasdk/protobuf/aap_protobuf/shared/MessageStatus.proto` L5-L8 |
+| `MessageStatus::STATUS_KEYCODE_NOT_BOUND` | -18 | KeyBindingResponse.status value returned when the phone requested a keycode the head unit did not advertise in keycodes_supported. | `aasdk/protobuf/aap_protobuf/shared/MessageStatus.proto` L24-L26 |
+| `KeyCode::KEYCODE_UNKNOWN` | 0 | Base of the KeyCode enum. Values 0-263 mirror Android KeyEvent constants exactly (value V is on line V+6 of this file). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L5-L11 |
+| `KeyCode::KEYCODE_HOME` | 3 | Steering-wheel / dashboard HOME button. Used by openauto (Input.HomeButton) and by aa-proxy-rs auxiliary-display keycode list. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L9-L12 |
+| `KeyCode::KEYCODE_BACK` | 4 | BACK button (openauto Input.BackButton). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L9-L12 |
+| `KeyCode::KEYCODE_CALL` | 5 | Steering-wheel phone/pick-up button (openauto Input.PhoneButton). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L9-L12 |
+| `KeyCode::KEYCODE_ENDCALL` | 6 | Steering-wheel hang-up button (openauto Input.CallEndButton). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L9-L12 |
+| `KeyCode::KEYCODE_DPAD_UP` | 19 | Rotary/D-pad navigation up. aa-proxy-rs advertises {19,20,21,22,23} for a cluster display. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L25-L29 |
+| `KeyCode::KEYCODE_DPAD_DOWN` | 20 | Rotary/D-pad navigation down. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L25-L29 |
+| `KeyCode::KEYCODE_DPAD_LEFT` | 21 | Rotary/D-pad navigation left. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L25-L29 |
+| `KeyCode::KEYCODE_DPAD_RIGHT` | 22 | Rotary/D-pad navigation right. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L25-L29 |
+| `KeyCode::KEYCODE_DPAD_CENTER` | 23 | Rotary push / ENTER (openauto Input.EnterButton). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L25-L29 |
+| `KeyCode::KEYCODE_VOLUME_UP` | 24 | Volume up hard key. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L30-L31 |
+| `KeyCode::KEYCODE_VOLUME_DOWN` | 25 | Volume down hard key. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L30-L31 |
+| `KeyCode::KEYCODE_HEADSETHOOK` | 79 | Headset hook / SWC pick-up-answer button. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L85-L85 |
+| `KeyCode::KEYCODE_MENU` | 82 | MENU hard key. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L88-L90 |
+| `KeyCode::KEYCODE_SEARCH` | 84 | VOICE COMMAND / Assistant button. openauto maps its 'Input.VoiceCommandButton' to this keycode - this is the canonical steering-wheel voice button in these references. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L88-L91 |
+| `KeyCode::KEYCODE_MEDIA_PLAY_PAUSE` | 85 | Media toggle play/pause (openauto Input.TogglePlayButton). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L91-L96 |
+| `KeyCode::KEYCODE_MEDIA_STOP` | 86 | Media stop. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L91-L96 |
+| `KeyCode::KEYCODE_MEDIA_NEXT` | 87 | Next track (openauto Input.NextTrackButton; aa-proxy-rs intercepts this for long-press handling). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L91-L96 |
+| `KeyCode::KEYCODE_MEDIA_PREVIOUS` | 88 | Previous track (openauto Input.PreviousTrackButton). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L91-L96 |
+| `KeyCode::KEYCODE_MEDIA_REWIND` | 89 | Rewind (aa-proxy-rs always drops this one). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L91-L96 |
+| `KeyCode::KEYCODE_MEDIA_FAST_FORWARD` | 90 | Fast forward (aa-proxy-rs always drops this one). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L91-L96 |
+| `KeyCode::KEYCODE_MUTE` | 91 | Microphone mute key. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L97-L97 |
+| `KeyCode::KEYCODE_MEDIA_PLAY` | 126 | Explicit media play (openauto Input.PlayButton). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L132-L133 |
+| `KeyCode::KEYCODE_MEDIA_PAUSE` | 127 | Explicit media pause (openauto Input.PauseButton). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L132-L133 |
+| `KeyCode::KEYCODE_VOLUME_MUTE` | 164 | Audio mute key. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L170-L170 |
+| `KeyCode::KEYCODE_ASSIST` | 219 | Android assist key. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L225-L225 |
+| `KeyCode::KEYCODE_MEDIA_AUDIO_TRACK` | 222 | Audio track select key. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L228-L228 |
+| `KeyCode::KEYCODE_VOICE_ASSIST` | 231 | Voice assist key (Android's KEYCODE_VOICE_ASSISTANT equivalent). Distinct from KEYCODE_SEARCH which openauto uses for the voice button. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L237-L237 |
+| `KeyCode::KEYCODE_SENTINEL` | 65535 | Boundary marker separating the Android-standard keycodes from the Android-Auto-specific extension range that follows. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L274-L284 |
+| `KeyCode::KEYCODE_ROTARY_CONTROLLER` | 65536 | Rotary/scroll-wheel controller. This keycode is carried in a RelativeEvent.Rel (keycode + signed delta), NOT in a KeyEvent. openauto emits delta -1 for LEFT and +1 for RIGHT; aa-proxy-rs documents \|1\| = one UI step, scaling linearly. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L274-L284 |
+| `KeyCode::KEYCODE_MEDIA` | 65537 | AA-specific 'MEDIA' hard key (jump to media app). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L274-L284 |
+| `KeyCode::KEYCODE_NAVIGATION` | 65538 | AA-specific 'NAV' hard key (openauto Input.NavButton). | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L274-L284 |
+| `KeyCode::KEYCODE_RADIO` | 65539 | AA-specific 'RADIO' hard key. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L274-L284 |
+| `KeyCode::KEYCODE_TEL` | 65540 | AA-specific 'TEL' (telephone) hard key. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L274-L284 |
+| `KeyCode::KEYCODE_PRIMARY_BUTTON` | 65541 | AA-specific generic OEM button 1. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L274-L284 |
+| `KeyCode::KEYCODE_SECONDARY_BUTTON` | 65542 | AA-specific generic OEM button 2. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L274-L284 |
+| `KeyCode::KEYCODE_TERTIARY_BUTTON` | 65543 | AA-specific generic OEM button 3. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L274-L284 |
+| `KeyCode::KEYCODE_TURN_CARD` | 65544 | AA-specific 'turn card' (navigation turn-by-turn card) key. Last value of the enum. | `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto` L274-L284 |
+| `AACS ButtonCode::SCROLL_WHEEL` | 65536 | AACS's name for KEYCODE_ROTARY_CONTROLLER; confirms the 65536 value independently. | `AACS/proto/ButtonsEvent.proto` L9-L31 |
+| `AACS ButtonCode::MICROPHONE_1` | 0x54 (84) | AACS's voice/mic button; numerically equal to KEYCODE_SEARCH = 84, matching openauto's voice-command mapping. | `AACS/proto/ButtonsEvent.proto` L23-L25 |
+| `InstrumentClusterAction::UNKNOWN` | 0 | Cluster/rotary controller navigation action delivered to the phone over the PhoneStatus (PHONE_STATUS_INPUT) and MediaBrowser (MEDIA_BROWSE_INPUT) channels - a second input path distinct from the input channel. | `aasdk/protobuf/aap_protobuf/shared/InstrumentClusterInput.proto` L5-L17 |
+| `InstrumentClusterAction::UP` | 1 | Cluster controller up. | `aasdk/protobuf/aap_protobuf/shared/InstrumentClusterInput.proto` L5-L17 |
+| `InstrumentClusterAction::DOWN` | 2 | Cluster controller down. | `aasdk/protobuf/aap_protobuf/shared/InstrumentClusterInput.proto` L5-L17 |
+| `InstrumentClusterAction::LEFT` | 3 | Cluster controller left. | `aasdk/protobuf/aap_protobuf/shared/InstrumentClusterInput.proto` L5-L17 |
+| `InstrumentClusterAction::RIGHT` | 4 | Cluster controller right. | `aasdk/protobuf/aap_protobuf/shared/InstrumentClusterInput.proto` L5-L17 |
+| `InstrumentClusterAction::ENTER` | 5 | Cluster controller select/enter. | `aasdk/protobuf/aap_protobuf/shared/InstrumentClusterInput.proto` L5-L17 |
+| `InstrumentClusterAction::BACK` | 6 | Cluster controller back. | `aasdk/protobuf/aap_protobuf/shared/InstrumentClusterInput.proto` L5-L17 |
+| `InstrumentClusterAction::CALL` | 7 | Cluster controller call button. | `aasdk/protobuf/aap_protobuf/shared/InstrumentClusterInput.proto` L5-L17 |
+| `PhoneStatusMessageId::PHONE_STATUS_INPUT` | 32770 | Message id on the PhoneStatus channel carrying PhoneStatusInput { InstrumentClusterInput input; caller_number; caller_id } - HU cluster-controller input the phone receives. | `aasdk/protobuf/aap_protobuf/service/phonestatus/PhoneStatusMessageId.proto` L7-L10 |
+| `MediaBrowserMessageId::MEDIA_BROWSE_INPUT` | 32774 | Message id on the MediaBrowser channel carrying MediaBrowserInput { InstrumentClusterInput input; string path } - browse navigation input the phone receives. | `aasdk/protobuf/aap_protobuf/service/mediabrowser/MediaBrowserMessageId.proto` L5-L11 |
+| `InputReport.timestamp units (openauto)` | microseconds since epoch | openauto stamps every InputReport with std::chrono::microseconds taken from high_resolution_clock::now().time_since_epoch(). Same conversion in both onButtonEvent and onTouchEvent. | `openauto/src/autoapp/Service/InputSource/InputSourceService.cpp` L145-L151 |
+| `InputReport.timestamp units (aa-proxy-rs send_key_event)` | microseconds since UNIX_EPOCH | aa-proxy-rs computes the timestamp as SystemTime::now().duration_since(UNIX_EPOCH).as_micros() when injecting synthetic key events into the input channel. | `aa-proxy-rs/src/mitm.rs` L3553-L3557 |
+| `InputReport.timestamp units (aa-proxy-rs send_input_key)` | milliseconds since UNIX_EPOCH | A second injection helper in the SAME file uses milliseconds instead of microseconds - an internal inconsistency in aa-proxy-rs (its own comment says 'FIXME: make single function from this and send_key_event above'). | `aa-proxy-rs/src/mitm.rs` L3646-L3655 |
+| `RelativeEvent rotary delta convention` | delta magnitude 1 == one UI step, scales linearly; positive = clockwise, negative = counterclockwise | Semantics of RelativeEvent.Rel.delta when keycode == KEYCODE_ROTARY_CONTROLLER, per aa-proxy-rs's in-code comment. | `aa-proxy-rs/src/mitm.rs` L3608-L3619 |
+| `openauto rotary delta values` | -1 for WheelDirection::LEFT, +1 otherwise | openauto emits exactly +/-1 per detent for KEYCODE_ROTARY_CONTROLLER, and routes that keycode to relative_event rather than key_event. | `openauto/src/autoapp/Service/InputSource/InputSourceService.cpp` L153-L163 |
+| `aa-proxy-rs cluster-display advertised keycodes` | [19, 20, 21, 22, 23] | Concrete keycodes_supported list an implementation advertises for a DISPLAY_TYPE_CLUSTER input source: DPAD_UP/DOWN/LEFT/RIGHT/CENTER. | `aa-proxy-rs/src/display.rs` L222-L232 |
+| `aa-proxy-rs auxiliary-display advertised keycodes` | [3, 4, 5, 6, 84, 85, 87, 88, 126, 127, 65537, 65538, 65540] | HOME, BACK, CALL, ENDCALL, SEARCH, MEDIA_PLAY_PAUSE, MEDIA_NEXT, MEDIA_PREVIOUS, MEDIA_PLAY, MEDIA_PAUSE, KEYCODE_MEDIA, KEYCODE_NAVIGATION, KEYCODE_TEL - a realistic head-unit keycode advertisement. | `aa-proxy-rs/src/display.rs` L222-L232 |
+| `openauto full configurable button-code set` | MEDIA_PLAY(126), MEDIA_PAUSE(127), MEDIA_PLAY_PAUSE(85), MEDIA_NEXT(87), MEDIA_PREVIOUS(88), HOME(3), CALL(5), ENDCALL(6), SEARCH(84), DPAD_LEFT(21), DPAD_RIGHT(22), DPAD_UP(19), DPAD_DOWN(20), ROTARY_CONTROLLER(65536), BACK(4), DPAD_CENTER(23), NAVIGATION(65538) | The complete list of keycodes a head unit built on openauto can advertise in InputSourceService.keycodes_supported; each is gated by an INI flag (default false via insertButtonCode's get<bool>(key, false)). | `openauto/src/autoapp/Configuration/Configuration.cpp` L728-L747 |
+| `InputReport frame flags (aa-proxy-rs)` | ENCRYPTED \| FRAME_TYPE_FIRST \| FRAME_TYPE_LAST | Input reports are sent as a single encrypted frame (first+last set). aasdk uses EncryptionType::ENCRYPTED with MessageType::SPECIFIC for the same message. | `aa-proxy-rs/src/mitm.rs` L3587-L3593 |
+| `InputReport message framing (aasdk)` | EncryptionType::ENCRYPTED, MessageType::SPECIFIC, 2-byte big-endian message id prefix | How the input report is put on the wire by aasdk: a Message on the INPUT_SOURCE channel, encrypted, 'specific' (not control), with the 16-bit message id inserted ahead of the serialized protobuf. | `aasdk/src/Channel/InputSource/InputSourceService.cpp` L43-L55 |
+| `KeyBindingResponse framing (aasdk)` | EncryptionType::ENCRYPTED, MessageType::SPECIFIC | The key binding response is a 'specific' (non-control) encrypted message on the input channel, unlike ChannelOpenResponse which uses MessageType::CONTROL. | `aasdk/src/Channel/InputSource/InputSourceService.cpp` L57-L68 |
+
+### 6.3 Message definitions
+
+
+#### `InputReport (the canonical 'input event indication' - message id 32769)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/inputsource/message/InputReport.proto`
+
+```proto
+syntax="proto2";
+
+import "aap_protobuf/service/inputsource/message/TouchEvent.proto";
+import "aap_protobuf/service/inputsource/message/AbsoluteEvent.proto";
+import "aap_protobuf/service/inputsource/message/RelativeEvent.proto";
+import "aap_protobuf/service/inputsource/message/KeyEvent.proto";
+
+package aap_protobuf.service.inputsource.message;
+
+message InputReport
+{
+    required uint64 timestamp = 1;
+    optional int32 disp_channel_id = 2 [deprecated = true];
+    optional TouchEvent touch_event = 3;
+    optional KeyEvent key_event = 4;
+    optional AbsoluteEvent absolute_event = 5;
+    optional RelativeEvent relative_event = 6;
+    optional TouchEvent touchpad_event = 7;
+}
+```
+
+#### `TouchEvent (with nested Pointer)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/inputsource/message/TouchEvent.proto`
+
+```proto
+syntax="proto2";
+
+import "aap_protobuf/service/inputsource/message/PointerAction.proto";
+
+package aap_protobuf.service.inputsource.message;
+
+message TouchEvent {
+    repeated Pointer pointer_data = 1;
+    message Pointer {
+        required uint32 x = 1;
+        required uint32 y = 2;
+        required uint32 pointer_id = 3;
+    }
+
+    optional uint32 action_index = 2;
+    optional PointerAction action = 3;
+}
+```
+
+#### `KeyEvent (with nested Key)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/inputsource/message/KeyEvent.proto`
+
+```proto
+syntax="proto2";
+
+package aap_protobuf.service.inputsource.message;
+
+message KeyEvent {
+  repeated Key keys = 1;
+  message Key {
+    required uint32 keycode = 1;
+    required bool down = 2;
+    required uint32 metastate = 3;
+    optional bool longpress = 4;
+  }
+}
+```
+
+#### `RelativeEvent (with nested Rel) - rotary / relative axes`
+
+Source: `aasdk/protobuf/aap_protobuf/service/inputsource/message/RelativeEvent.proto`
+
+```proto
+syntax="proto2";
+
+package aap_protobuf.service.inputsource.message;
+
+message RelativeEvent {
+    repeated Rel data = 1;
+    message Rel {
+        required uint32 keycode = 1;
+        required int32 delta = 2;
+    }
+}
+```
+
+#### `AbsoluteEvent (with nested Abs) - absolute axes`
+
+Source: `aasdk/protobuf/aap_protobuf/service/inputsource/message/AbsoluteEvent.proto`
+
+```proto
+syntax="proto2";
+
+package aap_protobuf.service.inputsource.message;
+
+message AbsoluteEvent {
+    repeated Abs data = 1;
+    message Abs {
+        required uint32 keycode = 1;
+        required int32 value = 2;
+    }
+}
+```
+
+#### `PointerAction (touch action enum)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/inputsource/message/PointerAction.proto`
+
+```proto
+syntax="proto2";
+
+package aap_protobuf.service.inputsource.message;
+
+enum PointerAction
+{
+    ACTION_DOWN = 0;
+    ACTION_UP = 1;
+    ACTION_MOVED = 2;
+    ACTION_POINTER_DOWN = 5;
+    ACTION_POINTER_UP = 6;
+}
+```
+
+#### `TouchScreenType`
+
+Source: `aasdk/protobuf/aap_protobuf/service/inputsource/message/TouchScreenType.proto`
+
+```proto
+syntax="proto2";
+
+package aap_protobuf.service.inputsource.message;
+
+enum TouchScreenType {
+    CAPACITIVE = 1;
+    RESISTIVE = 2;
+    INFRARED = 3;
+}
+```
+
+#### `InputSourceService (service-discovery descriptor: keycodes, touchscreen, touchpad, feedback)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/inputsource/InputSourceService.proto`
+
+```proto
+syntax="proto2";
+
+import "aap_protobuf/service/inputsource/message/FeedbackEvent.proto";
+import "aap_protobuf/service/inputsource/message/TouchScreenType.proto";
+
+package aap_protobuf.service.inputsource;
+
+message InputSourceService {
+    repeated int32 keycodes_supported = 1 [packed = true];
+
+    repeated TouchScreen touchscreen = 2;
+    message TouchScreen {
+        required int32 width = 1;
+        required int32 height = 2;
+        optional message.TouchScreenType type = 3;
+        optional bool is_secondary = 4;
+    }
+
+    repeated TouchPad touchpad = 3;
+    message TouchPad {
+        required int32 width = 1;
+        required int32 height = 2;
+        optional bool ui_navigation = 3;
+        optional int32 physical_width = 4;
+        optional int32 physical_height = 5;
+        optional bool ui_absolute = 6;
+        optional bool tap_as_select = 7;
+        optional int32 sensitivity = 8;
+    }
+
+    repeated message.FeedbackEvent feedback_events_supported = 4;
+    optional uint32 display_id = 5;
+}
+```
+
+#### `InputMessageId`
+
+Source: `aasdk/protobuf/aap_protobuf/service/inputsource/InputMessageId.proto`
+
+```proto
+syntax="proto2";
+
+package aap_protobuf.service.inputsource;
+
+enum InputMessageId
+{
+    INPUT_MESSAGE_INPUT_REPORT = 32769;
+    INPUT_MESSAGE_KEY_BINDING_REQUEST = 32770;
+    INPUT_MESSAGE_KEY_BINDING_RESPONSE = 32771;
+    INPUT_MESSAGE_INPUT_FEEDBACK = 32772;
+}
+```
+
+#### `InputFeedback (message id 32772)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/inputsource/message/InputFeedback.proto`
+
+```proto
+syntax="proto2";
+
+import "aap_protobuf/service/inputsource/message/FeedbackEvent.proto";
+
+package aap_protobuf.service.inputsource.message;
+
+message InputFeedback {
+  optional FeedbackEvent event = 1;
+}
+```
+
+#### `FeedbackEvent`
+
+Source: `aasdk/protobuf/aap_protobuf/service/inputsource/message/FeedbackEvent.proto`
+
+```proto
+syntax="proto2";
+
+package aap_protobuf.service.inputsource.message;
+
+enum FeedbackEvent {
+  FEEDBACK_SELECT = 1;
+  FEEDBACK_FOCUS_CHANGE = 2;
+  FEEDBACK_DRAG_SELECT = 3;
+  FEEDBACK_DRAG_START = 4;
+  FEEDBACK_DRAG_END = 5;
+}
+```
+
+#### `KeyBindingRequest (message id 32770, phone -> HU) - NOTE: lives under service/media/sink/ in aasdk`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyBindingRequest.proto`
+
+```proto
+syntax="proto2";
+
+package aap_protobuf.service.media.sink.message;
+
+message KeyBindingRequest {
+    repeated int32 keycodes = 1 [packed = true];
+}
+```
+
+#### `KeyBindingResponse (message id 32771, HU -> phone)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyBindingResponse.proto`
+
+```proto
+syntax="proto2";
+
+import "aap_protobuf/shared/MessageStatus.proto";
+
+package aap_protobuf.service.media.sink.message;
+
+message KeyBindingResponse {
+    required int32 status = 1;
+}
+```
+
+#### `Service (service-discovery entry; input_source_service = field 4)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/Service.proto`
+
+```proto
+message Service
+{
+    required int32 id = 1;
+    optional sensorsource.SensorSourceService sensor_source_service = 2;
+    optional media.sink.MediaSinkService media_sink_service = 3;
+    optional inputsource.InputSourceService input_source_service = 4;
+    optional media.source.MediaSourceService media_source_service = 5;
+    optional bluetooth.BluetoothService bluetooth_service = 6;
+    optional radio.RadioService radio_service = 7;
+    optional navigationstatus.NavigationStatusService navigation_status_service = 8;
+    optional mediaplayback.MediaPlaybackStatusService media_playback_service = 9;
+    optional phonestatus.PhoneStatusService phone_status_service = 10;
+    optional mediabrowser.MediaBrowserService media_browser_service = 11;
+    optional vendorextension.VendorExtensionService vendor_extension_service = 12;
+    optional genericnotification.GenericNotificationService generic_notification_service = 13;
+    optional wifiprojection.WifiProjectionService wifi_projection_service = 14;
+}
+```
+
+#### `GalVerificationInjectInput (control channel; wraps an InputReport for GAL certification injection)`
+
+Source: `aasdk/protobuf/aap_protobuf/channel/control/GalVerificationInjectInput.proto`
+
+```proto
+syntax="proto2";
+
+import "aap_protobuf/service/inputsource/message/InputReport.proto";
+
+package aap_protobuf.service.control.message;
+
+message GalVerificationInjectInput {
+  required inputsource.message.InputReport input = 1;
+}
+```
+
+#### `InstrumentClusterInput (secondary input path: cluster/rotary controller actions)`
+
+Source: `aasdk/protobuf/aap_protobuf/shared/InstrumentClusterInput.proto`
+
+```proto
+syntax="proto2";
+
+package aap_protobuf.shared;
+
+message InstrumentClusterInput {
+    required InstrumentClusterAction action = 1;
+    enum InstrumentClusterAction {
+        UNKNOWN = 0;
+        UP = 1;
+        DOWN = 2;
+        LEFT = 3;
+        RIGHT = 4;
+        ENTER = 5;
+        BACK = 6;
+        CALL = 7;
+    }
+}
+```
+
+#### `PhoneStatusInput (PHONE_STATUS_INPUT = 32770, HU -> phone)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/phonestatus/message/PhoneStatusInput.proto`
+
+```proto
+syntax="proto2";
+
+import "aap_protobuf/shared/InstrumentClusterInput.proto";
+
+package aap_protobuf.service.phonestatus.message;
+
+message PhoneStatusInput {
+  required shared.InstrumentClusterInput input = 1;
+  optional string caller_number = 2;
+  optional string caller_id = 3;
+}
+```
+
+#### `MediaBrowserInput (MEDIA_BROWSE_INPUT = 32774, HU -> phone)`
+
+Source: `aasdk/protobuf/aap_protobuf/service/mediabrowser/message/MediaBrowserInput.proto`
+
+```proto
+syntax="proto2";
+
+import "aap_protobuf/shared/InstrumentClusterInput.proto";
+
+package aap_protobuf.service.mediabrowser.message;
+
+message MediaBrowserInput {
+  required shared.InstrumentClusterInput input = 1;
+  required string path = 2;
+}
+```
+
+#### `AACS InputChannel + InputChannelHandshakeRequest (independent reconstruction)`
+
+Source: `AACS/proto/InputChannel.proto`
+
+```proto
+// Distributed under GPLv3 only as specified in repository's root LICENSE file
+
+syntax="proto2";
+
+package tag.aas;
+
+import "TouchConfig.proto";
+import "ButtonsEvent.proto";
+
+message InputChannel
+{
+    repeated ButtonCode.Enum available_buttons = 1;
+    optional TouchConfig screen_config = 2;
+}
+
+message InputChannelHandshakeRequest
+{
+    repeated ButtonCode.Enum available_buttons = 1;
+}
+```
+
+#### `AACS TouchConfig (touchscreen width/height, field 2 of InputChannel)`
+
+Source: `AACS/proto/TouchConfig.proto`
+
+```proto
+// Distributed under GPLv3 only as specified in repository's root LICENSE file
+
+syntax="proto2";
+
+package tag.aas;
+
+message TouchConfig
+{
+    required uint32 width = 1;
+    required uint32 height = 2;
+}
+```
+
+#### `AACS InputEvent (their name for InputReport)`
+
+Source: `AACS/proto/InputEvent.proto`
+
+```proto
+// Distributed under GPLv3 only as specified in repository's root LICENSE file
+
+syntax="proto2";
+
+package tag.aas;
+
+import "TouchEvent.proto";
+import "ButtonsEvent.proto";
+
+message InputEvent
+{
+    optional uint64 timestamp = 1;
+    optional TouchEvent touch_event = 3;
+    optional ButtonsEvent buttons_event = 4;
+}
+```
+
+#### `AACS TouchEvent + TouchLocation`
+
+Source: `AACS/proto/TouchEvent.proto`
+
+```proto
+message TouchEvent
+{
+    repeated TouchLocation touch_location = 1;
+    required TouchAction touch_action = 3;
+}
+
+// AACS/proto/TouchLocation.proto:
+message TouchLocation
+{
+    required uint32 x = 1;
+    required uint32 y = 2;
+    required uint32 pid = 3;
+}
+```
+
+#### `AACS ButtonCode / ButtonEvent / ButtonsEvent (their KeyEvent equivalent)`
+
+Source: `AACS/proto/ButtonsEvent.proto`
+
+```proto
+message ButtonCode
+{
+    enum Enum
+    {
+        NONE = 0x00;
+        MICROPHONE_2 = 0x01;
+        MENU = 0x02;
+        HOME = 0x03;
+        BACK = 0x04;
+        PHONE = 0x05;
+        CALL_END = 0x06;
+        UP = 0x13;
+        DOWN = 0x14;
+        LEFT = 0x15;
+        RIGHT = 0x16;
+        ENTER = 0x17;
+        UNKNOWN_1 = 0x42;
+        MICROPHONE_1 = 0x54;
+        TOGGLE_PLAY = 0x55;
+        NEXT = 0x57;
+        PREV = 0x58;
+        PLAY = 0x7E;
+        PAUSE = 0x7F;
+        SCROLL_WHEEL = 65536;
+    }
+}
+
+message ButtonEvent
+{
+    required ButtonCode.Enum scan_code = 1;
+    required bool is_pressed = 2;
+    required uint32 meta = 3;
+    required bool long_press = 4;
+}
+
+message ButtonsEvent
+{
+    repeated ButtonEvent button_events = 1;
+}
+```
+
+#### `openauto internal touch/button structs (implementation shape of a decoded InputReport)`
+
+Source: `openauto/include/f1x/openauto/autoapp/Projection/InputEvent.hpp`
+
+```proto
+enum class ButtonEventType
+{
+    NONE,
+    PRESS,
+    RELEASE
+};
+
+enum class WheelDirection
+{
+    NONE,
+    LEFT,
+    RIGHT
+};
+
+struct ButtonEvent
+{
+    ButtonEventType type;
+    WheelDirection wheelDirection;
+    aap_protobuf::service::media::sink::message::KeyCode code;
+};
+
+struct TouchPoint
+{
+    uint32_t x;
+    uint32_t y;
+    uint32_t pointerId;
+};
+
+struct TouchEvent
+{
+    aap_protobuf::service::inputsource::message::PointerAction type;
+    std::vector<TouchPoint> pointers;
+    uint32_t actionIndex; // Index of the pointer that changed state
+};
+```
+
+#### `IInputSourceService / IInputSourceServiceEventHandler (channel API surface: exactly 3 sends, 2 receives)`
+
+Source: `aasdk/include/aasdk/Channel/InputSource/IInputSourceService.hpp`
+
+```proto
+// IInputSourceService.hpp
+virtual void receive(IInputSourceServiceEventHandler::Pointer eventHandler) = 0;
+virtual void
+sendChannelOpenResponse(const aap_protobuf::service::control::message::ChannelOpenResponse &response,
+                        SendPromise::Pointer promise) = 0;
+virtual void sendInputReport(const aap_protobuf::service::inputsource::message::InputReport &indication,
+                                      SendPromise::Pointer promise) = 0;
+virtual void sendKeyBindingResponse(const aap_protobuf::service::media::sink::message::KeyBindingResponse &response,
+                                 SendPromise::Pointer promise) = 0;
+
+// IInputSourceServiceEventHandler.hpp
+virtual void onChannelOpenRequest(const aap_protobuf::service::control::message::ChannelOpenRequest &request) = 0;
+virtual void onKeyBindingRequest(const aap_protobuf::service::media::sink::message::KeyBindingRequest &request) = 0;
+virtual void onChannelError(const error::Error &e) = 0;
+```
+
+### 6.4 Where the references disagree
+
+
+**There is no message named 'InputEventIndication' anywhere in the references**
+
+The task brief asks for 'InputEventIndication'. A grep of all five reference trees turns up no such identifier. The canonical aasdk name is InputReport (aasdk/protobuf/aap_protobuf/service/inputsource/message/InputReport.proto), carried by INPUT_MESSAGE_INPUT_REPORT = 32769. AACS calls the same wire message InputEvent (AACS/proto/InputEvent.proto) with message type InputChannelMessageType::Event = 0x8001. Use InputReport as the ground-truth definition; 'InputEventIndication' appears to be older/third-party naming.
+
+**aasdk_proto/ does NOT contain input protos in this checkout**
+
+The brief says to compare aasdk/aasdk_proto/ against aasdk/protobuf/aap_protobuf/. In this checkout aasdk/aasdk_proto/ contains only five files, all Wifi*: WifiChannelMessageIdsEnum.proto, WifiInfoRequestMessage.proto, WifiInfoResponseMessage.proto, WifiSecurityRequestMessage.proto, WifiSecurityResponseMessage.proto. There is no input/touch/key proto there, so there is no aasdk_proto-vs-aap_protobuf conflict to resolve for this domain. The authoritative set is aasdk/protobuf/aap_protobuf/service/inputsource/.
+
+**TouchAction naming: aasdk PointerAction vs AACS TouchAction - numbers agree, names do not**
+
+The brief asks for a TouchAction enum with PRESS/RELEASE/DRAG/POINTER_DOWN/POINTER_UP. aasdk names the enum PointerAction with ACTION_DOWN=0, ACTION_UP=1, ACTION_MOVED=2, ACTION_POINTER_DOWN=5, ACTION_POINTER_UP=6 (aasdk/protobuf/aap_protobuf/service/inputsource/message/PointerAction.proto L5-L12). AACS names it TouchAction with Press=0, Release=1, Drag=2, Down=5, Up=6 (AACS/proto/TouchAction.proto L7-L14). The wire values are IDENTICAL; only the symbol names differ. Prefer aasdk's PointerAction naming. Note the gap: 3 and 4 are unassigned in both.
+
+**AACS TouchEvent omits action_index (field 2)**
+
+aasdk TouchEvent has pointer_data=1, action_index=2, action=3. AACS TouchEvent (AACS/proto/TouchEvent.proto L10-L14) declares only `repeated TouchLocation touch_location = 1;` and `required TouchAction touch_action = 3;` - field 2 is simply absent. Field numbers 1 and 3 line up, so AACS decodes aasdk-produced TouchEvents correctly but discards action_index, which is required to know WHICH finger went down/up on a multi-touch POINTER_DOWN/POINTER_UP. Also AACS makes touch_action required while aasdk makes action optional.
+
+**AACS ButtonEvent makes long_press required; aasdk KeyEvent.Key makes longpress optional**
+
+aasdk KeyEvent.Key: `required uint32 keycode = 1; required bool down = 2; required uint32 metastate = 3; optional bool longpress = 4;`. AACS ButtonEvent: `required ButtonCode.Enum scan_code = 1; required bool is_pressed = 2; required uint32 meta = 3; required bool long_press = 4;` (AACS/proto/ButtonsEvent.proto L34-L40). A parser that treats field 4 as required will reject reports from head units that omit it. Prefer aasdk (optional). Field names also differ (keycode/down/metastate vs scan_code/is_pressed/meta) but field numbers and wire types match.
+
+**KeyBindingRequest/KeyBindingResponse are filed under service/media/sink/ in aasdk although they are input-channel messages**
+
+aasdk places KeyBindingRequest.proto and KeyBindingResponse.proto under aasdk/protobuf/aap_protobuf/service/media/sink/message/ (package aap_protobuf.service.media.sink.message) even though their message ids 32770/32771 belong to InputMessageId and they travel on the input channel. aasdk's own code confirms the cross-import: aasdk/include/aasdk/Channel/InputSource/IInputSourceService.hpp L25 includes <aap_protobuf/service/media/sink/message/KeyBindingResponse.pb.h>. aa-proxy-rs and aasdk/docs/protos.proto keep them in a single flat namespace with no such split. This is a packaging quirk of the aasdk tree, not a wire difference.
+
+**KeyCode enum is also filed under service/media/sink/**
+
+aasdk/protobuf/aap_protobuf/service/media/sink/message/KeyCode.proto holds the full KeyCode enum (0..65544) used by the INPUT channel's KeyEvent.Key.keycode, AbsoluteEvent.Abs.keycode and RelativeEvent.Rel.keycode. Those input protos declare those fields as plain uint32 and do not import KeyCode, so the enum is documentation-only at the proto level - any uint32 is legal on the wire. A clean-room implementation must not assume the field is enum-validated.
+
+**InstrumentClusterInput is defined TWICE in aasdk with different packages**
+
+aasdk/protobuf/aap_protobuf/shared/InstrumentClusterInput.proto declares package aap_protobuf.shared, and aasdk/protobuf/aap_protobuf/channel/control/InstrumentClusterInput.proto declares package aap_protobuf.service.control.message. Both bodies are byte-identical (required InstrumentClusterAction action = 1 with UNKNOWN..CALL = 0..7). PhoneStatusInput.proto and MediaBrowserInput.proto import the shared/ one. The duplication is harmless on the wire but a codegen hazard.
+
+**Timestamp units are unspecified in the proto and inconsistent across implementations**
+
+InputReport.timestamp is `required uint64` with no comment. openauto uses microseconds from high_resolution_clock::now().time_since_epoch() (openauto/src/autoapp/Service/InputSource/InputSourceService.cpp L145-L151, L177-L183) - note high_resolution_clock's epoch is NOT guaranteed to be the Unix epoch. aa-proxy-rs's send_key_event and send_rotary_event use microseconds since UNIX_EPOCH (aa-proxy-rs/src/mitm.rs L3554-L3557, L3612-L3615). But aa-proxy-rs's send_input_key in the SAME file uses MILLISECONDS: `let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;` (mitm.rs L3655), with an adjacent FIXME admitting the duplication. Best-supported reading: microseconds since the Unix epoch. AACS makes the field `optional uint64 timestamp = 1` rather than required (AACS/proto/InputEvent.proto L12).
+
+**AACS makes InputEvent.timestamp optional while aasdk makes InputReport.timestamp required**
+
+aasdk: `required uint64 timestamp = 1;`. AACS: `optional uint64 timestamp = 1;`. A strict proto2 parser built from the aasdk schema will fail on a report that omits the timestamp. Prefer aasdk (required) when generating, but tolerate absence when parsing.
+
+**AACS ButtonCode names do not always match the Android keycode at that value**
+
+AACS/proto/ButtonsEvent.proto L11-L31 uses hex Android keycodes but with its own labels. Cross-checking against aasdk KeyCode.proto: MICROPHONE_2 = 0x01 = 1 = KEYCODE_SOFT_LEFT (not a microphone); UNKNOWN_1 = 0x42 = 66 = KEYCODE_ENTER; MICROPHONE_1 = 0x54 = 84 = KEYCODE_SEARCH (this one does match openauto's voice-button mapping). MENU=0x02=2=KEYCODE_SOFT_RIGHT, not KEYCODE_MENU(82). HOME/BACK/PHONE/CALL_END (0x03-0x06) and UP/DOWN/LEFT/RIGHT/ENTER (0x13-0x17) and TOGGLE_PLAY/NEXT/PREV/PLAY/PAUSE (0x55,0x57,0x58,0x7E,0x7F) and SCROLL_WHEEL(65536) all match aasdk. Trust the aasdk KeyCode numbers, not the AACS labels.
+
+**Two different keycodes are used for the voice/assistant button**
+
+openauto maps its 'Input.VoiceCommandButton' to KEYCODE_SEARCH = 84 (openauto/src/autoapp/Configuration/Configuration.cpp L738), and aa-proxy-rs includes 84 in its auxiliary-display keycode list (aa-proxy-rs/src/display.rs L226). But the KeyCode enum also defines KEYCODE_VOICE_ASSIST = 231 and KEYCODE_ASSIST = 219 (aasdk KeyCode.proto L237, L225), neither of which is used by any implementation here. The de-facto steering-wheel voice button in these references is KEYCODE_SEARCH (84).
+
+**openauto never populates touchscreen type, is_secondary, touchpad, or feedback_events_supported**
+
+openauto/src/autoapp/Service/InputSource/InputSourceService.cpp L77-L83 sets only width and height on the single TouchScreen entry. It never sets `type` (TouchScreenType), never sets is_secondary, never adds a TouchPad, never adds feedback_events_supported, and never sets display_id. aa-proxy-rs by contrast sets type=RESISTIVE, is_secondary, and display_id (aa-proxy-rs/src/display.rs L233-L241). So all of those fields are genuinely optional on the wire and phones must handle their absence.
+
+**InputFeedback (32772) direction and usage are not established by any reference**
+
+aasdk's InputSourceService channel implements exactly three sends (ChannelOpenResponse, InputReport, KeyBindingResponse) and handles exactly two receives (KeyBindingRequest, ChannelOpenRequest) - see aasdk/src/Channel/InputSource/InputSourceService.cpp L83-L102. INPUT_MESSAGE_INPUT_FEEDBACK is never sent or handled. openauto likewise ignores it. The only code touching it is aa-proxy-rs's pretty-printer (aa-proxy-rs/src/mitm_prettyprint.rs L958), which is direction-agnostic. Its semantics (presumably phone -> HU haptic/audible feedback requests for touchpad interaction, given FEEDBACK_DRAG_START/DRAG_END) are inferred from the enum names only and are NOT confirmed by any source here.
+
+**InputSourceService.TouchScreen.type is namespace-qualified in the split tree but not in the flat trees**
+
+aasdk/protobuf/aap_protobuf/service/inputsource/InputSourceService.proto L15 writes `optional message.TouchScreenType type = 3;` (qualified into the nested `message` package), whereas aasdk/docs/protos.proto L156 and aa-proxy-rs/src/protos/protos.proto L213 write `optional TouchScreenType type = 3;` flat. Same field number, same enum, purely a packaging difference.
+
+**AACS InputChannel descriptor is a strict subset of aasdk InputSourceService**
+
+AACS/proto/InputChannel.proto L10-L14 defines only `repeated ButtonCode.Enum available_buttons = 1;` and `optional TouchConfig screen_config = 2;`. Field 1 matches aasdk keycodes_supported; field 2 matches aasdk touchscreen but is singular-optional rather than repeated, and TouchConfig has only width(1)/height(2) with no type or is_secondary. Fields 3 (touchpad), 4 (feedback_events_supported) and 5 (display_id) are absent from AACS entirely. Prefer the aasdk definition.
+
+**ChannelId::INPUT_SOURCE has no literal value in the source**
+
+aasdk/include/aasdk/Messenger/ChannelId.hpp L30-L51 declares `enum class ChannelId` with no explicit initializers except `NONE = 255`. INPUT_SOURCE is the 9th entry, so its value is 8 by C++ ordinal rules, but that number is nowhere written in the file. Furthermore this is aasdk's INTERNAL channel numbering; the actual AAP channel number for the input service is whatever `Service.id` the head unit assigns in ServiceDiscoveryResponse (see openauto InputSourceService.cpp L67 `service->set_id(static_cast<uint32_t>(channel_->getId()))` - openauto happens to reuse the aasdk enum ordinal as the wire service id). A clean-room phone must read the id from service discovery, never hard-code 8.

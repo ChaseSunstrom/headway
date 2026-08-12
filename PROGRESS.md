@@ -34,9 +34,9 @@ Android SDK and no NDK.
   socket. Handshake completes between the two roles with the real vendored
   certificates, negotiating an ECDHE_RSA TLS 1.2 suite; application data round
   trips in both directions, including payloads spanning multiple TLS records.
-- **Protocol notes** — `docs/protocol-notes.md`, 301 constants with file+line
-  citations across framing, TLS, the wireless Bluetooth handshake and the
-  control channel, plus a "where the references disagree" section per area.
+- **Protocol notes** — `docs/protocol-notes.md`, 465 constants with file+line
+  citations across framing, TLS, the wireless handshake, control, video and
+  input, plus a "where the references disagree" section per area.
 
 ## Phase 1 — what is done and what is not
 
