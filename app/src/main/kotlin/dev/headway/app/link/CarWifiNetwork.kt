@@ -18,6 +18,7 @@
 package dev.headway.app.link
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.MacAddress
 import android.net.Network
@@ -70,8 +71,12 @@ class CarWifiNetwork(
     private val onStep: (String) -> Unit = {},
 ) : AutoCloseable {
 
+    // The application context, not the passed one: this outlives whatever
+    // started it, and holding an activity here would leak it for the session.
+    private val appContext: Context = context.applicationContext
+
     private val connectivityManager: ConnectivityManager? =
-        context.applicationContext.getSystemService(ConnectivityManager::class.java)
+        appContext.getSystemService(ConnectivityManager::class.java)
 
     private val closed = AtomicBoolean(false)
 
@@ -151,10 +156,12 @@ class CarWifiNetwork(
             manager.requestNetwork(request, cb, timeoutMillis)
         } catch (e: SecurityException) {
             callback = null
-            throw CarWifiException(
-                "requestNetwork denied; CHANGE_NETWORK_STATE and NEARBY_WIFI_DEVICES are required",
-                e,
-            )
+            // Name the one that is actually missing. The old message listed both
+            // candidates, and the two have completely different fixes: one is
+            // granted in Settings, the other can only be declared in the
+            // manifest and does not appear in Settings at all. Guessing between
+            // them sent a real user to grant a permission they already had.
+            throw CarWifiException("requestNetwork denied; ${missingJoinPermission()}", e)
         } catch (e: RuntimeException) {
             callback = null
             throw CarWifiException("requestNetwork rejected: ${e.message}", e)
@@ -178,6 +185,32 @@ class CarWifiNetwork(
      */
     suspend fun awaitLost() {
         lost.await()
+    }
+
+    /**
+     * Which permission `requestNetwork` was actually missing, in words that say
+     * what to do about it.
+     *
+     * `CHANGE_NETWORK_STATE` is a normal permission: it is granted at install if
+     * the manifest declares it and is ungrantable otherwise, so its absence is a
+     * build defect rather than anything the user can act on.
+     * `NEARBY_WIFI_DEVICES` is a runtime permission and is the user's to grant.
+     */
+    private fun missingJoinPermission(): String {
+        val missing = JOIN_PERMISSIONS.filter {
+            appContext.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+        return when {
+            missing.isEmpty() ->
+                "no permission is missing, so the platform refused for another reason — " +
+                    "most likely Headway was not in the foreground and had no running " +
+                    "foreground service, which WifiNetworkSpecifier requires"
+            android.Manifest.permission.CHANGE_NETWORK_STATE in missing ->
+                "CHANGE_NETWORK_STATE is not held. It is a normal permission granted at " +
+                    "install, not one that appears in Settings, so this is a packaging " +
+                    "bug and not something to grant"
+            else -> "${missing.joinToString()} must be granted in Settings"
+        }
     }
 
     /**
@@ -275,6 +308,19 @@ class CarWifiNetwork(
     )
 
     companion object {
+
+        /**
+         * Everything `ConnectivityManager.requestNetwork` needs to join the car.
+         *
+         * Asserted against the merged manifest in `CarWifiNetworkTest`, because
+         * a missing entry here is invisible until a real car is in front of you:
+         * the build succeeds, the Bluetooth handshake succeeds, and only the
+         * join throws.
+         */
+        val JOIN_PERMISSIONS: List<String> = listOf(
+            android.Manifest.permission.CHANGE_NETWORK_STATE,
+            android.Manifest.permission.NEARBY_WIFI_DEVICES,
+        )
 
         /**
          * Derives the association parameters from what the head unit sent.

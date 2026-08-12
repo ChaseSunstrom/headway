@@ -251,6 +251,45 @@ class CarWifiNetworkTest {
         }
     }
 
+    @Test
+    fun theManifestDeclaresEveryPermissionTheJoinNeeds() {
+        // This is the test that was missing, and it cost a trip to a real car.
+        //
+        // CHANGE_NETWORK_STATE was simply never declared. Everything built,
+        // every existing test passed, the whole Bluetooth handshake succeeded
+        // against a real Chevrolet -- and then requestNetwork threw
+        // SecurityException, because a normal permission that is not declared is
+        // not held, and unlike a runtime permission there is nothing in Settings
+        // to turn on. The only symptom was a message telling the user to grant
+        // permissions they already had.
+        val declared = context.packageManager
+            .getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
+            .requestedPermissions
+            ?.toSet()
+            .orEmpty()
+
+        for (permission in CarWifiNetwork.JOIN_PERMISSIONS) {
+            assertTrue(
+                "$permission is required by requestNetwork but the manifest does not " +
+                    "declare it; declared = $declared",
+                permission in declared,
+            )
+        }
+    }
+
+    @Test
+    fun theInstallTimePermissionForJoiningIsActuallyHeld() {
+        // CHANGE_NETWORK_STATE is a normal permission: declaring it is the same
+        // as holding it, so if this fails the manifest entry is wrong rather
+        // than ungranted. Asserted separately from the declaration check because
+        // the two failures mean different things.
+        assertTrue(
+            "CHANGE_NETWORK_STATE is declared but not held, which should be impossible " +
+                "for a normal permission",
+            granted(android.Manifest.permission.CHANGE_NETWORK_STATE),
+        )
+    }
+
     private fun granted(permission: String): Boolean =
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 }
