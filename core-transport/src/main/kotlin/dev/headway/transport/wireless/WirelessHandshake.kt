@@ -72,6 +72,18 @@ data class RfcommMessage(val messageId: Int, val payload: ByteArray) {
             val id = ((header[2].toInt() and 0xFF) shl 8) or (header[3].toInt() and 0xFF)
             return RfcommMessage(id, transport.readFully(size))
         }
+
+        /**
+         * Hex for the log.
+         *
+         * These messages are tens of bytes, and when a head unit sends something
+         * the schemas do not describe, the bytes are the only evidence there is.
+         * Truncated because a malformed length field can claim 64 KiB.
+         */
+        fun hex(bytes: ByteArray, limit: Int = 64): String {
+            val shown = bytes.take(limit).joinToString(" ") { "%02x".format(it) }
+            return if (bytes.size > limit) "$shown ... (${bytes.size} bytes)" else shown
+        }
     }
 }
 
@@ -155,6 +167,11 @@ class WirelessHandshake(
 
         repeat(maxMessages) {
             val message = RfcommMessage.read(transport)
+            onStep(
+                "rx id=${message.messageId} " +
+                    "(${MessageId.forNumber(message.messageId)?.name ?: "unknown"}) " +
+                    RfcommMessage.hex(message.payload)
+            )
             when (MessageId.forNumber(message.messageId)) {
                 MessageId.WIFI_START_REQUEST -> {
                     endpoint = WifiStartRequest.parseFrom(message.payload)
@@ -217,7 +234,9 @@ class WirelessHandshake(
     }
 
     private suspend fun send(id: MessageId, body: MessageLite) {
-        transport.write(RfcommMessage.of(id, body).encode())
+        val message = RfcommMessage.of(id, body)
+        onStep("tx id=${id.number} (${id.name}) ${RfcommMessage.hex(message.payload)}")
+        transport.write(message.encode())
     }
 
     companion object {
