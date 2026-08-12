@@ -88,6 +88,30 @@ Requires a JDK 17+ (JDK 21 works). The Android SDK is only needed for the
 ./tools/check-todos.sh
 ```
 
+## Verifying it yourself
+
+The emulator is a runnable head unit, so you can check the stack without a car.
+
+```bash
+# 1. On your laptop alone. Proves framing, TLS, auth, discovery, channel open.
+./gradlew :headunit-emulator:run --args="--self-test"
+
+# 2. Wait for your phone. Prints the addresses to point Headway at.
+./gradlew :headunit-emulator:run --args="--listen"
+
+# 3. Check reachability without a phone, from this or another machine.
+./gradlew :headunit-emulator:run --args="--connect 192.168.1.50"
+```
+
+`--listen` runs a real head unit on TCP 5288 and reports what arrives: codec
+configuration, video frame count, and the frame rate measured from the
+presentation timestamps. That is the strongest verification available short of a
+car — a real phone, real sockets, real TLS, real video off a real encoder.
+
+Two honest caveats. `--self-test` shares protocol code with the phone side, so it
+proves self-consistency rather than correctness ([ADR 0002](docs/adr/0002-jvm-headunit-emulator.md)).
+And none of it is evidence about a Chevrolet; only a Chevrolet is.
+
 ## How much of this is actually tested
 
 The honest answer matters more than a badge, so it is written down. Every phase
