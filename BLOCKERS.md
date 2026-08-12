@@ -45,6 +45,63 @@ phone/server side, and it is less complete. Where a message is only ever
 *received* by the references, the phone-side sending behaviour must be inferred
 from the message definition rather than observed.
 
+## B-003 — The public phone-side TLS certificate expired on 2022-08-24
+
+**Status:** Open — mitigated as far as is possible client-side. **This is the
+most likely reason a real car will refuse to connect.**
+
+**Blocked:** Authenticating to a head unit that validates the phone's
+certificate.
+
+**Why:** AAP authenticates the phone with an X.509 certificate issued by a
+"Google Automotive Link" CA. The only publicly available phone-side certificate
+is the one extracted by the AACS project
+(`references/AACS/AAServer/ssl/android_auto.crt`), and it carries
+`notAfter = Aug 24 12:29:12 2022 GMT`. It is therefore expired, and we do not
+have the CA key to issue a replacement.
+
+Whether this actually breaks a given car depends on whether its head unit checks
+the validity dates. Every reference implementation disables peer verification on
+its own side (`aasdk/src/Transport/SSLWrapper.cpp` L137-L140 calls
+`SSL_set_verify(ssl, SSL_VERIFY_NONE, nullptr)`), which tells us nothing about
+what a factory head unit does with the certificate the phone presents. Some
+units are known to be lenient. Assume the Malibu is not until a log proves
+otherwise.
+
+**Workaround shipped:** The certificate is not baked in. `AapTls.phoneEngine`
+takes `KeyMaterial`, and the bundled pair is only the default, so a user who can
+extract current material from a licensed Android Auto installation can supply it
+without rebuilding the protocol layer. `TlsSessionTest` asserts the expiry
+explicitly, so it is a stated fact in the suite rather than a surprise in a car
+park.
+
+**What would actually fix it:** Nothing available to this project. Issuing a
+valid certificate needs the Google Automotive Link CA private key. If a real
+Malibu rejects the session, the frame log will show the TLS alert, and the
+options are user-supplied certificate material or nothing.
+
+---
+
+## B-004 — Phone-side polarity is inferred, not observed, for messages the references only receive
+
+**Status:** Open — mitigated.
+
+**Blocked:** Certainty about which side sends what, for a handful of messages.
+
+**Why:** This is the specific form B-002 takes now that implementation has
+started. Two polarity facts were recoverable and are now encoded: the head unit
+sends `VersionRequest` first, and the phone is the TLS **server**. Both are
+counterintuitive — the phone opens the TCP connection yet acts as the TLS server
+— and both are cited in `docs/protocol-notes.md`. Other messages appear in the
+references only in the receive direction, so the phone-side send behaviour is
+read off the message definition rather than observed.
+
+**Workaround shipped:** Every inferred polarity is marked as such in the KDoc at
+the point the code depends on it, so a single real-car frame log can be diffed
+against the assumptions rather than requiring the reasoning to be rediscovered.
+
+---
+
 **Workaround shipped:** `docs/protocol-notes.md` marks every such constant with
 its provenance and flags inferred polarity explicitly, so a real-car log can be
 diffed against the assumptions. Discrepancies between references are recorded
