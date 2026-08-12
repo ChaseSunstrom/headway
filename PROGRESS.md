@@ -17,13 +17,13 @@ Each phase carries the **tier of evidence** behind it, defined in
 | 1 | Handshake | **Done (CI half)** | A — full bring-up 20/20 over the fake transport *and* over real TCP; D for the real BT/Wi-Fi half |
 | 2 | Video out | **Done (channel)** | A — 10 min of 30 fps stream in order, byte-identical, real NAL parsing; C for `MediaCodec` capture |
 | 3 | Input | **Done (channel)** | A — event decode and letterbox transform; C for `AccessibilityService` dispatch |
-| 4 | Audio + focus | In progress | A — focus states modelled; the channel is landing |
+| 4 | Audio + focus | **Done (channel)** | A — three sinks, focus duck/resume asserted on the wire; D for real A2DP |
 | 5 | Voice | **Done (pipeline)** | A — real Vosk on real speech, "open calculator" resolved in ~720 ms; C for `startActivity` |
 | 6 | Reconnection, polish, packaging | In progress | A — supervisor; B — the APK installs on a real API 35 device |
 
 ## What is genuinely verified
 
-**200+ tests green** on a bare JDK, plus an APK that installs on a real device.
+**188 tests green** on a bare JDK, plus an APK that installs on a real device.
 
 - **Framing** — the full AAP frame codec, pinned by hand-derived byte fixtures.
 - **TLS** — a real handshake between the two roles with the real vendored
@@ -37,6 +37,9 @@ Each phase carries the **tier of evidence** behind it, defined in
 - **Input channel** — event decode and a letterbox-aware coordinate transform.
 - **Voice** — the real Vosk model on real synthesised speech at the car mic's
   exact format; all six commands resolved correctly, all under 750 ms.
+- **Audio** — the three sinks with their advertised formats, and the focus
+  exchange asserted as an ordered message sequence on the wire.
+- **Microphone** — car-mic PCM decoded off the AV-input channel.
 - **Reconnection** — the backoff and state machine, driven by induced failures.
 - **Android** — the debug APK builds and installs on an API 35 AOSP image, and
   the platform reports exactly the intended permission set, with no location.
@@ -61,9 +64,9 @@ Stated so the gap between "CI green" and "works in a car" is never implied away.
 
 ## Next actions
 
-1. Land the audio and microphone channels with their acceptance tests.
-2. Wire the Android adapters — `MediaProjection` to `MediaCodec`,
+1. Wire the Android adapters — `MediaProjection` to `MediaCodec`,
    `AccessibilityService` gesture dispatch, `WifiNetworkSpecifier` binding and
    the RFCOMM socket — onto the protocol objects that already exist.
-3. Build the car-facing launcher UI, quirk configuration and in-app log export.
-4. Reproducible release build and F-Droid metadata.
+2. Build the car-facing launcher UI, quirk configuration and in-app log export.
+3. Reproducible release build and F-Droid metadata.
+4. Real-hardware validation — the one step that cannot be self-performed.
