@@ -14,8 +14,15 @@ cd "$(dirname "$0")/.."
 
 missing=()
 
-# Source files we require a notice on. references/ is third-party and excluded;
-# generated protobuf output is excluded because it is regenerated at build time.
+# Source files we require a notice on.
+#
+# Excluded:
+#  - references/            third-party clones, never committed
+#  - build/                 generated protobuf output, regenerated each build
+#  - */proto/aap_protobuf/  schemas vendored verbatim from aasdk (GPLv3). Stamping
+#                           our own copyright on someone else's files would
+#                           misstate authorship; provenance is recorded in
+#                           THIRD-PARTY.md and in the directory's own README.
 while IFS= read -r file; do
     if ! grep -qE 'GNU General Public License|SPDX-License-Identifier: GPL-3\.0' "$file"; then
         missing+=("$file")
@@ -27,6 +34,7 @@ done < <(
         -path '*/build' -prune -o \
         -path ./.git -prune -o \
         -path ./.gradle -prune -o \
+        -path '*/proto/aap_protobuf' -prune -o \
         -type f \( -name '*.kt' -o -name '*.kts' -o -name '*.java' -o -name '*.proto' -o -name '*.sh' \) \
         -print
 )

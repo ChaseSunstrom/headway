@@ -17,7 +17,7 @@
 
 package dev.headway.transport.tls
 
-import dev.headway.protocol.io.Cryptor
+import dev.headway.protocol.session.TlsHandshakeDriver
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import javax.net.ssl.SSLEngine
@@ -65,7 +65,7 @@ class TlsException(message: String, cause: Throwable? = null) : RuntimeException
  *
  * Not safe for concurrent use; `FramedConnection` serialises access.
  */
-class TlsSession(private val engine: SSLEngine) : Cryptor {
+class TlsSession(private val engine: SSLEngine) : TlsHandshakeDriver {
 
     /** Bytes received from the peer that did not yet form a complete TLS record. */
     private var pending: ByteArray = ByteArray(0)
@@ -80,7 +80,7 @@ class TlsSession(private val engine: SSLEngine) : Cryptor {
      */
     private var started: Boolean = false
 
-    var handshakeComplete: Boolean = false
+    override var handshakeComplete: Boolean = false
         private set
 
     /** The negotiated cipher suite, once the handshake is done. Diagnostics only. */
@@ -93,7 +93,7 @@ class TlsSession(private val engine: SSLEngine) : Cryptor {
      * the server side returns empty, which is correct — the server speaks only
      * once it has heard a ClientHello.
      */
-    fun beginHandshake(): ByteArray {
+    override fun beginHandshake(): ByteArray {
         ensureStarted()
         return pump(ByteArray(0))
     }
@@ -102,7 +102,7 @@ class TlsSession(private val engine: SSLEngine) : Cryptor {
      * Feeds a received handshake flight to the engine and returns the reply to
      * send, which may be empty when the engine needs more input first.
      */
-    fun continueHandshake(incoming: ByteArray): ByteArray {
+    override fun continueHandshake(incoming: ByteArray): ByteArray {
         // The server never calls beginHandshake explicitly -- it just receives a
         // ClientHello -- so start the engine here if nobody has yet.
         ensureStarted()
