@@ -54,7 +54,7 @@ include(":core-voice")
 // --- Android modules --------------------------------------------------------
 // Added to the build as each lands with real content, so that every commit
 // configures and every commit's tests run.
-// include(":app")            // added in Phase 2
-// include(":core-video")     // added in Phase 2
-// include(":core-input")     // added in Phase 3
-// include(":core-audio")     // added in Phase 4
+include(":app")
+include(":core-video")
+include(":core-input")
+include(":core-audio")

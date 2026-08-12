@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Headway</string>
+    <string name="accessibility_service_label">Headway car input</string>
+    <string name="accessibility_service_description">Lets Headway turn touches on your car\'s screen into taps and swipes on this phone. Headway cannot read your screen content; it only injects the gestures the car sends. Required for the car\'s touchscreen to control the phone.</string>
+</resources>

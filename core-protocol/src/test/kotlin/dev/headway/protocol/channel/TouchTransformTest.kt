@@ -169,7 +169,9 @@ class TouchTransformTest {
                 val carX = (t.contentRect.left + random.nextDouble() * t.contentRect.width).toInt()
                 val carY = (t.contentRect.top + random.nextDouble() * t.contentRect.height).toInt()
 
-                val phone = t.toPhone(carX, carY) ?: continue
+                // Truncation can land the sample one pixel outside a fractional
+                // content edge; that pixel is bar, and has nothing to round-trip.
+                val phone = t.toPhone(carX, carY) ?: return@repeat
                 val back = t.toCar(phone.x, phone.y)
                 assertClose(carX.toDouble(), back.x, 1.0, "$t round trip x")
                 assertClose(carY.toDouble(), back.y, 1.0, "$t round trip y")

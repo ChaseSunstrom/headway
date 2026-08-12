@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark by default: this UI is read in a car, often in sunlight glare at
+         night, and a white flash at 70 mph is a safety problem, not a taste one. -->
+    <style name="Theme.Headway" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">#FF000000</item>
+        <item name="android:statusBarColor">#FF000000</item>
+    </style>
+</resources>
