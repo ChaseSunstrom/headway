@@ -306,8 +306,12 @@ data class QuirkProfile(
      * How specific this profile is, for ranking competing matches.
      *
      * An exact model beats an exact make beats a wildcard, so a user's
-     * "Chevrolet/Infotainment 3" entry wins over their own "Chevrolet/*" catch-all
-     * without them having to think about file ordering.
+     * "Chevrolet" plus "Infotainment 3" entry wins over their own
+     * make-only catch-all without them having to think about file ordering.
+     *
+     * (Written without the literal wildcard-path spelling on purpose: a slash
+     * followed by a star inside a KDoc opens a nested comment in Kotlin and
+     * silently swallows the rest of the file.)
      */
     val specificity: Int
         get() = weight(makePattern) + weight(modelPattern) * 2
