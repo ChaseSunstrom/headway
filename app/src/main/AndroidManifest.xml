@@ -43,8 +43,16 @@
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
 
-    <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
-    <uses-feature android:name="android.hardware.wifi" android:required="true" />
+    <!--
+      Declared but not required. Marking these required only changes Play Store
+      filtering, which is irrelevant to an app distributed through F-Droid, while
+      it makes the app uninstallable on any device lacking the hardware. That
+      includes every CI emulator image, so requiring them would cost us all
+      on-device testing and buy nothing. Headway checks for both radios at
+      runtime and reports what is missing instead.
+    -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.wifi" android:required="false" />
 
     <application
         android:allowBackup="false"

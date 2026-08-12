@@ -27,6 +27,7 @@ import aap_protobuf.service.media.source.message.MicrophoneResponseOuterClass.Mi
 import dev.headway.protocol.framing.AapMessage
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.FramedConnection
+import dev.headway.protocol.io.MessageChannel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
@@ -273,7 +274,7 @@ data class PcmChunk(
  * collected; the collector sees the head unit's reply and completes.
  */
 class MicrophoneChannel(
-    private val connection: FramedConnection,
+    private val connection: MessageChannel,
     /**
      * The channel number the head unit assigned to its microphone service.
      *

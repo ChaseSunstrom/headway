@@ -30,6 +30,7 @@ import aap_protobuf.service.media.video.message.VideoFocusRequestNotificationOut
 import dev.headway.protocol.framing.AapMessage
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.FramedConnection
+import dev.headway.protocol.io.MessageChannel
 
 /** Raised when the head unit violates the video channel's expected sequence. */
 class VideoChannelException(message: String) : RuntimeException(message)
@@ -94,7 +95,7 @@ class VideoChannelException(message: String) : RuntimeException(message)
  * for that disagreement, which is settled in favour of aasdk.
  */
 class VideoChannel(
-    private val connection: FramedConnection,
+    private val connection: MessageChannel,
     /**
      * The channel number the head unit assigned to its video service.
      *

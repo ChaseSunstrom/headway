@@ -26,6 +26,7 @@ import dev.headway.protocol.control.ControlMessageType
 import dev.headway.protocol.framing.AapMessage
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.FramedConnection
+import dev.headway.protocol.io.MessageChannel
 
 /** Raised when the audio-focus exchange is driven in a way the protocol cannot express. */
 class AudioFocusException(message: String) : RuntimeException(message)
@@ -189,7 +190,7 @@ data class AudioFocusState(
  * be able to hand it on.
  */
 class AudioFocus(
-    private val connection: FramedConnection,
+    private val connection: MessageChannel,
     /** Always 0. The control channel is the one channel id AAP fixes. */
     val channelId: Int = ChannelId.CONTROL.id,
     /** Narrates each step; wired to the debug log export in the app. */

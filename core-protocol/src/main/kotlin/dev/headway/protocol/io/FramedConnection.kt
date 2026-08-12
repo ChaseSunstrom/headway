@@ -41,7 +41,7 @@ class FramedConnection(
     private val assembler: MessageAssembler = MessageAssembler(),
     /** Optional frame logger; the debug build wires this to the in-app log export. */
     private val onFrame: (direction: Direction, header: FrameHeader) -> Unit = { _, _ -> },
-) {
+) : MessageChannel {
     enum class Direction { SENT, RECEIVED }
 
     /**
@@ -50,7 +50,7 @@ class FramedConnection(
      * encapsulated handshake messages are.
      */
     @Volatile
-    var cryptor: Cryptor? = null
+    override var cryptor: Cryptor? = null
 
     // AAP multiplexes channels over one connection, so several coroutines will
     // send concurrently (video frames while audio plays while control pings).
@@ -65,7 +65,7 @@ class FramedConnection(
      *   TLS session has been established — a bug worth failing loudly on, since
      *   the alternative is silently transmitting plaintext the peer will reject.
      */
-    suspend fun send(message: AapMessage) {
+    override suspend fun send(message: AapMessage) {
         sendLock.withLock {
             for (fragment in fragmenter.fragment(message)) {
                 val wire = if (fragment.encrypted) {
@@ -100,7 +100,7 @@ class FramedConnection(
      * @throws java.io.EOFException if the peer closes.
      * @throws FramingException if the peer's framing is invalid.
      */
-    suspend fun receive(): AapMessage {
+    override suspend fun receive(): AapMessage {
         receiveLock.withLock {
             while (true) {
                 val header = readHeader()

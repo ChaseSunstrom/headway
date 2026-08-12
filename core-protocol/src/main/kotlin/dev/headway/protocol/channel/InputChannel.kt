@@ -30,6 +30,7 @@ import aap_protobuf.service.media.sink.message.KeyBindingResponseOuterClass.KeyB
 import dev.headway.protocol.framing.AapMessage
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.FramedConnection
+import dev.headway.protocol.io.MessageChannel
 
 /**
  * Message ids on the input channel.
@@ -392,7 +393,7 @@ class InputChannelException(message: String, cause: Throwable? = null) :
  * other's messages.
  */
 class InputChannel(
-    private val connection: FramedConnection,
+    private val connection: MessageChannel,
     /**
      * The channel number the head unit advertised for its `InputSourceService`.
      * Defaults to aasdk's static convention; the authority is the `id` field of

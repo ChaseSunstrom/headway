@@ -30,6 +30,7 @@ import aap_protobuf.service.media.source.message.AckOuterClass.Ack
 import dev.headway.protocol.framing.AapMessage
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.FramedConnection
+import dev.headway.protocol.io.MessageChannel
 
 /** Raised when the head unit, or the caller, violates the audio channel's expected sequence. */
 class AudioChannelException(message: String) : RuntimeException(message)
@@ -211,7 +212,7 @@ enum class MediaAudioRoute {
  * [FramedConnection] that does not exist yet.
  */
 class AudioChannel(
-    private val connection: FramedConnection,
+    private val connection: MessageChannel,
     /**
      * The channel number the head unit assigned to this audio service.
      *

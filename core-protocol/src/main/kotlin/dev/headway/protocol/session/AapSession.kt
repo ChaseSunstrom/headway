@@ -29,6 +29,7 @@ import dev.headway.protocol.framing.AapMessage
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.Cryptor
 import dev.headway.protocol.io.FramedConnection
+import dev.headway.protocol.io.MessageChannel
 
 /**
  * Drives a TLS handshake that is carried inside AAP control messages.
@@ -102,7 +103,7 @@ data class HeadUnitProfile(
  *    `ChannelOpenRequest`.
  */
 class AapSession(
-    private val connection: FramedConnection,
+    private val connection: MessageChannel,
     private val tls: TlsHandshakeDriver,
     private val identity: PhoneIdentity = PhoneIdentity(),
     private val announcedVersion: VersionHandshake.Version =

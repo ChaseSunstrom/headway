@@ -22,6 +22,7 @@ import dev.headway.protocol.control.VersionHandshake
 import dev.headway.protocol.framing.AapMessage
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.FramedConnection
+import dev.headway.protocol.io.MessageChannel
 
 /** Raised when the peer violates the session's expected message sequence. */
 class SessionException(message: String) : RuntimeException(message)
@@ -47,7 +48,7 @@ class SessionException(message: String) : RuntimeException(message)
  *    TLS client will hang waiting for a ClientHello that never comes.
  */
 class PhoneSession(
-    private val connection: FramedConnection,
+    private val connection: MessageChannel,
     private val announcedVersion: VersionHandshake.Version =
         VersionHandshake.Version(VersionHandshake.MAJOR, VersionHandshake.MINOR),
 ) {
