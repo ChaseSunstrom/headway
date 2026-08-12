@@ -1,0 +1,110 @@
+# This file is part of Headway.
+# Copyright (C) 2026 The Headway Authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# The whole protocol stack is pure JVM (ADR 0001), so every gate below runs on a
+# stock Ubuntu runner with no Android SDK, no emulator and no device.
+jobs:
+  protocol:
+    name: Protocol core (unit + byte fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests — framing, crypto, channels
+        run: ./gradlew :core-protocol:test :core-transport:test
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: protocol-test-reports
+          path: |
+            core-protocol/build/reports/tests/
+            core-transport/build/reports/tests/
+          retention-days: 14
+
+  acceptance:
+    name: Phase acceptance tests (vs head-unit emulator, fake transport)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Each phase's acceptance criterion from CLAUDE.md is encoded as a test in
+      # :headunit-emulator. A phase is not "done" until its test is green here.
+      - name: Run acceptance suite
+        run: ./gradlew :headunit-emulator:test
+
+      - name: Upload acceptance reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-test-reports
+          path: headunit-emulator/build/reports/tests/
+          retention-days: 14
+
+  no-gms:
+    name: No Google Play Services in the dependency graph
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Hard constraint from CLAUDE.md: zero Google services, including
+      # transitive dependencies.
+      - name: Fail the build on any GMS/Firebase/MLKit artifact
+        run: ./gradlew checkNoGms
+
+  license-headers:
+    name: GPLv3 headers present on every source file
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check license headers
+        run: ./tools/check-license-headers.sh
+
+  no-untracked-todos:
+    name: Every TODO has a BLOCKERS.md entry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # CLAUDE.md working rule: "Every TODO left in code must have a matching
+      # entry in BLOCKERS.md or it doesn't get committed."
+      - name: Check TODOs are tracked
+        run: ./tools/check-todos.sh

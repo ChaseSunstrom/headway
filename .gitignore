@@ -1,0 +1,38 @@
+# Reference implementations — cloned locally, never committed (see CLAUDE.md)
+/references/
+
+# Gradle / build
+.gradle/
+build/
+*/build/
+captures/
+.cxx/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Android artifacts
+*.apk
+*.aab
+*.dex
+*.ap_
+output-metadata.json
+
+# Keystores — never commit signing material
+*.jks
+*.keystore
+!debug.keystore
+
+# Native
+cmake-build-*/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / scratch
+*.log
+/scratch/
