@@ -27,6 +27,7 @@ import android.net.MacAddress
 import android.net.NetworkCapabilities
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import dev.headway.transport.wireless.CarEndpoint
 import dev.headway.transport.wireless.CarNetworkCredentials
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -83,8 +84,7 @@ class CarWifiNetworkTest {
         bssid = bssid,
         securityMode = securityMode,
         accessPointType = AccessPointType.DYNAMIC,
-        ipAddress = "10.0.0.1",
-        port = 5288,
+        endpoint = CarEndpoint("10.0.0.1", 5288),
     )
 
     @Test

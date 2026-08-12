@@ -162,6 +162,33 @@ git clone --depth 1 https://github.com/opencardev/openauto.git
 aasdk's protobufs win and the disagreement is recorded rather than resolved
 silently.
 
+## Installing and updating
+
+Builds are published as GitHub releases. Once one is installed, **Check for
+updates** at the bottom of the main screen fetches the newest and hands it to
+Android's installer; you will need to allow Headway to install unknown apps, a
+normal per-app setting.
+
+That check is the only thing in Headway that touches the internet, and it runs
+only when you press the button — no background poll, no check on launch, nothing
+sent. CLAUDE.md's "no update checks" rule is about the app never depending on
+connectivity or phoning home, and both still hold: Headway starts, connects to
+the car and drives with no network at all.
+
+### If an update says "App not installed"
+
+Builds up to and including 19 were each signed with a throwaway key generated on
+the CI runner that built them, so no two were signed alike, and Android refuses
+to replace an app with one signed by a different key. Uninstall Headway once and
+install build 20 or later; those share a stable key
+(`signing/headway-dev.jks`), so updates work from then on.
+
+That keystore is committed on purpose. It is public and protects nothing — the
+point is that it is *stable*, not secret, exactly as the platform-wide Android
+debug key is. A real distribution key belongs in CI secrets and is picked up
+from `HEADWAY_KEYSTORE`, `HEADWAY_KEYSTORE_PASSWORD`, `HEADWAY_KEY_ALIAS` and
+`HEADWAY_KEY_PASSWORD` without a code change.
+
 ## Licence
 
 GPLv3. Headway derives its wire format from aasdk, which is GPLv3, so the whole

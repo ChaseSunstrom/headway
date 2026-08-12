@@ -26,6 +26,14 @@ output-metadata.json
 *.keystore
 !debug.keystore
 
+# ...with one deliberate exception. signing/headway-dev.jks is committed because
+# it must be *stable*, not secret: every published build has to be signed with
+# the same key or Android refuses to install one over another. It grants no
+# authority anybody did not already have — the platform-wide Android debug key
+# is public in exactly the same way. A real distribution key must never be
+# committed; the build reads one from HEADWAY_KEYSTORE instead.
+!signing/headway-dev.jks
+
 # Native
 cmake-build-*/
 

@@ -44,6 +44,14 @@
         tools:ignore="QueryAllPackagesPermission" />
 
     <!--
+      The in-app updater, which is entirely user-initiated: nothing checks for
+      an update on launch, on a schedule, or in the background. The user has to
+      grant "install unknown apps" for Headway as well, which is a normal
+      per-app setting and not a privileged permission.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!--
       Declared but not required. Marking these required only changes Play Store
       filtering, which is irrelevant to an app distributed through F-Droid, while
       it makes the app uninstallable on any device lacking the hardware. That
@@ -93,6 +101,19 @@
             android:name=".service.HeadwayService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection|connectedDevice" />
+
+        <!--
+          Delivers the install session's outcome. Not exported: the only sender
+          is the system installer answering a PendingIntent Headway created, and
+          the PendingIntent carries the delivery right on its own.
+        -->
+        <receiver
+            android:name=".update.UpdateReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="dev.headway.app.INSTALL_STATUS" />
+            </intent-filter>
+        </receiver>
 
         <!--
           Gesture injection. This is the unprivileged path to synthesising touch

@@ -112,6 +112,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Assemble the debug APK
+        env:
+          HEADWAY_BUILD_NUMBER: ${{ github.run_number }}
         run: ./gradlew :app:assembleDebug
 
       - name: Android module unit tests
@@ -210,7 +212,13 @@ jobs:
       - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
 
+      # HEADWAY_BUILD_NUMBER becomes the APK's versionCode. It has to match the
+      # build number in the tag, because the in-app updater compares tags and
+      # Android compares versionCodes, and an update where those two disagree
+      # either never gets offered or gets refused as a downgrade.
       - name: Assemble the APK
+        env:
+          HEADWAY_BUILD_NUMBER: ${{ github.run_number }}
         run: ./gradlew :app:assembleDebug
 
       - name: Name the artifact after what it actually is
@@ -261,16 +269,30 @@ jobs:
           cited in `docs/protocol-notes.md`, so a captured frame can be decoded
           by hand against it.
 
+          ## Updating
+
+          Headway can update itself: **Check for updates** at the bottom of the
+          main screen. It only ever checks when you press it — nothing runs in
+          the background, and the car link never touches the internet.
+
+          **Coming from build 19 or earlier, uninstall Headway first.** Those
+          builds were each signed with a throwaway key generated on the CI runner
+          that built them, so no two were signed alike and Android refused every
+          upgrade with "App not installed". Builds from 20 onward share one
+          stable key, so this is a one-time uninstall — and the reason the
+          in-app updater can work at all.
+
           ## About this APK
 
           It is a **debug** build, and deliberately so: protocol frame logging is
           compiled in, which is what makes a first-connection failure
-          diagnosable from the in-app log export. It is signed with the standard
-          Android debug key, so it is not suitable for distribution and Android
-          will refuse to upgrade it over a differently-signed install.
+          diagnosable from the in-app log export.
 
-          A properly signed release build needs a signing key this project does
-          not hold.
+          It is signed with the development key committed in `signing/`, which is
+          public and protects nothing — it exists to be *stable*, not secret, in
+          exactly the way the platform-wide Android debug key is. A real
+          distribution key belongs in CI secrets; the build picks one up from
+          `HEADWAY_KEYSTORE` without a code change.
           NOTES
           {
             echo ""

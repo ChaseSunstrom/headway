@@ -43,8 +43,13 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.ContextCompat
+import dev.headway.app.BuildConfig
 import dev.headway.app.input.HeadwayAccessibilityService
 import dev.headway.app.log.SessionLog
+import dev.headway.app.update.AppUpdater
+import dev.headway.app.update.AvailableRelease
+import dev.headway.app.update.ReleaseCatalog
+import dev.headway.app.update.UpdateException
 import dev.headway.app.quirks.QuirkStore
 import dev.headway.app.service.HeadwayService
 import dev.headway.transport.LinkState
@@ -118,6 +123,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var accessibilityValue: TextView
     private lateinit var connectButton: Button
     private lateinit var parkedOnlySwitch: SwitchCompat
+    private lateinit var updateValue: TextView
+    private lateinit var updateButton: Button
 
     private var uiScope: CoroutineScope? = null
 
@@ -253,6 +260,20 @@ class MainActivity : AppCompatActivity() {
         column.addView(
             button("Create the head unit quirk file") { createQuirkTemplate() },
         )
+
+        column.addView(sectionTitle("Updates"))
+        column.addView(
+            body(
+                "Headway is installed from GitHub releases, so it checks for new " +
+                    "builds there. This only ever happens when you press the " +
+                    "button — nothing checks in the background, and the car link " +
+                    "never uses the internet.",
+            ),
+        )
+        updateValue = body("Build ${BuildConfig.VERSION_CODE} installed")
+        column.addView(updateValue)
+        updateButton = button("Check for updates") { checkForUpdate() }
+        column.addView(updateButton)
 
         return ScrollView(this).apply {
             setBackgroundColor(BACKGROUND)
@@ -405,6 +426,92 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("Done", null)
             .show()
+    }
+
+    /**
+     * The whole update flow: ask, confirm, download, hand to the installer.
+     *
+     * User-initiated from end to end. Nothing here is reachable except by
+     * pressing the button, which is what keeps the "works with no network"
+     * property CLAUDE.md requires — see [ReleaseCatalog]'s note.
+     */
+    private fun checkForUpdate() {
+        val scope = uiScope ?: return
+        val updater = AppUpdater(this)
+
+        updateButton.isEnabled = false
+        updateValue.text = "Asking GitHub..."
+        scope.launch {
+            val release = try {
+                updater.check()
+            } catch (e: UpdateException) {
+                updateValue.text = "Could not check: ${e.message}"
+                updateButton.isEnabled = true
+                return@launch
+            }
+
+            if (release == null) {
+                updateValue.text =
+                    "Build ${BuildConfig.VERSION_CODE} is the newest published build"
+                updateButton.isEnabled = true
+                return@launch
+            }
+
+            updateValue.text = "Build ${release.buildNumber} is available"
+            updateButton.isEnabled = true
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle(release.name)
+                .setMessage(
+                    "You have build ${BuildConfig.VERSION_CODE}. Build " +
+                        "${release.buildNumber} is available (${release.sizeMegabytes}).\n\n" +
+                        "Android will ask you to confirm the install.",
+                )
+                .setPositiveButton("Download and install") { _, _ -> startUpdate(release) }
+                .setNegativeButton("Not now", null)
+                .show()
+        }
+    }
+
+    private fun startUpdate(release: AvailableRelease) {
+        val scope = uiScope ?: return
+        val updater = AppUpdater(this)
+
+        // Asked for before the download rather than after, so a refusal costs
+        // nothing and the reason is obvious while the request is on screen.
+        if (!updater.canInstall()) {
+            AlertDialog.Builder(this)
+                .setTitle("Allow Headway to install updates")
+                .setMessage(
+                    "Android needs your permission for an app to install another " +
+                        "app. Turn on \"Allow from this source\" for Headway, then " +
+                        "press Check for updates again.",
+                )
+                .setPositiveButton("Open settings") { _, _ ->
+                    runCatching { startActivity(updater.installPermissionIntent()) }
+                        .onFailure { toast("No settings screen for this on this device") }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+            return
+        }
+
+        updateButton.isEnabled = false
+        scope.launch {
+            try {
+                updateValue.text = "Downloading build ${release.buildNumber}..."
+                val apk = updater.download(release) { percent ->
+                    updateValue.text = "Downloading build ${release.buildNumber}: $percent%"
+                }
+                updateValue.text = "Starting the installer..."
+                updater.install(apk)
+                updateValue.text = "Waiting for you to confirm the install"
+            } catch (e: UpdateException) {
+                SessionLog.shared.info(TAG, "update failed: ${e.message}")
+                updateValue.text = "Update failed: ${e.message}"
+            } finally {
+                updateButton.isEnabled = true
+            }
+        }
     }
 
     private fun createQuirkTemplate() {
