@@ -47,6 +47,10 @@ include(":core-protocol")
 include(":core-transport")
 include(":headunit-emulator")
 
+// Pure JVM: on-device speech recognition and the command grammar. Kept off
+// Android so the whole voice pipeline is executable in CI with a real model.
+include(":core-voice")
+
 // --- Android modules --------------------------------------------------------
 // Added to the build as each lands with real content, so that every commit
 // configures and every commit's tests run.
@@ -54,4 +58,3 @@ include(":headunit-emulator")
 // include(":core-video")     // added in Phase 2
 // include(":core-input")     // added in Phase 3
 // include(":core-audio")     // added in Phase 4
-// include(":core-voice")     // added in Phase 5

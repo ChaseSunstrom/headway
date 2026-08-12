@@ -5,6 +5,7 @@ coroutines = "1.9.0"
 protobuf = "3.25.5"
 protobufPlugin = "0.9.4"
 junit = "5.11.3"
+vosk = "0.3.45"
 androidxCore = "1.15.0"
 androidxAppcompat = "1.7.0"
 androidxLifecycle = "2.8.7"
@@ -20,6 +21,8 @@ coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-androi
 
 protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protobuf" }
 protobuf-protoc = { module = "com.google.protobuf:protoc", version.ref = "protobuf" }
+
+vosk = { module = "com.alphacephei:vosk", version.ref = "vosk" }
 
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version = "1.11.3" }
