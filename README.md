@@ -8,9 +8,12 @@ by fully on-device speech recognition.
 
 No Google services. No network. No root. No system privileges.
 
-> **Status: early development.** The protocol core and test harness are being
-> built. Nothing here works in a car yet. See [`PROGRESS.md`](PROGRESS.md) for
-> exactly which phases are done and which are not — that table is kept honest.
+> **Status: in development. Nothing here has ever been connected to a car.**
+> The protocol stack, the test harness and the voice pipeline are built and
+> exercised in CI; the Android adapters that touch real radios and real hardware
+> encoders are written but never executed. [`PROGRESS.md`](PROGRESS.md) records
+> the tier of evidence behind every phase — read it before believing anything
+> here works.
 
 ## Why
 
@@ -60,7 +63,7 @@ app/                UI, foreground service, permissions, Bluetooth, Wi-Fi   (And
 core-video/         MediaProjection capture -> MediaCodec H.264             (Android)
 core-input/         Car touch/keys -> AccessibilityService gestures         (Android)
 core-audio/         Audio channels, focus signalling, A2DP coexistence      (Android)
-core-voice/         Car mic -> on-device STT -> command engine              (Android)
+core-voice/         Car mic -> on-device STT -> command engine              (JVM)
 ```
 
 ## Building
@@ -75,19 +78,49 @@ Requires a JDK 17+ (JDK 21 works). The Android SDK is only needed for the
 # Phase acceptance suite against the head-unit emulator
 ./gradlew :headunit-emulator:test
 
+# Voice pipeline against a real speech model (fetch it first, ~41 MB)
+./tools/fetch-vosk-model.sh
+./gradlew :core-voice:test
+
 # Hard-constraint checks
 ./gradlew checkNoGms
 ./tools/check-license-headers.sh
 ./tools/check-todos.sh
 ```
 
+## How much of this is actually tested
+
+The honest answer matters more than a badge, so it is written down. Every phase
+in [`PROGRESS.md`](PROGRESS.md) carries a tier:
+
+- **Executed** — the real code runs against real bytes in CI. The framing, TLS
+  handshake, session bring-up, Bluetooth credentials exchange, video and input
+  channels, reconnection logic, and the whole voice pipeline are here. The voice
+  tests run a real speech model over real recorded speech; the session tests run
+  over genuine kernel sockets as well as an in-process fake.
+- **Compiled** — type-checked against the real Android SDK and never run:
+  `MediaCodec`, `MediaProjection`, `AccessibilityService`, Bluetooth sockets,
+  Wi-Fi binding.
+- **Unverifiable without hardware** — anything measured in a car.
+
+One caveat worth stating plainly: the head-unit emulator shares its protocol
+code with the phone, so a wrong-but-symmetric constant round-trips cleanly and
+proves nothing. The byte fixtures are the real oracle. See
+[ADR 0002](docs/adr/0002-jvm-headunit-emulator.md).
+
 For the Android modules, point `ANDROID_HOME` at an SDK with platform 35 and
 build-tools 35.0.0, or create a `local.properties` with `sdk.dir=...`.
 
 ## Working on the protocol
 
-The reverse-engineered reference implementations are not vendored; clone them
-locally (they are gitignored):
+aasdk's 254 protobuf schemas *are* vendored, under
+`core-protocol/src/main/proto/aap_protobuf/` — retyping them is the most
+error-prone option available, since one wrong field number parses locally and is
+rejected by a real head unit. They keep aasdk's authorship; see
+[`THIRD-PARTY.md`](THIRD-PARTY.md).
+
+The reference implementations themselves are not vendored. Clone them locally
+(they are gitignored) to follow the citations:
 
 ```bash
 mkdir -p references && cd references
