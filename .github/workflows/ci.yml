@@ -10,30 +10,26 @@ on:
   pull_request:
   workflow_dispatch:
 
-# The whole protocol stack is pure JVM (ADR 0001), so every gate below runs on a
-# stock Ubuntu runner with no Android SDK, no emulator and no device.
+# The whole protocol stack is pure JVM (ADR 0001), so the gates that matter most
+# run on a stock runner with no Android SDK, no emulator and no device.
 jobs:
   protocol:
     name: Protocol core (unit + byte fixtures)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Unit tests — framing, crypto, channels
+      - name: Unit tests — framing, crypto, channels, transport
         run: ./gradlew :core-protocol:test :core-transport:test
 
-      - name: Upload test reports
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: protocol-test-reports
           path: |
@@ -42,69 +38,152 @@ jobs:
           retention-days: 14
 
   acceptance:
-    name: Phase acceptance tests (vs head-unit emulator, fake transport)
+    name: Phase acceptance (vs head-unit emulator)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      # Each phase's acceptance criterion from CLAUDE.md is encoded as a test in
-      # :headunit-emulator. A phase is not "done" until its test is green here.
-      - name: Run acceptance suite
+      # Each phase's criterion from CLAUDE.md is encoded as a test here. A phase
+      # is not Done until its test is green.
+      - name: Phase 1-4 acceptance suite
         run: ./gradlew :headunit-emulator:test
 
-      - name: Upload acceptance reports
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: acceptance-test-reports
           path: headunit-emulator/build/reports/tests/
           retention-days: 14
 
-  no-gms:
-    name: No Google Play Services in the dependency graph
+  voice:
+    name: Phase 5 voice (real Vosk model, real speech)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      # The model is 68 MB unpacked and is not committed. Without it the Phase 5
+      # test skips; CI fetches it so CI actually runs it.
+      - name: Cache the Vosk model
+        id: vosk-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/vosk
+          key: vosk-model-small-en-us-0.15
 
-      # Hard constraint from CLAUDE.md: zero Google services, including
-      # transitive dependencies.
-      - name: Fail the build on any GMS/Firebase/MLKit artifact
+      - name: Fetch the Vosk model
+        if: steps.vosk-cache.outputs.cache-hit != 'true'
+        run: ./tools/fetch-vosk-model.sh
+
+      # Runs real speech fixtures through the real recogniser and asserts both
+      # the resolved command and the sub-2s budget.
+      - name: Voice pipeline acceptance
+        run: ./gradlew :core-voice:test
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: voice-test-reports
+          path: core-voice/build/reports/tests/
+          retention-days: 14
+
+  android:
+    name: Android build and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble the debug APK
+        run: ./gradlew :app:assembleDebug
+
+      - name: Android module unit tests
+        run: ./gradlew :core-video:test :core-input:test :core-audio:test :app:testDebugUnitTest
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: headway-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+
+  instrumented:
+    name: Android instrumented tests (AOSP emulator, no GMS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+
+      # KVM is what makes this affordable; without it the emulator is unusably
+      # slow. GitHub's ubuntu-latest runners expose it once the udev rule is set.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # aosp_atd carries zero Google Play Services, which matches the project's
+      # no-GMS constraint rather than merely tolerating it.
+      - name: Instrumented tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: aosp_atd
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: ./gradlew connectedDebugAndroidTest
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: instrumented-test-reports
+          path: "*/build/reports/androidTests/"
+          retention-days: 14
+
+  constraints:
+    name: Hard constraints from CLAUDE.md
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+
+      # No Google Play Services anywhere in the merged dependency graph.
+      - name: No GMS
         run: ./gradlew checkNoGms
 
-  license-headers:
-    name: GPLv3 headers present on every source file
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check license headers
+      - name: GPLv3 headers on every source file
         run: ./tools/check-license-headers.sh
 
-  no-untracked-todos:
-    name: Every TODO has a BLOCKERS.md entry
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # CLAUDE.md working rule: "Every TODO left in code must have a matching
-      # entry in BLOCKERS.md or it doesn't get committed."
-      - name: Check TODOs are tracked
+      # "Every TODO left in code must have a matching entry in BLOCKERS.md."
+      - name: Every TODO is tracked
         run: ./tools/check-todos.sh
