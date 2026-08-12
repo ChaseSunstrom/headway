@@ -200,6 +200,53 @@ on its own network, and `LinkProperties.getDhcpServerAddress()` on the joined
 and the port defaults to 5288 (§3.2) and is configurable. `CarNetworkCredentials`
 therefore carries a **nullable** endpoint: absent is normal, not an error.
 
+### The third capture: reachable, and refusing
+
+With `CHANGE_NETWORK_STATE` declared, the phone joined the car's access point and
+found the head unit without being told where it was:
+
+```text
+tx id=2 (WIFI_INFO_REQUEST)
+rx id=3 (WIFI_INFO_RESPONSE)   SSID 'myChevrolet1189'
+requesting myChevrolet1189 (ce:44:26:bf:18:ec)
+joined myChevrolet1189                          ...7.6s later
+head unit is the DHCP server at 192.168.5.1
+opening the AAP session to 192.168.5.1:5288
+  -> ECONNREFUSED
+```
+
+`ECONNREFUSED` is the useful part. The head unit answered — it is on the network,
+routing works, the address is right — and only refused because nothing was bound
+to the port. A wrong address gives a timeout; this is a live host saying no.
+
+The cause is a missing acknowledgement, not a missing address. aa-proxy-rs drives
+genuine Android Auto phones, and its `send_params`
+(`aa-proxy-rs/src/bluetooth.rs` L6207-L6245) records what a real phone sends:
+
+```text
+head unit -> phone   WifiStartRequest {ip_address, port}
+phone -> head unit   WifiInfoRequest
+head unit -> phone   WifiInfoResponse {ssid, key, bssid, ...}
+phone -> head unit   WifiStartResponse     <- status at field 3
+phone -> head unit   WifiConnectStatus     <- status at field 1
+```
+
+Both of those last two are **read blocking** by the head-unit side, so a unit
+that follows this sequence is still waiting for them when a phone that sends
+neither goes ahead and connects. It has not been told the phone is on its
+network, so it has no reason to be accepting AAP connections yet.
+
+Note the status field numbers differ between the two messages and are not
+interchangeable: `WifiStartResponse.status` is field 3 because field 1 is
+`ip_address` (aa-proxy-rs comments on exactly this trap at L917-L920), while
+`WifiConnectionStatus.status` is field 1. Both confirmed against the vendored
+`aap_protobuf/aaw/WifiStartResponse.proto` and `WifiConnectionStatus.proto`.
+
+Headway now sends `WifiStartResponse` on receiving the credentials, and
+`WifiConnectionStatus` after the Wi-Fi association — the latter necessarily
+after, since it is the announcement that the association happened, which means
+the RFCOMM link has to stay open across the join.
+
 ### The field 4/5 ambiguity, and the trap in it
 
 Two schema revisions circulate. Decompiled Gearhead puts

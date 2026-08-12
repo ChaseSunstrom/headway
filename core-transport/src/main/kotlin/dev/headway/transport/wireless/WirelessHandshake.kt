@@ -22,6 +22,8 @@ import aap_protobuf.aaw.StatusOuterClass.Status
 import aap_protobuf.aaw.WifiInfoResponseOuterClass.WifiInfoResponse
 import aap_protobuf.service.wifiprojection.message.AccessPointTypeOuterClass.AccessPointType
 import aap_protobuf.service.wifiprojection.message.WifiSecurityModeOuterClass.WifiSecurityMode
+import aap_protobuf.aaw.WifiStartResponseOuterClass.WifiStartResponse
+import aap_protobuf.aaw.WifiConnectionStatusOuterClass.WifiConnectionStatus
 import aap_protobuf.aaw.WifiStartRequestOuterClass.WifiStartRequest
 import headway.aaw.AawVersion.AawWifiVersionRequest
 import headway.aaw.AawVersion.AawWifiVersionResponse
@@ -427,6 +429,21 @@ class WirelessHandshake(
             // stalled at 20 s per attempt with the credentials already in hand.
             val i = info
             if (i != null) {
+                // Acknowledge, the way a real phone does.
+                //
+                // aa-proxy-rs drives genuine Android Auto phones and records the
+                // exact sequence in `send_params` (`src/bluetooth.rs`
+                // L6207-L6245): after WifiInfoResponse it *blocks* reading
+                // WifiStartResponse and then WifiConnectStatus from the phone.
+                // A head unit doing the same is still waiting for both when
+                // Headway closes Bluetooth and connects, which is why a real
+                // Chevrolet refused TCP on a port it had never been told to
+                // open. Status is field 3 here and field 1 in
+                // WifiConnectionStatus -- they are not interchangeable.
+                send(
+                    MessageId.WIFI_START_RESPONSE,
+                    WifiStartResponse.newBuilder().setStatus(Status.STATUS_SUCCESS).build(),
+                )
                 val host = endpoint?.ipAddress ?: projectionEndpoint?.ipAddress
                 val tcpPort = endpoint?.port ?: projectionEndpoint?.port
                 val resolved =
@@ -483,6 +500,31 @@ class WirelessHandshake(
             "credentials handshake that stalled. Check that Android Auto is enabled for " +
             "this phone in the car's Bluetooth device settings, and that the car is not " +
             "already projecting to another phone."
+
+    /**
+     * Tells the head unit the phone is now on its access point.
+     *
+     * The second half of what a real phone owes the head unit after the
+     * credentials exchange, and it has to be sent *after* the Wi-Fi association
+     * rather than with the rest of the handshake — it is the announcement that
+     * the association happened. aa-proxy-rs reads it as the final step of
+     * bring-up (`src/bluetooth.rs` L6245), and a head unit waiting for it has no
+     * reason to start accepting AAP connections.
+     *
+     * Failing to send it is not worth aborting the attempt over: the endpoint is
+     * discoverable without it, so a head unit that does not care should still
+     * get a session. Reported and swallowed.
+     */
+    suspend fun reportWifiConnected() {
+        try {
+            send(
+                MessageId.WIFI_CONNECTION_STATUS,
+                WifiConnectionStatus.newBuilder().setStatus(Status.STATUS_SUCCESS).build(),
+            )
+        } catch (e: Exception) {
+            onStep("could not tell the head unit we joined its network: ${e.message}")
+        }
+    }
 
     /**
      * Every Wi-Fi frequency the head unit advertised, in MHz.

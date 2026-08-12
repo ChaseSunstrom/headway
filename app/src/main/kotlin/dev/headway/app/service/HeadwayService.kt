@@ -170,6 +170,46 @@ open class HeadwayService : Service() {
      * a link failure with a readable message — a state the supervisor and the
      * notification already handle. A second check here would only duplicate it.
      */
+    /**
+     * Connects to the head unit, allowing for a listener that is not up yet.
+     *
+     * A refusal straight after association is not the same as a wrong address.
+     * `ECONNREFUSED` means the head unit answered — it is on the network and
+     * reachable — and only that nothing is bound to the port yet, which is
+     * exactly what it looks like while the unit is still starting its AAP
+     * server. Giving up on the first one throws away a session that was seconds
+     * from working, and hands the supervisor a full backoff cycle instead.
+     *
+     * Bounded rather than open-ended: a head unit that is never going to listen
+     * has to fail the attempt so reconnection can start over.
+     */
+    private suspend fun connectWithRetry(
+        wifi: CarWifiNetwork,
+        endpoint: CarEndpoint,
+        totalMillis: Long = 20_000,
+        retryDelayMillis: Long = 1_000,
+    ): java.net.Socket {
+        val deadline = System.nanoTime() + totalMillis * 1_000_000
+        var attempt = 0
+        while (true) {
+            attempt++
+            try {
+                return wifi.openSocket(endpoint.ipAddress, endpoint.port)
+            } catch (e: Exception) {
+                if (System.nanoTime() >= deadline) {
+                    throw IllegalStateException(
+                        "the head unit never accepted an AAP connection on $endpoint " +
+                            "after $attempt attempts over ${totalMillis}ms. It is reachable, " +
+                            "so the port is wrong or it is refusing the session: ${e.message}",
+                        e,
+                    )
+                }
+                step("$endpoint not accepting yet (attempt $attempt): ${e.message}")
+                kotlinx.coroutines.delay(retryDelayMillis)
+            }
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private suspend fun runSession() {
         // Which build produced this log. Every real-car diagnosis so far has had
@@ -203,11 +243,17 @@ open class HeadwayService : Service() {
                     )
                     CarEndpoint(host, TcpTransport.DEFAULT_PORT)
                 }
+                // Tell the head unit the phone is on its network before trying
+                // to reach it. A real phone sends this and a head unit waits for
+                // it (see WirelessHandshake.reportWifiConnected); skipping it is
+                // why a reachable head unit refused the connection outright.
+                link.reportWifiConnected()
+
                 Log.i(TAG, "opening the AAP session to $endpoint")
 
                 // Sockets come from the network, never from `new Socket()`:
                 // the car AP has no internet and is not the default route.
-                val socket = wifi.openSocket(endpoint.ipAddress, endpoint.port)
+                val socket = connectWithRetry(wifi, endpoint)
 
                 TcpTransport.wrap(socket).use { transport ->
                     val connection = FramedConnection(transport)

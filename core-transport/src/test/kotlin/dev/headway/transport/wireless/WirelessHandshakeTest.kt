@@ -23,6 +23,7 @@ import aap_protobuf.aaw.WifiConnectionStatusOuterClass.WifiConnectionStatus
 import aap_protobuf.aaw.WifiInfoResponseOuterClass.WifiInfoResponse
 import aap_protobuf.service.wifiprojection.message.AccessPointTypeOuterClass.AccessPointType
 import aap_protobuf.service.wifiprojection.message.WifiSecurityModeOuterClass.WifiSecurityMode
+import aap_protobuf.aaw.WifiStartResponseOuterClass.WifiStartResponse
 import aap_protobuf.aaw.WifiStartRequestOuterClass.WifiStartRequest
 import headway.aaw.AawVersion.AawWifiVersionRequest
 import headway.aaw.AawVersion.AawWifiVersionResponse
@@ -504,6 +505,61 @@ class WirelessHandshakeTest {
             val result = withTimeout(10_000) { phone.await() }
             assertEquals("192.168.43.1", result.endpoint?.ipAddress)
             assertEquals(5288, result.endpoint?.port)
+        }
+    }
+
+    @Test
+    fun `the phone acknowledges the credentials the way a real phone does`() = runBlocking {
+        // aa-proxy-rs drives genuine Android Auto phones and blocks reading
+        // WifiStartResponse then WifiConnectStatus after sending the credentials
+        // (src/bluetooth.rs send_params, L6207-L6245). Sending neither left a
+        // real Chevrolet waiting, and it refused the AAP connection because it
+        // had never been told to expect one.
+        LoopbackTransport.pair().use { pair ->
+            val handshake = WirelessHandshake(pair.phone)
+            val phone = async(Dispatchers.IO) { handshake.perform() }
+
+            pair.headUnit.write(
+                RfcommMessage(MessageId.WIFI_VERSION_REQUEST.number, malibuVersionRequest).encode()
+            )
+            RfcommMessage.read(pair.headUnit) // version response
+            RfcommMessage.read(pair.headUnit) // info request
+            send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
+
+            val ack = withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }
+            assertEquals(
+                MessageId.WIFI_START_RESPONSE.number, ack.messageId,
+                "the credentials must be acknowledged with WifiStartResponse",
+            )
+            val started = WifiStartResponse.parseFrom(ack.payload)
+            assertEquals(
+                Status.STATUS_SUCCESS, started.status,
+                "status is field 3 here, and a non-success value refuses the session",
+            )
+
+            withTimeout(10_000) { phone.await() }
+
+            // Then, only once the phone is actually on the network.
+            handshake.reportWifiConnected()
+            val joined = withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }
+            assertEquals(MessageId.WIFI_CONNECTION_STATUS.number, joined.messageId)
+            assertEquals(
+                Status.STATUS_SUCCESS,
+                WifiConnectionStatus.parseFrom(joined.payload).status,
+                "status is field 1 in this message, not field 3",
+            )
+        }
+    }
+
+    @Test
+    fun `reporting the wifi join never fails the session`() = runBlocking {
+        // The endpoint is discoverable without this message, so a head unit that
+        // does not want it must still get a session rather than an exception
+        // from a write to a link it already closed.
+        LoopbackTransport.pair().use { pair ->
+            val handshake = WirelessHandshake(pair.phone)
+            pair.phone.close()
+            handshake.reportWifiConnected()
         }
     }
 

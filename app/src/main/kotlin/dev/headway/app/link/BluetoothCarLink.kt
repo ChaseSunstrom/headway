@@ -94,6 +94,14 @@ class BluetoothCarLink(
     @Volatile
     private var transport: Transport? = null
 
+    /**
+     * Kept past [fetchCredentials] because the exchange is not over when the
+     * credentials arrive: the head unit still has to be told the phone joined
+     * its access point, and that can only be said after the Wi-Fi association.
+     */
+    @Volatile
+    private var handshake: WirelessHandshake? = null
+
     /** The device this link talks to; surfaced for the notification and logs. */
     val deviceAddress: String get() = device.address
 
@@ -171,8 +179,10 @@ class BluetoothCarLink(
             val startedAt = System.nanoTime()
             try {
                 onStep("RFCOMM up ($label); waiting for the head unit to speak")
+                val exchange = WirelessHandshake(wrapped, onStep)
+                handshake = exchange
                 return withTimeout(handshakeTimeoutMillis) {
-                    WirelessHandshake(wrapped, onStep).perform()
+                    exchange.perform()
                 }
             } catch (e: Throwable) {
                 val elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000
@@ -267,6 +277,19 @@ class BluetoothCarLink(
         }
     }
 
+    /**
+     * Tells the head unit the phone is on its access point.
+     *
+     * Must be called after the Wi-Fi association and before the AAP connect: a
+     * head unit that is waiting for this has no reason to be accepting AAP
+     * connections yet, which on a real Chevrolet showed up as ECONNREFUSED on a
+     * port that was reachable and simply not open.
+     */
+    suspend fun reportWifiConnected() {
+        handshake?.reportWifiConnected()
+            ?: onStep("no Bluetooth exchange to report the Wi-Fi join on")
+    }
+
     /** Idempotent; safe to call from the reconnect path and from teardown. */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -276,6 +299,7 @@ class BluetoothCarLink(
         runCatching { socket?.close() }
         transport = null
         socket = null
+        handshake = null
     }
 
     companion object {
