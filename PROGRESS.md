@@ -1,90 +1,69 @@
 # Headway — progress
 
-Phase status against the plan in `CLAUDE.md`. A phase is **Done** only when its
-acceptance test is green in CI; anything else is In progress or Not started. The
-point of this table is to be accurate, not encouraging.
+Phase status against the plan in `CLAUDE.md`. The point of this table is to be
+accurate, not encouraging.
 
-| Phase | Title | Status | Acceptance test |
-|-------|-------|--------|-----------------|
-| 0 | Test harness first | In progress | Scripted session vs stub client, green in CI |
-| 1 | Handshake | In progress | Discovery 20/20 over fake transport in CI + real BT/Wi-Fi |
-| 2 | Video out | Not started | Emulator shows live screen ≥25 fps for 10 min, no stall >1 s |
-| 3 | Input | Not started | Scripted touches drive a real third-party app |
-| 4 | Audio + focus | Not started | TTS over speech channel with correct duck/resume on the wire |
-| 5 | Voice | Not started | WAV "open calculator" launches calculator offline, <2 s |
-| 6 | Reconnection, polish, packaging | Not started | All suites green, reproducible APK, docs complete |
+Each phase carries the **tier of evidence** behind it, defined in
+[`docs/completion-plan.md`](docs/completion-plan.md):
 
-## What works today
+- **A — Executed:** real code runs against real bytes and is asserted in CI.
+- **B — Framework-executed:** runs on a real Android device or emulator image.
+- **C — Compiled:** type-checked against the real Android SDK; behaviour unverified.
+- **D — Unverifiable here:** needs a phone, a car, or both.
 
-**66 tests green** across three modules, on a bare JDK with no device, no
-Android SDK and no NDK.
+| Phase | Title | Status | Evidence |
+|-------|-------|--------|----------|
+| 0 | Test harness | **Done** | A — the emulator drives every acceptance test in CI |
+| 1 | Handshake | **Done (CI half)** | A — full bring-up 20/20 over the fake transport *and* over real TCP; D for the real BT/Wi-Fi half |
+| 2 | Video out | **Done (channel)** | A — 10 min of 30 fps stream in order, byte-identical, real NAL parsing; C for `MediaCodec` capture |
+| 3 | Input | **Done (channel)** | A — event decode and letterbox transform; C for `AccessibilityService` dispatch |
+| 4 | Audio + focus | In progress | A — focus states modelled; the channel is landing |
+| 5 | Voice | **Done (pipeline)** | A — real Vosk on real speech, "open calculator" resolved in ~720 ms; C for `startActivity` |
+| 6 | Reconnection, polish, packaging | In progress | A — supervisor; B — the APK installs on a real API 35 device |
 
-- **Toolchain** — Gradle 8.14.3 / Kotlin 2.0.21 multi-module build; protobuf
-  codegen wired; Android SDK 35 verified installable. CI enforces the no-GMS
-  rule, GPLv3 headers, and BLOCKERS-tracked TODOs.
-- **Transport** — `Transport` abstraction with a stream-backed implementation
-  covering TCP, Bluetooth RFCOMM and an in-process fake. Backpressure and prompt
-  EOF on peer close are tested, the latter because reconnection depends on it.
-- **Framing** — full AAP frame codec: headers, flags, fragmentation, per-channel
-  reassembly. Pinned by hand-derived byte fixtures.
-- **Version handshake** — both roles, exchanged 20/20 consecutively over the
-  fake transport, with the wire bytes pinned by fixture.
-- **TLS session** — a hand-pumped `SSLEngine` implementing the `Cryptor` seam,
-  since AAP carries its handshake inside control messages rather than on the
-  socket. Handshake completes between the two roles with the real vendored
-  certificates, negotiating an ECDHE_RSA TLS 1.2 suite; application data round
-  trips in both directions, including payloads spanning multiple TLS records.
-- **Protocol notes** — `docs/protocol-notes.md`, 465 constants with file+line
-  citations across framing, TLS, the wireless handshake, control, video and
-  input, plus a "where the references disagree" section per area.
+## What is genuinely verified
 
-## Phase 1 — what is done and what is not
+**200+ tests green** on a bare JDK, plus an APK that installs on a real device.
 
-Done: the plaintext version exchange, 20/20 over the fake transport.
+- **Framing** — the full AAP frame codec, pinned by hand-derived byte fixtures.
+- **TLS** — a real handshake between the two roles with the real vendored
+  certificates, negotiating ECDHE_RSA TLS 1.2.
+- **Session** — version, TLS, auth, service discovery and channel open, 20/20
+  consecutive over the in-process fake **and** over genuine kernel sockets.
+- **Bluetooth handshake** — the RFCOMM credentials exchange over the fake
+  transport, including the malformed and hostile cases.
+- **Video channel** — ten minutes of 30 fps stream time, in order, with no gap
+  over one second, H.264 bytes bit-identical, and real Annex-B NAL parsing.
+- **Input channel** — event decode and a letterbox-aware coordinate transform.
+- **Voice** — the real Vosk model on real synthesised speech at the car mic's
+  exact format; all six commands resolved correctly, all under 750 ms.
+- **Reconnection** — the backoff and state machine, driven by induced failures.
+- **Android** — the debug APK builds and installs on an API 35 AOSP image, and
+  the platform reports exactly the intended permission set, with no location.
 
-Not done, and required before Phase 1 can be called finished:
+## What is not verified, and cannot be here
 
-1. **Wiring TLS into the session.** The `TlsSession` exists and is tested, but
-   the control-channel exchange that carries it — `ENCAPSULATED_SSL` messages
-   until the engine is satisfied, then `AUTH_COMPLETE` — is not yet driven by
-   `PhoneSession`.
-2. **Service discovery.** `ServiceDiscoveryRequest`/`Response` over the
-   now-encrypted control channel, advertising the channels Headway supports.
-3. **Bluetooth RFCOMM handshake.** The protobuf exchange that yields the car's
-   Wi-Fi credentials — service UUID `4de17a00-52cb-11e6-bdf4-0800200c9a66`, TCP
-   port 5288, both confirmed across multiple references and documented.
-4. **Wi-Fi join with a bound network.** `WifiNetworkSpecifier` plus socket
-   binding to the returned `Network`, because the car's AP has no internet and
-   Android will not route to it by default.
-5. **Real-hardware run.** Cannot be done here at all — see B-001.
+Stated so the gap between "CI green" and "works in a car" is never implied away.
 
-Items 1–2 are pure JVM and fully testable in CI. Items 3–4 are Android-only and
-will be written against the interfaces in `core-transport`, exercised over the
-fake transport, and remain unverified until someone runs them on a phone.
+- **No car, no phone, no radio.** Bluetooth and Wi-Fi association,
+  `MediaCodec` screen capture, `AccessibilityService` gesture dispatch and A2DP
+  coexistence are compiled and type-checked, never executed. See B-001.
+- **The public phone certificate expired in 2022** and cannot be reissued
+  without Google's CA key. This is the single most likely reason a real Malibu
+  refuses the session. See B-003.
+- **A green emulator run proves self-consistency, not car compatibility.** The
+  emulator shares `core-protocol` with the phone, so a wrong-but-symmetric
+  constant round-trips cleanly. The byte fixtures — and later Google's DHU —
+  are the real oracle. See ADR 0002.
+- **Latency and fps on hardware** (the 250 ms touch-to-photon budget, ≥25 fps
+  sustained) are properties of a Pixel's encoder and cannot be measured from a
+  JVM test.
 
-## Next action
+## Next actions
 
-Drive `TlsSession` from `PhoneSession` over `ENCAPSULATED_SSL` control messages
-through to `AUTH_COMPLETE` (whose wire payload is `00 04 08 00`, per
-`AACS/AAClient/src/AaCommunicator.cpp` L143-L151), and extend the Phase 1
-acceptance test to cover the encrypted session end to end.
-
-Then implement `ServiceDiscoveryRequest`/`Response` from the vendored protobufs.
-
-## What cannot be done in this environment
-
-Stated so the gap between "CI green" and "works in a car" is never implied away:
-
-- **No real hardware.** No phone, no Bluetooth radio, no Wi-Fi AP, no car. Every
-  Bluetooth and Wi-Fi path is written against the references and exercised over
-  the fake transport only.
-- **Real-car validation is impossible here**, and `CLAUDE.md` acknowledges it as
-  the one step that cannot be self-performed. The compensating design — frame
-  logging and in-app log export — is a Phase 6 deliverable.
-- **On-device acceptance criteria** (Phases 2–5 measure fps, latency and gesture
-  injection on a physical Pixel) can be implemented and unit-tested here, but
-  their acceptance tests need a device to pass.
-- **A green emulator run is not proof of car compatibility.** The emulator shares
-  `core-protocol` with the phone, so a wrong-but-symmetric constant round-trips
-  cleanly. The byte fixtures and, later, Google's DHU are the real oracle. See
-  ADR 0002.
+1. Land the audio and microphone channels with their acceptance tests.
+2. Wire the Android adapters — `MediaProjection` to `MediaCodec`,
+   `AccessibilityService` gesture dispatch, `WifiNetworkSpecifier` binding and
+   the RFCOMM socket — onto the protocol objects that already exist.
+3. Build the car-facing launcher UI, quirk configuration and in-app log export.
+4. Reproducible release build and F-Droid metadata.
