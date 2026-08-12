@@ -192,6 +192,70 @@ class WirelessHandshakeTest {
     }
 
     @Test
+    fun `a silent head unit is prompted rather than waited on forever`() = runBlocking {
+        // The failure this exists for: a real Chevrolet Infotainment 3 unit
+        // accepted the RFCOMM connection on channel 3 and then sent nothing at
+        // all. Every reference has the head unit speak first, so the original
+        // code blocked reading until the outer timeout and produced no evidence.
+        LoopbackTransport.pair().use { pair ->
+            val phone = async(Dispatchers.IO) {
+                WirelessHandshake(pair.phone).perform(silenceProbeMillis = 200)
+            }
+
+            // Say nothing. The phone should prod us.
+            val probe = withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }
+            assertEquals(MessageId.WIFI_VERSION_REQUEST.number, probe.messageId)
+
+            // Now behave like a head unit that just needed asking.
+            send(pair.headUnit, MessageId.WIFI_START_REQUEST,
+                WifiStartRequest.newBuilder().setIpAddress("192.168.1.1").setPort(5288).build())
+            RfcommMessage.read(pair.headUnit) // the info request
+            send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
+
+            assertEquals("192.168.1.1", withTimeout(10_000) { phone.await() }.ipAddress)
+        }
+    }
+
+    @Test
+    fun `a head unit that speaks first is never probed`() = runBlocking {
+        // Probing a unit that was about to talk anyway risks confusing it, so
+        // the prod must not fire when the conversation is already underway.
+        LoopbackTransport.pair().use { pair ->
+            val phone = async(Dispatchers.IO) {
+                WirelessHandshake(pair.phone).perform(silenceProbeMillis = 500)
+            }
+            send(pair.headUnit, MessageId.WIFI_START_REQUEST,
+                WifiStartRequest.newBuilder().setIpAddress("10.1.1.1").setPort(5288).build())
+
+            val first = withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }
+            assertEquals(
+                MessageId.WIFI_INFO_REQUEST.number,
+                first.messageId,
+                "a head unit that spoke first must not be probed",
+            )
+            send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
+            assertEquals("10.1.1.1", withTimeout(10_000) { phone.await() }.ipAddress)
+        }
+    }
+
+    @Test
+    fun `a head unit that stays silent through every probe reports that clearly`() = runBlocking {
+        LoopbackTransport.pair().use { pair ->
+            val phone = async(Dispatchers.IO) {
+                runCatching {
+                    WirelessHandshake(pair.phone).perform(maxMessages = 1, silenceProbeMillis = 100)
+                }
+            }
+            // Drain the probes; never answer.
+            repeat(2) { runCatching { withTimeout(5_000) { RfcommMessage.read(pair.headUnit) } } }
+            pair.headUnit.close()
+
+            val error = withTimeout(15_000) { phone.await() }.exceptionOrNull()
+            assertTrue(error != null, "expected a handshake failure, got $error")
+        }
+    }
+
+    @Test
     fun `the service UUID matches all three references`() {
         assertEquals(
             "4de17a00-52cb-11e6-bdf4-0800200c9a66",

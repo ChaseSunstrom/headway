@@ -26,6 +26,10 @@ import aap_protobuf.aaw.WifiStartRequestOuterClass.WifiStartRequest
 import aap_protobuf.aaw.WifiVersionResponseOuterClass.WifiVersionResponse
 import com.google.protobuf.MessageLite
 import dev.headway.protocol.io.Transport
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Raised when the head unit's Bluetooth handshake fails or is malformed. */
 class WirelessHandshakeException(message: String) : RuntimeException(message)
@@ -161,12 +165,43 @@ class WirelessHandshake(
      *   connection attempt instead of failing it, and reconnection depends on
      *   failing promptly.
      */
-    suspend fun perform(maxMessages: Int = 16): CarNetworkCredentials {
+    suspend fun perform(
+        maxMessages: Int = 16,
+        silenceProbeMillis: Long = DEFAULT_SILENCE_PROBE_MILLIS,
+    ): CarNetworkCredentials = coroutineScope {
         var endpoint: WifiStartRequest? = null
         var info: WifiInfoResponse? = null
+        val heardSomething = AtomicBoolean(false)
 
+        // Prod a silent head unit rather than blocking forever.
+        //
+        // Every reference has the head unit speak first, and aa-proxy-rs even
+        // buffers "HU pre-bootstrap frames captured before phone arrived"
+        // (src/bluetooth.rs, car-wifi-mitm). A real Chevrolet Infotainment 3
+        // unit was observed accepting the RFCOMM connection on channel 3 and
+        // then sending nothing at all for twenty seconds, so that expectation
+        // does not hold universally.
+        //
+        // Rather than bet on one reading of an under-documented handshake, ask.
+        // Both probes are messages the head unit is known to understand, and a
+        // unit that was going to speak first will have done so before the first
+        // probe fires. The prodding runs in its own coroutine because cancelling
+        // a blocked read is not an option: Android's BluetoothSocket read is not
+        // interruptible, so a timed-out read would still be sitting on the
+        // socket and would swallow the reply we are waiting for.
+        val prodder = launch {
+            for (probe in SILENCE_PROBES) {
+                delay(silenceProbeMillis)
+                if (heardSomething.get()) return@launch
+                onStep("head unit silent; probing with ${probe.name}")
+                send(probe, probeBody(probe))
+            }
+        }
+
+        try {
         repeat(maxMessages) {
             val message = RfcommMessage.read(transport)
+            heardSomething.set(true)
             onStep(
                 "rx id=${message.messageId} " +
                     "(${MessageId.forNumber(message.messageId)?.name ?: "unknown"}) " +
@@ -217,7 +252,7 @@ class WirelessHandshake(
             val e = endpoint
             val i = info
             if (e != null && i != null) {
-                return CarNetworkCredentials(
+                return@coroutineScope CarNetworkCredentials(
                     ssid = i.ssid,
                     passphrase = i.password,
                     bssid = i.bssid,
@@ -229,8 +264,30 @@ class WirelessHandshake(
             }
         }
         throw WirelessHandshakeException(
-            "head unit did not supply both an endpoint and credentials within $maxMessages messages"
+            if (heardSomething.get()) {
+                "head unit did not supply both an endpoint and credentials within " +
+                    "$maxMessages messages"
+            } else {
+                // The distinction matters for diagnosis: a unit that accepted the
+                // socket and then said nothing, even when prompted, is a
+                // different problem from one that talked and gave us the wrong
+                // thing.
+                "head unit accepted the RFCOMM connection but sent nothing, including " +
+                    "after ${SILENCE_PROBES.size} probe(s). Check that Android Auto is " +
+                    "enabled for this phone in the car's Bluetooth device settings."
+            }
         )
+        } finally {
+            prodder.cancel()
+        }
+    }
+
+    /** Body for a probe message. Kept beside [SILENCE_PROBES] so they cannot drift. */
+    private fun probeBody(id: MessageId): MessageLite = when (id) {
+        MessageId.WIFI_VERSION_REQUEST ->
+            aap_protobuf.aaw.WifiVersionRequestOuterClass.WifiVersionRequest.getDefaultInstance()
+        else ->
+            aap_protobuf.aaw.WifiInfoRequestOuterClass.WifiInfoRequest.getDefaultInstance()
     }
 
     private suspend fun send(id: MessageId, body: MessageLite) {
@@ -240,6 +297,26 @@ class WirelessHandshake(
     }
 
     companion object {
+        /**
+         * How long to let the head unit speak before prompting it.
+         *
+         * Every reference has the head unit open the conversation immediately,
+         * so a unit that has not spoken in five seconds is not being slow.
+         */
+        const val DEFAULT_SILENCE_PROBE_MILLIS: Long = 5_000
+
+        /**
+         * What to send a head unit that will not open the conversation, in order.
+         *
+         * A version exchange first because that is what the references show real
+         * units leading with -- aa-proxy-rs notes that `WifiVersionRequest` can
+         * itself carry the projection endpoint, and that strict units may then
+         * omit `WifiStartRequest` entirely. Asking for the credentials is the
+         * fallback, since it is the one message whose reply we need regardless.
+         */
+        val SILENCE_PROBES: List<MessageId> =
+            listOf(MessageId.WIFI_VERSION_REQUEST, MessageId.WIFI_INFO_REQUEST)
+
         /**
          * The AA Wireless RFCOMM service UUID.
          *
