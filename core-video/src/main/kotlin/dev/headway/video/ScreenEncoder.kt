@@ -128,7 +128,7 @@ class ScreenEncoder(
     /** Reused across every drain — MediaCodec fills it rather than returning one. */
     private val bufferInfo = MediaCodec.BufferInfo()
 
-    /** Reused; [requestKeyFrame] is called on every reconnect and must not allocate a habit. */
+    /** Reused: the contents never vary, and a reconnect storm calls [requestKeyFrame] repeatedly. */
     private val syncFrameRequest = Bundle().apply {
         putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
     }
@@ -344,11 +344,11 @@ class ScreenEncoder(
         // Deliberately not projection.stop(): consent is the caller's asset and a
         // reconnect that had to re-prompt the driver would be worse than useless.
         projection = null
-        codec?.let { running ->
+        codec?.let { active ->
             // stop() throws on a codec in an error state; release() still has to
             // happen or the hardware encoder stays claimed for the process's life.
-            runCatching { running.stop() }
-            runCatching { running.release() }
+            runCatching { active.stop() }
+            runCatching { active.release() }
             onStep("encoder stopped after $framesEncoded frames")
         }
         codec = null

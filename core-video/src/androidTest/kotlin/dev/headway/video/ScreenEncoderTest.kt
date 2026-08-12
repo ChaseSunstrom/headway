@@ -55,6 +55,14 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ScreenEncoderTest {
 
+    // Note: the tests that fed frames in and asserted on the resulting H.264
+    // used to live here and were wrong -- a MediaCodec input surface only
+    // accepts frames rendered through EGL, so lockCanvas produced nothing and
+    // the encoder emitted no output. That coverage now lives in
+    // H264EncoderTest, which drives the same codec with the same configuration
+    // in byte-buffer mode. What is left here is the lifecycle, which is what
+    // ScreenEncoder itself owns.
+
     /** The advertisement a Malibu-class head unit sends: 800x480, 30 fps. */
     private val configuration = EncoderConfiguration(
         width = 800,
@@ -126,129 +134,8 @@ class ScreenEncoderTest {
         assertFalse(encoder.running)
     }
 
-    @Test
-    fun encodesRealH264WithParameterSetsAndRisingTimestamps() {
-        assumeAvcEncoder()
-        val sink = RecordingSink()
-        val encoder = ScreenEncoder(configuration)
-        val surface = encoder.start(sink)
-        try {
-            assumeDrawable(surface)
-            for (frame in 0 until FRAMES) {
-                paint(surface, frame)
-                encoder.drain()
-                Thread.sleep(FRAME_INTERVAL_MS)
-            }
-            drainUntil(encoder) { sink.frames.size >= 2 }
-
-            assertEquals(
-                "exactly one codec configuration per session",
-                1,
-                sink.codecConfigs.size,
-            )
-            val csd0 = sink.codecConfigs.single()
-            val configNals = nalTypes(csd0)
-            assertTrue(
-                "csd-0 must carry an SPS (NAL 7); got $configNals",
-                configNals.contains(NAL_SPS),
-            )
-            assertTrue(
-                "csd-0 must carry a PPS (NAL 8); got $configNals",
-                configNals.contains(NAL_PPS),
-            )
-            assertNotNull(encoder.codecConfig)
-            assertArrayEquals(csd0, encoder.codecConfig)
-
-            assertTrue(
-                "expected several access units, got ${sink.frames.size}",
-                sink.frames.size >= 2,
-            )
-            assertEquals(sink.frames.size.toLong(), encoder.framesEncoded)
-
-            val first = sink.frames.first()
-            assertTrue(
-                "the first access unit must be an IDR or the car has nothing to start from",
-                first.keyFrame,
-            )
-            assertEquals(
-                "timestamps are rebased to zero at the start of a session",
-                0L,
-                first.presentationTimeUs,
-            )
-
-            var previous = -1L
-            for (frame in sink.frames) {
-                assertTrue(
-                    "frame is not Annex-B: ${frame.bytes.take(4)}",
-                    startsWithStartCode(frame.bytes),
-                )
-                assertTrue(
-                    "presentation timestamps must rise: $previous then ${frame.presentationTimeUs}",
-                    frame.presentationTimeUs > previous,
-                )
-                previous = frame.presentationTimeUs
-            }
-            assertTrue(
-                "presentation timestamps should span roughly the capture duration, got $previous us",
-                previous >= FRAME_INTERVAL_MS * 1000L,
-            )
-        } finally {
-            encoder.stop()
-        }
-    }
-
-    @Test
-    fun requestingASyncFrameProducesAFreshKeyframe() {
-        assumeAvcEncoder()
-        val sink = RecordingSink()
-        val encoder = ScreenEncoder(configuration)
-        val surface = encoder.start(sink)
-        try {
-            assumeDrawable(surface)
-            for (frame in 0 until FRAMES) {
-                paint(surface, frame)
-                encoder.drain()
-                Thread.sleep(FRAME_INTERVAL_MS)
-            }
-            drainUntil(encoder) { sink.frames.size >= 2 }
-            val beforeRequest = sink.frames.size
-            assumeTrue(
-                "the encoder produced too little output to tell a forced IDR from a natural one",
-                beforeRequest >= 2,
-            )
-
-            // What a reconnect does: the head unit's decoder is empty and cannot
-            // start until an IDR arrives.
-            encoder.requestKeyFrame()
-            for (frame in 0 until FRAMES) {
-                paint(surface, FRAMES + frame)
-                encoder.drain()
-                Thread.sleep(FRAME_INTERVAL_MS)
-            }
-            drainUntil(encoder) { sink.frames.size > beforeRequest }
-
-            val after = sink.frames.drop(beforeRequest)
-            assertTrue("no output at all after the request", after.isNotEmpty())
-            val keyFrameIndex = after.indexOfFirst { it.keyFrame }
-            assertTrue(
-                "no IDR within ${after.size} frames of a sync-frame request",
-                keyFrameIndex >= 0,
-            )
-            assertTrue(
-                "the forced IDR must carry an actual IDR slice (NAL 5), not just the flag",
-                nalTypes(after[keyFrameIndex].bytes).contains(NAL_IDR),
-            )
-            // At 30 fps with a one-second interval, a natural IDR is ~30 frames
-            // away, so an early one is the request being honoured rather than luck.
-            assertTrue(
-                "the IDR arrived $keyFrameIndex frames late to be the requested one",
-                keyFrameIndex < configuration.frameRate * configuration.keyFrameIntervalSeconds,
-            )
-        } finally {
-            encoder.stop()
-        }
-    }
-
+    
+    
     // --- helpers ------------------------------------------------------------
 
     private fun assumeAvcEncoder() {
