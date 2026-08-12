@@ -43,11 +43,18 @@ class MicrophoneChannelException(message: String) : RuntimeException(message)
  * L10-L12), so nothing here is a constant the phone gets to choose — use
  * [fromAdvertisement] and treat [CAR_MICROPHONE] as a default, not a promise.
  *
+ * Deliberately separate from [PcmFormat], which the audio *output* channels use.
+ * The two carry the same three fields but measure duration differently: output
+ * counts bytes, because it paces a stream it is writing, while capture counts
+ * frames, because it is decoding buffers it received. Collapsing them into one
+ * type would mean one of the two call sites converting units at every use, which
+ * is exactly where a sample-rate bug hides.
+ *
  * @property sampleRateHz `AudioConfiguration.sampling_rate`.
  * @property bitsPerSample `AudioConfiguration.number_of_bits`.
  * @property channels `AudioConfiguration.number_of_channels`.
  */
-data class PcmFormat(
+data class MicrophoneFormat(
     val sampleRateHz: Int,
     val bitsPerSample: Int,
     val channels: Int,
@@ -80,10 +87,10 @@ data class PcmFormat(
          * `16_000 && 1 channel && 16 bits`, with 8 kHz mono as its next-best
          * (`aa-proxy-rs/src/mitm.rs` L1130-L1139).
          */
-        val CAR_MICROPHONE: PcmFormat = PcmFormat(16_000, 16, 1)
+        val CAR_MICROPHONE: MicrophoneFormat = MicrophoneFormat(16_000, 16, 1)
 
         /** Reads the format out of an advertised `MediaSourceService.audio_config`. */
-        fun fromAdvertisement(config: AudioConfiguration): PcmFormat = PcmFormat(
+        fun fromAdvertisement(config: AudioConfiguration): MicrophoneFormat = MicrophoneFormat(
             sampleRateHz = config.samplingRate,
             bitsPerSample = config.numberOfBits,
             channels = config.numberOfChannels,
@@ -179,7 +186,7 @@ data class PcmChunk(
     val samples: ShortArray,
 ) {
     /** Sample frames in this chunk, i.e. samples divided by the channel count. */
-    fun frameCount(format: PcmFormat): Int = samples.size / format.channels
+    fun frameCount(format: MicrophoneFormat): Int = samples.size / format.channels
 }
 
 /**
@@ -283,7 +290,7 @@ class MicrophoneChannel(
      * The PCM format the head unit advertised. Used to decode samples and to
      * report chunk durations; it is not sent anywhere.
      */
-    val format: PcmFormat = PcmFormat.CAR_MICROPHONE,
+    val format: MicrophoneFormat = MicrophoneFormat.CAR_MICROPHONE,
     /** Narrates each step; wired to the debug log export in the app. */
     private val onStep: (String) -> Unit = {},
 ) {
@@ -375,6 +382,16 @@ class MicrophoneChannel(
     var capturing: Boolean = false
         private set
 
+    /**
+     * The `open` flag of the last `MicrophoneRequest` sent, or null if none has
+     * been. `MicrophoneResponse` carries no field saying which request it
+     * answers — it is `{ status, session_id }` and nothing else
+     * (`aasdk/protobuf/aap_protobuf/service/media/source/message/MicrophoneResponse.proto`) —
+     * so the only way to tell an open reply from a close reply is to remember
+     * what was asked.
+     */
+    private var lastRequestedOpen: Boolean? = null
+
     /** `DATA` messages received. */
     var chunksReceived: Long = 0L
         private set
@@ -459,6 +476,7 @@ class MicrophoneChannel(
                     .toByteArray(),
             )
         )
+        lastRequestedOpen = true
         onStep("microphone open requested")
         while (true) {
             val event = receiveEvent()
@@ -484,6 +502,7 @@ class MicrophoneChannel(
                 MicrophoneRequest.newBuilder().setOpen(false).build().toByteArray(),
             )
         )
+        lastRequestedOpen = false
         onStep("microphone close requested")
     }
 
@@ -583,12 +602,9 @@ class MicrophoneChannel(
         val sessionId = if (response.hasSessionId()) response.sessionId else null
         this.sessionId = sessionId
 
-        // MicrophoneResponse and MicrophoneRequest are different messages that
-        // happen to share field 1, so the reply carries no "was this an open or
-        // a close" flag. The only way to know is to remember what was asked,
-        // which is what `capturing` tracks: a reply arriving while capture is
-        // running is the answer to a close.
-        val opening = !capturing
+        // Falls back to "the opposite of the current state" only for an
+        // unsolicited reply, which no reference sends but none forbids either.
+        val opening = lastRequestedOpen ?: !capturing
         capturing = opening && response.status == STATUS_SUCCESS
         onStep(
             "microphone ${if (opening) "opened" else "closed"}: status ${response.status}, " +

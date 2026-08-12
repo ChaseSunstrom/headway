@@ -26,7 +26,6 @@ import aap_protobuf.service.media.shared.message.SetupOuterClass.Setup
 import aap_protobuf.service.media.shared.message.StartOuterClass.Start
 import aap_protobuf.service.media.sink.message.AudioStreamTypeOuterClass.AudioStreamType
 import aap_protobuf.service.media.source.message.AckOuterClass.Ack
-import dev.headway.protocol.channel.AudioChannel
 import dev.headway.protocol.channel.AudioFocus
 import dev.headway.protocol.channel.AvMessageId
 import dev.headway.protocol.channel.MediaFrame
