@@ -187,3 +187,89 @@ jobs:
       # "Every TODO left in code must have a matching entry in BLOCKERS.md."
       - name: Every TODO is tracked
         run: ./tools/check-todos.sh
+
+  release:
+    name: Publish the APK as a release
+    # Only after every gate above is green. Shipping a build whose protocol
+    # tests failed would defeat the point of having them.
+    needs: [protocol, acceptance, voice, android, instrumented, constraints]
+    # Pushes to the default branch only. A pull request must not publish, and
+    # neither should a feature branch -- otherwise every experiment mints a tag.
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble the APK
+        run: ./gradlew :app:assembleDebug
+
+      - name: Name the artifact after what it actually is
+        id: name
+        run: |
+          version=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
+          sha=$(git rev-parse --short HEAD)
+          # A dot before the run number would read as a version segment; a dash
+          # keeps the build identifier visibly separate from the version.
+          echo "tag=v${version}-build.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "apk=headway-${version}-build${{ github.run_number }}-${sha}-debug.apk" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage the APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk "${{ steps.name.outputs.apk }}"
+
+      # Uses the preinstalled GitHub CLI rather than a third-party action. A
+      # release job holds contents:write, so it is the last place to take on a
+      # supply-chain dependency that could rewrite the repository.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'NOTES'
+          Automated build from the latest green CI run. Every protocol, voice,
+          Android and on-device gate passed before this was published.
+
+          ## Before you install this
+
+          **This has never been connected to a car.** The protocol stack and the
+          voice pipeline are exercised in CI, and the Android layer is tested on
+          an emulator, but no part of this has spoken to a real head unit. See
+          `PROGRESS.md` for the evidence behind each phase.
+
+          **The bundled phone certificate expired on 2022-08-24** and cannot be
+          reissued without Google's CA key. If your head unit checks validity
+          dates, it will reject the session and nothing in the app can fix that.
+          See `BLOCKERS.md` B-003.
+
+          ## About this APK
+
+          It is a **debug** build, and deliberately so: protocol frame logging is
+          compiled in, which is what makes a first-connection failure
+          diagnosable from the in-app log export. It is signed with the standard
+          Android debug key, so it is not suitable for distribution and Android
+          will refuse to upgrade it over a differently-signed install.
+
+          A properly signed release build needs a signing key this project does
+          not hold.
+          NOTES
+          {
+            echo ""
+            echo "Commit: \`${{ steps.name.outputs.sha }}\`"
+          } >> notes.md
+
+          gh release create "${{ steps.name.outputs.tag }}" \
+            "${{ steps.name.outputs.apk }}" \
+            --title "Headway ${{ steps.name.outputs.version }} (build ${{ github.run_number }})" \
+            --notes-file notes.md \
+            --prerelease \
+            --target "$GITHUB_SHA"
