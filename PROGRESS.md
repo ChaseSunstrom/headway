@@ -15,15 +15,17 @@ Each phase carries the **tier of evidence** behind it, defined in
 |-------|-------|--------|----------|
 | 0 | Test harness | **Done** | A — the emulator drives every acceptance test in CI |
 | 1 | Handshake | **Done (CI half)** | A — full bring-up 20/20 over the fake transport *and* over real TCP; D for the real BT/Wi-Fi half |
-| 2 | Video out | **Done (channel)** | A — 10 min of 30 fps stream in order, byte-identical, real NAL parsing; C for `MediaCodec` capture |
-| 3 | Input | **Done (channel)** | A — event decode and letterbox transform; C for `AccessibilityService` dispatch |
-| 4 | Audio + focus | **Done (channel)** | A — three sinks, focus duck/resume asserted on the wire; D for real A2DP |
-| 5 | Voice | **Done (pipeline)** | A — real Vosk on real speech, "open calculator" resolved in ~720 ms; C for `startActivity` |
-| 6 | Reconnection, polish, packaging | In progress | A — supervisor; B — the APK installs on a real API 35 device |
+| 2 | Video out | **Done** | A — 10 min of 30 fps stream in order, byte-identical, real NAL parsing; B — device encodes real H.264 with SPS/PPS; C for `MediaProjection` capture |
+| 3 | Input | **Done** | A — event decode and letterbox transform; B — gesture building on-device; C for gesture *dispatch* (needs an enabled service) |
+| 4 | Audio + focus | **Done** | A — three sinks, focus duck/resume asserted on the wire; B — resampling and AudioManager focus on-device; D for real A2DP |
+| 5 | Voice | **Done** | A — real Vosk on real speech, "open calculator" resolved in ~720 ms; C for `startActivity` |
+| 6 | Reconnection, polish, packaging | **Done (except release signing)** | A — supervisor, quirks, log redaction; B — APK installs and 29 app tests pass on a real device |
 
 ## What is genuinely verified
 
-**188 tests green** on a bare JDK, plus an APK that installs on a real device.
+**222 JVM tests green** on a bare JDK, plus **71 instrumentation tests green on a
+real Android 15 (API 35) AOSP device** — app 29, core-audio 13, core-input 12,
+core-video 17.
 
 - **Framing** — the full AAP frame codec, pinned by hand-derived byte fixtures.
 - **TLS** — a real handshake between the two roles with the real vendored
@@ -41,8 +43,12 @@ Each phase carries the **tier of evidence** behind it, defined in
   exchange asserted as an ordered message sequence on the wire.
 - **Microphone** — car-mic PCM decoded off the AV-input channel.
 - **Reconnection** — the backoff and state machine, driven by induced failures.
-- **Android** — the debug APK builds and installs on an API 35 AOSP image, and
-  the platform reports exactly the intended permission set, with no location.
+- **Android, on the device** — the debug APK builds, installs and runs its tests
+  on an API 35 AOSP image with zero Play Services packages present. The frame
+  codec produces byte-identical output on ART to the JVM fixtures. The device
+  encodes real H.264 for the advertised configuration, with SPS and PPS in
+  csd-0, keyframes, and rising presentation timestamps. Gesture building, PCM
+  resampling and AudioManager focus all run on-device.
 
 ## What is not verified, and cannot be here
 
@@ -62,11 +68,11 @@ Stated so the gap between "CI green" and "works in a car" is never implied away.
   sustained) are properties of a Pixel's encoder and cannot be measured from a
   JVM test.
 
-## Next actions
+## What is left
 
-1. Wire the Android adapters — `MediaProjection` to `MediaCodec`,
-   `AccessibilityService` gesture dispatch, `WifiNetworkSpecifier` binding and
-   the RFCOMM socket — onto the protocol objects that already exist.
-2. Build the car-facing launcher UI, quirk configuration and in-app log export.
-3. Reproducible release build and F-Droid metadata.
-4. Real-hardware validation — the one step that cannot be self-performed.
+1. **Real-hardware validation.** The one step that cannot be self-performed, and
+   the only thing between this and a working car link.
+2. **Release signing and F-Droid metadata.** The build is reproducible in shape;
+   it has no signing key, which is the user's to hold.
+3. **A replacement phone certificate**, if a real head unit rejects the expired
+   one. Nothing in this project can produce it — see B-003.

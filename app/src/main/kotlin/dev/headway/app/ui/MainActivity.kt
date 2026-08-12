@@ -38,10 +38,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import dev.headway.app.input.HeadwayAccessibilityService
 import dev.headway.app.log.SessionLog
@@ -409,7 +409,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun createQuirkTemplate() {
         val store = QuirkStore.inAppStorage(this)
-        val created = store.writeTemplateIfAbsent()
+        // A storage failure here is a diagnostic inconvenience, not a reason to
+        // crash the only screen the user has.
+        val created = runCatching { store.writeTemplateIfAbsent() }.getOrElse { failure ->
+            toast("Could not write ${store.path}: ${failure.message}")
+            return
+        }
         val load = store.load()
         AlertDialog.Builder(this)
             .setTitle(if (created) "Quirk file created" else "Quirk file")

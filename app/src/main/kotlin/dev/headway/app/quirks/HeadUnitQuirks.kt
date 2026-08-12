@@ -401,7 +401,7 @@ class QuirkStore(
     /** The knobs to use for this head unit, with file overrides applied. */
     fun quirksFor(identity: HeadUnitIdentity): HeadUnitQuirks = resolve(load().profiles, identity)
 
-    /** Overwrites the file. Used by the settings screen and by [writeTemplate]. */
+    /** Overwrites the file. Used by the settings screen and by [writeTemplateIfAbsent]. */
     fun write(profiles: List<QuirkProfile>) {
         file.parentFile?.mkdirs()
         file.writeText(serialize(profiles))
