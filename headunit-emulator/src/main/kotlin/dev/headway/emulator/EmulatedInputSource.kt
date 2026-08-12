@@ -48,8 +48,8 @@ import kotlin.math.roundToInt
  * ```text
  *   tap        DOWN . . . . . . . . . . . . UP                      2 reports
  *   long press DOWN ....(hold)............. UP                      2 reports
- *   drag       DOWN  MOVED MOVED ... MOVED  UP                  steps+1 reports
- *   two finger DOWN  POINTER_DOWN  MOVED... POINTER_UP  UP     steps+3 reports
+ *   drag       DOWN  MOVED MOVED ... MOVED  UP                  steps+2 reports
+ *   two finger DOWN  POINTER_DOWN  MOVED... POINTER_UP  UP      steps+4 reports
  * ```
  *
  * A tap and a drag differ *only* in whether MOVED reports appear between the

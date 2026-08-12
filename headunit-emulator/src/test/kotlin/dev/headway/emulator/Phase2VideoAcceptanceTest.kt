@@ -62,13 +62,15 @@ import kotlin.random.Random
  * channel state machine, and they are the ones that would silently break.
  *
  * So the stream is driven in **simulated time**. A 10-minute stream at 30 fps is
- * 18 000 frames ([FULL_FRAME_COUNT]); transmitting all of them makes a slow test
- * for no extra signal, so by default [DEFAULT_FRAME_COUNT] frames are
- * transmitted, each carrying its true position on that 18 000-frame timeline
+ * 18 000 frames ([FULL_FRAME_COUNT]); by default [DEFAULT_FRAME_COUNT] frames
+ * are transmitted, each carrying its true position on that 18 000-frame timeline
  * (frame *i* takes grid slot `i * 17999 / (n - 1)`). The frames therefore span
  * the whole ten minutes of stream time, the cadence asserted is the real 30 fps
  * grid, and `-Dheadway.video.frames=18000` transmits every frame of the full
- * stream for a nightly or pre-release run.
+ * stream. The full run is not expensive — it was measured at under four seconds
+ * — so raising the default is a reasonable call for the integrator to make; the
+ * subsample exists to keep the unit-test suite's total time honest, not because
+ * the whole stream is unaffordable.
  *
  * Wall-clock timing is deliberately not asserted. Both ends run in one process
  * over an in-memory pipe, so wall-clock throughput here measures this machine's
@@ -419,10 +421,14 @@ class Phase2VideoAcceptanceTest {
             out += listOf<Byte>(0, 0, 0, 1)
             out += if (keyframe) 0x65.toByte() else 0x41.toByte()
 
-            out += (index ushr 24).toByte()
-            out += (index ushr 16).toByte()
-            out += (index ushr 8).toByte()
-            out += index.toByte()
+            // The index is written one nibble per byte, each lifted into
+            // 0x40..0x4F. Writing it as a plain big-endian int would emit
+            // 00 00 00 01 for frame 1 -- a genuine 4-byte start code, which the
+            // parser would correctly split on, making this fixture manufacture
+            // the very bug the test is meant to rule out.
+            for (shift in intArrayOf(12, 8, 4, 0)) {
+                out += (0x40 or ((index ushr shift) and 0x0F)).toByte()
+            }
 
             // Emulation prevention: the escaped form of 00 00 01.
             out += listOf<Byte>(0, 0, 3, 1)

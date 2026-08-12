@@ -34,7 +34,7 @@ import org.junit.jupiter.api.Test
  * Per ADR 0002 the emulator round-trip is a weak oracle — it shares this code,
  * so a symmetric mistake passes. The expected byte strings below were derived by
  * hand from the field numbers and wire types in
- * `aap_protobuf/service/inputsource/message/*.proto`, and the decoder is checked
+ * `aap_protobuf/service/inputsource/message`, and the decoder is checked
  * against *those bytes*, not against our own encoder.
  *
  * Worked example, the touch fixture:
