@@ -16,7 +16,7 @@ point of this table is to be accurate, not encouraging.
 
 ## What works today
 
-**59 tests green** across three modules, on a bare JDK with no device, no
+**66 tests green** across three modules, on a bare JDK with no device, no
 Android SDK and no NDK.
 
 - **Toolchain** — Gradle 8.14.3 / Kotlin 2.0.21 multi-module build; protobuf
@@ -29,6 +29,11 @@ Android SDK and no NDK.
   reassembly. Pinned by hand-derived byte fixtures.
 - **Version handshake** — both roles, exchanged 20/20 consecutively over the
   fake transport, with the wire bytes pinned by fixture.
+- **TLS session** — a hand-pumped `SSLEngine` implementing the `Cryptor` seam,
+  since AAP carries its handshake inside control messages rather than on the
+  socket. Handshake completes between the two roles with the real vendored
+  certificates, negotiating an ECDHE_RSA TLS 1.2 suite; application data round
+  trips in both directions, including payloads spanning multiple TLS records.
 - **Protocol notes** — `docs/protocol-notes.md`, 301 constants with file+line
   citations across framing, TLS, the wireless Bluetooth handshake and the
   control channel, plus a "where the references disagree" section per area.
@@ -39,10 +44,10 @@ Done: the plaintext version exchange, 20/20 over the fake transport.
 
 Not done, and required before Phase 1 can be called finished:
 
-1. **TLS session.** The handshake is carried inside control-channel
-   `ENCAPSULATED_SSL` messages rather than on the socket, so it needs an
-   in-memory `SSLEngine` pumped by hand. Note the polarity: **the phone is the
-   TLS server.** Certificate material ships in the references.
+1. **Wiring TLS into the session.** The `TlsSession` exists and is tested, but
+   the control-channel exchange that carries it — `ENCAPSULATED_SSL` messages
+   until the engine is satisfied, then `AUTH_COMPLETE` — is not yet driven by
+   `PhoneSession`.
 2. **Service discovery.** `ServiceDiscoveryRequest`/`Response` over the
    now-encrypted control channel, advertising the channels Headway supports.
 3. **Bluetooth RFCOMM handshake.** The protobuf exchange that yields the car's
@@ -59,10 +64,12 @@ fake transport, and remain unverified until someone runs them on a phone.
 
 ## Next action
 
-Implement the TLS session over `ENCAPSULATED_SSL` control messages using
-`javax.net.ssl.SSLEngine` in server mode, with the certificate material from
-`references/aasdk/cert/`, and extend the Phase 1 acceptance test to run the full
-handshake through to `AUTH_COMPLETE`.
+Drive `TlsSession` from `PhoneSession` over `ENCAPSULATED_SSL` control messages
+through to `AUTH_COMPLETE` (whose wire payload is `00 04 08 00`, per
+`AACS/AAClient/src/AaCommunicator.cpp` L143-L151), and extend the Phase 1
+acceptance test to cover the encrypted session end to end.
+
+Then implement `ServiceDiscoveryRequest`/`Response` from the vendored protobufs.
 
 ## What cannot be done in this environment
 

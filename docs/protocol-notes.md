@@ -47,10 +47,31 @@ defeat the purpose of the document:
 
 | Section | Status |
 |---|---|
-| 1. Framing | **Implemented and pinned by byte fixtures.** Cross-checked against four independent references that agree on the wire format. |
+| 1. Framing | **Implemented, pinned by byte fixtures, and independently re-verified.** 61 of 66 constants confirmed exactly against the cited files; every numeric value checked out. The 5 exceptions are citation-precision problems, not wrong values — see below. |
 | 2. Version handshake and TLS | Extracted and cited; not yet exercised against a live peer. |
 | 3. Wireless Bluetooth handshake | Extracted and cited. The two constants Phase 1 turns on — the RFCOMM service UUID and the TCP port — were confirmed by hand in three and two references respectively. |
 | 4. Control channel and service discovery | Extracted and cited; not yet exercised against a live peer. |
+
+### Framing constants flagged on re-verification
+
+None of these changes a value Headway depends on; they are recorded so the next
+reader is not misled by an imprecise citation.
+
+- **Fragment type selection** — the original wording ("remaining-size > 0") reads
+  ambiguously. The actual source is
+  `frameType = offset_ == 0 ? FIRST : (remainingSize_ - size > 0 ? MIDDLE : LAST)`
+  (`aasdk/src/Messenger/MessageOutStream.cpp` L70-73): MIDDLE when bytes remain
+  *after this chunk*, LAST otherwise. `MessageFragmenter` implements the
+  equivalent `offset + size == total → LAST`.
+- **Message-complete condition** — the quoted guard dropped a conjunct
+  (`isValidFrame_`). Harmless: that flag is only ever assigned true.
+- **aa-proxy-rs message-id position / presence rule** — the cited lines sit
+  inside `ssl_trace_msg_hint()` and `ssl_decapsulate_write()`, which are a debug
+  trace formatter and a decapsulation path rather than the wire-format
+  definition. The values agree with aasdk, which is the authority here; treat
+  those two rows as corroboration, not as primary sources.
+- **AACS client reassembly loop** — cited correctly but described more strongly
+  than the code supports.
 
 Nothing here has been validated against a real head unit. See
 [`BLOCKERS.md`](../BLOCKERS.md) B-001: no vehicle, phone, or radio exists in the
