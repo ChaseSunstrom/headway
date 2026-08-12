@@ -243,6 +243,13 @@ open class HeadwayService : Service() {
     }
 
     private fun resolveCar(adapter: BluetoothAdapter): BluetoothDevice {
+        // Logged on every attempt, not just failures. A head unit that stops
+        // advertising the service between attempts is a real and confusing
+        // failure mode, and it is only visible if the record is captured each
+        // time rather than once at startup.
+        runCatching { BluetoothCarLink.describeBondedDevices(adapter) }
+            .onSuccess { Log.i(TAG, it) }
+
         val address = carAddress
         if (address != null) {
             return runCatching { adapter.getRemoteDevice(address) }.getOrElse {

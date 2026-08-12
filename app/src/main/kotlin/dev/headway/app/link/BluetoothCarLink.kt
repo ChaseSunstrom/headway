@@ -119,22 +119,42 @@ class BluetoothCarLink(
 
         cancelDiscovery()
 
-        val opened = try {
-            if (secure) {
-                device.createRfcommSocketToServiceRecord(SERVICE_UUID)
-            } else {
-                device.createInsecureRfcommSocketToServiceRecord(SERVICE_UUID)
-            }
-        } catch (e: IOException) {
-            throw BluetoothCarLinkException("no AA Wireless SDP record on ${device.address}", e)
-        } catch (e: SecurityException) {
-            throw BluetoothCarLinkException("BLUETOOTH_CONNECT not granted", e)
-        }
-        socket = opened
+        // Try secure, then insecure. aa-proxy-rs and aawgd both register this
+        // service with authentication *not* required, and a unit that does the
+        // same can refuse the secure socket outright rather than downgrade to an
+        // unauthenticated one. On the wire that refusal is indistinguishable
+        // from "the head unit is not listening", so guessing wrong costs a
+        // diagnosis rather than a retry -- cheap enough to just try both.
+        val modes = if (secure) listOf(true, false) else listOf(false)
+        var lastFailure: Throwable? = null
 
-        try {
-            onStep("connecting RFCOMM to ${device.address}")
-            withTimeout(connectTimeoutMillis) { connectBlocking(opened) }
+        for (useSecure in modes) {
+            val label = if (useSecure) "secure" else "insecure"
+            val opened = try {
+                if (useSecure) {
+                    device.createRfcommSocketToServiceRecord(SERVICE_UUID)
+                } else {
+                    device.createInsecureRfcommSocketToServiceRecord(SERVICE_UUID)
+                }
+            } catch (e: IOException) {
+                throw BluetoothCarLinkException("no AA Wireless SDP record on ${device.address}", e)
+            } catch (e: SecurityException) {
+                throw BluetoothCarLinkException("BLUETOOTH_CONNECT not granted", e)
+            }
+            socket = opened
+
+            try {
+                onStep("connecting RFCOMM to ${device.address} ($label)")
+                withTimeout(connectTimeoutMillis) { connectBlocking(opened) }
+            } catch (e: Throwable) {
+                lastFailure = e
+                onStep("$label RFCOMM failed: ${e.message}")
+                // Close this socket directly rather than via close(): close()
+                // retires the whole link, and the next mode still needs it.
+                runCatching { opened.close() }
+                socket = null
+                continue
+            }
 
             // closeStreams = false: a BluetoothSocket must be closed through the
             // socket object, and closing its streams first has been observed to
@@ -147,16 +167,24 @@ class BluetoothCarLink(
             )
             transport = wrapped
 
-            onStep("RFCOMM up; waiting for the head unit to speak")
-            return withTimeout(handshakeTimeoutMillis) {
-                WirelessHandshake(wrapped, onStep).perform()
+            try {
+                onStep("RFCOMM up ($label); waiting for the head unit to speak")
+                return withTimeout(handshakeTimeoutMillis) {
+                    WirelessHandshake(wrapped, onStep).perform()
+                }
+            } catch (e: Throwable) {
+                // Any failure past connect leaves a half-open socket that would
+                // block the next attempt's SDP lookup on some stacks.
+                close()
+                throw e
             }
-        } catch (e: Throwable) {
-            // Any failure past socket creation leaves a half-open socket that
-            // would block the next attempt's SDP lookup on some stacks.
-            close()
-            throw e
         }
+
+        throw BluetoothCarLinkException(
+            "RFCOMM connect to ${device.address} failed in every mode " +
+                "(${modes.joinToString { if (it) "secure" else "insecure" }})",
+            lastFailure as? Exception,
+        )
     }
 
     /**
@@ -254,5 +282,44 @@ class BluetoothCarLink(
         @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
         fun bondedDevices(adapter: BluetoothAdapter): List<BluetoothDevice> =
             runCatching { adapter.bondedDevices?.toList().orEmpty() }.getOrDefault(emptyList())
+
+        /**
+         * Every paired device with the services it advertises, for the log.
+         *
+         * This exists because the two failures that look identical from the app
+         * -- "connected to the wrong device" and "the right device is not
+         * accepting" -- are trivially told apart by looking at what each paired
+         * device actually offers. Without it, diagnosing a car that will not
+         * connect means guessing.
+         *
+         * A head unit may present more than one Bluetooth address, with the
+         * audio profiles on one and the projection service on another, so the
+         * device carrying A2DP is not necessarily the one to dial.
+         */
+        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+        fun describeBondedDevices(adapter: BluetoothAdapter): String {
+            val devices = bondedDevices(adapter)
+            if (devices.isEmpty()) return "no paired Bluetooth devices"
+
+            return buildString {
+                appendLine("paired devices (${devices.size}):")
+                for (device in devices) {
+                    val name = runCatching { device.name }.getOrNull() ?: "<unnamed>"
+                    val uuids = runCatching { device.uuids?.toList().orEmpty() }
+                        .getOrDefault(emptyList())
+                    val isCar = uuids.any { it.uuid == SERVICE_UUID }
+                    appendLine("  ${device.address}  $name${if (isCar) "   <-- advertises AA Wireless" else ""}")
+                    if (uuids.isEmpty()) {
+                        // An empty list is itself the finding: the SDP cache is
+                        // populated at pairing and can be empty or stale, and a
+                        // stale cache is why a car that works with Android Auto
+                        // can look like it offers nothing.
+                        appendLine("      no cached SDP records (cache may be stale; re-pair to refresh)")
+                    } else {
+                        for (uuid in uuids) appendLine("      $uuid")
+                    }
+                }
+            }.trimEnd()
+        }
     }
 }
