@@ -41,6 +41,7 @@ import dev.headway.protocol.session.PhoneIdentity
 import dev.headway.transport.LinkState
 import dev.headway.transport.SessionSupervisor
 import dev.headway.transport.TcpTransport
+import dev.headway.transport.wireless.CarEndpoint
 import dev.headway.transport.tls.AapTls
 import dev.headway.transport.tls.TlsSession
 import kotlinx.coroutines.CoroutineScope
@@ -184,9 +185,22 @@ open class HeadwayService : Service() {
             CarWifiNetwork(this, onStep = ::step).use { wifi ->
                 val network = wifi.join(credentials)
                 Log.i(TAG, "bound to car network $network")
+
+                // The head unit may never have said where to connect -- the
+                // observed Chevrolet does not -- in which case it is found on
+                // the access point it is hosting.
+                val endpoint = credentials.endpoint ?: run {
+                    val host = wifi.headUnitAddress() ?: throw IllegalStateException(
+                        "the head unit offered no endpoint over Bluetooth and the car " +
+                            "network reports no DHCP server or gateway to fall back on"
+                    )
+                    CarEndpoint(host, TcpTransport.DEFAULT_PORT)
+                }
+                Log.i(TAG, "opening the AAP session to $endpoint")
+
                 // Sockets come from the network, never from `new Socket()`:
                 // the car AP has no internet and is not the default route.
-                val socket = wifi.openSocket(credentials.ipAddress, credentials.port)
+                val socket = wifi.openSocket(endpoint.ipAddress, endpoint.port)
 
                 TcpTransport.wrap(socket).use { transport ->
                     val connection = FramedConnection(transport)

@@ -112,13 +112,28 @@ data class CarNetworkCredentials(
     val bssid: String,
     val securityMode: WifiSecurityMode,
     val accessPointType: AccessPointType,
-    val ipAddress: String,
-    val port: Int,
+    /**
+     * Where to open the AAP session, when the head unit says.
+     *
+     * Null is normal, not an error. A real 2021 Chevrolet Infotainment 3 unit
+     * answers `WifiInfoRequest` with full credentials and never sends
+     * `WifiStartRequest` at all, so there is no endpoint to be had over
+     * Bluetooth. The caller resolves one after joining the access point -- the
+     * head unit is the only other host on its own network. See
+     * `docs/protocol-notes.md` § "Evidence from a real head unit".
+     */
+    val endpoint: CarEndpoint? = null,
 ) {
     /** Redacts the passphrase; this gets logged and logs get shared for diagnosis. */
     override fun toString(): String =
         "CarNetworkCredentials(ssid=$ssid, bssid=$bssid, security=$securityMode, " +
-            "type=$accessPointType, endpoint=$ipAddress:$port, passphrase=<redacted>)"
+            "type=$accessPointType, endpoint=${endpoint ?: "<not offered>"}, " +
+            "passphrase=<redacted>)"
+}
+
+/** The head unit's AAP listener. */
+data class CarEndpoint(val ipAddress: String, val port: Int) {
+    override fun toString(): String = "$ipAddress:$port"
 }
 
 /**
@@ -187,12 +202,22 @@ class WirelessHandshake(
     suspend fun perform(
         maxMessages: Int = 16,
         silenceProbeMillis: Long = DEFAULT_SILENCE_PROBE_MILLIS,
+        deadlineMillis: Long = DEFAULT_DEADLINE_MILLIS,
     ): CarNetworkCredentials = coroutineScope {
         var endpoint: WifiStartRequest? = null
         var info: WifiInfoResponse? = null
         var projectionEndpoint: WifiProjectionProtocolInfo? = null
         val heardSomething = AtomicBoolean(false)
         val lastActivity = AtomicLong(System.nanoTime())
+        val startedAt = System.nanoTime()
+        val expired = AtomicBoolean(false)
+
+        // What we are still short of, in the words a person reading a log needs.
+        //
+        // Written as a closure over the same locals the read loop assigns so it
+        // cannot drift from them. Kotlin captures those by reference, so the
+        // prodder coroutine sees the reader's latest values.
+        fun outstanding(): String = if (info == null) "credentials" else "nothing"
 
         // Prod a head unit that stops talking, rather than blocking forever.
         //
@@ -217,8 +242,27 @@ class WirelessHandshake(
         val prodder = launch {
             val tick = (silenceProbeMillis / 4).coerceAtLeast(20)
             var sent = 0
-            while (sent < MAX_SILENCE_PROBES) {
+            while (true) {
                 delay(tick)
+                val elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000
+
+                // The read is blocked in the Bluetooth stack and cannot be
+                // interrupted, so the only way to end the attempt with a usable
+                // message is to say it here and then close the socket out from
+                // under the reader. Without this the caller's own timeout fires
+                // and the log records a bare cancellation, which says nothing
+                // about how far the exchange actually got.
+                if (elapsedMillis >= deadlineMillis) {
+                    expired.set(true)
+                    onStep(
+                        "giving up after ${elapsedMillis}ms still waiting for " +
+                            "${outstanding()}; closing the RFCOMM link"
+                    )
+                    runCatching { transport.close() }
+                    return@launch
+                }
+
+                if (sent >= MAX_SILENCE_PROBES) continue
                 val idleMillis = (System.nanoTime() - lastActivity.get()) / 1_000_000
                 if (idleMillis < silenceProbeMillis) continue
                 // A unit that has never spoken may not have started its side of
@@ -226,7 +270,10 @@ class WirelessHandshake(
                 val probe =
                     if (heardSomething.get()) MessageId.WIFI_INFO_REQUEST
                     else SILENCE_PROBES[sent.coerceAtMost(SILENCE_PROBES.lastIndex)]
-                onStep("head unit idle for ${idleMillis}ms; probing with ${probe.name}")
+                onStep(
+                    "head unit idle for ${idleMillis}ms and still owes " +
+                        "${outstanding()}; probing with ${probe.name}"
+                )
                 send(probe, probeBody(probe))
                 lastActivity.set(System.nanoTime())
                 sent++
@@ -312,16 +359,31 @@ class WirelessHandshake(
 
                     send(MessageId.WIFI_VERSION_RESPONSE, reply.build())
 
-                    // A unit that put its endpoint here may be waiting for the
-                    // phone rather than about to send WifiStartRequest, so ask
-                    // now instead of stalling until the idle probe. aa-proxy-rs
-                    // does the same thing on a 3s timer (bluetooth.rs L2042-L2060).
-                    if (carried != null && info == null) {
+                    // Ask for the credentials straight away rather than waiting
+                    // to be offered an endpoint.
+                    //
+                    // openauto's head unit sends WifiVersionRequest and
+                    // WifiStartRequest back to back without waiting for the
+                    // version response at all, and answers WifiInfoRequest
+                    // whenever it arrives, in any order
+                    // (openauto/src/btservice/AndroidBluetoothServer.cpp
+                    // L79-L86 and L160-L178). The observed Chevrolet sends only
+                    // the version request, which leaves two readings: it is
+                    // still bringing up its access point, or it is waiting to be
+                    // asked. aa-proxy-rs documents units of the second kind and
+                    // gives up waiting after 3s (bluetooth.rs L2042-L2060).
+                    //
+                    // Asking costs one message that every reference head unit
+                    // knows how to answer, and it distinguishes the two readings
+                    // in the log. The idle prodder still covers a unit that
+                    // needs asking more than once.
+                    if (info == null) {
                         send(
                             MessageId.WIFI_INFO_REQUEST,
                             aap_protobuf.aaw.WifiInfoRequestOuterClass.WifiInfoRequest
                                 .getDefaultInstance(),
                         )
+                        lastActivity.set(System.nanoTime())
                     }
                 }
 
@@ -357,21 +419,31 @@ class WirelessHandshake(
                 else -> onStep("ignoring unknown RFCOMM message id ${message.messageId}")
             }
 
-            // A head unit that put its endpoint in the version request may
-            // never send WifiStartRequest, so accept either source. Prefer the
-            // explicit one when both arrive.
+            // The credentials are what the exchange is for. An endpoint is a
+            // bonus: a head unit may send WifiStartRequest, or carry the
+            // endpoint in its version request, or -- as the observed Chevrolet
+            // does -- never offer one at all, answering WifiInfoRequest and
+            // going quiet. Waiting for one it will never send is how this
+            // stalled at 20 s per attempt with the credentials already in hand.
             val i = info
-            val host = endpoint?.ipAddress ?: projectionEndpoint?.ipAddress
-            val tcpPort = endpoint?.port ?: projectionEndpoint?.port
-            if (i != null && host != null && tcpPort != null) {
+            if (i != null) {
+                val host = endpoint?.ipAddress ?: projectionEndpoint?.ipAddress
+                val tcpPort = endpoint?.port ?: projectionEndpoint?.port
+                val resolved =
+                    if (host != null && tcpPort != null) CarEndpoint(host, tcpPort) else null
+                if (resolved == null) {
+                    onStep(
+                        "head unit gave credentials but no endpoint; it will be " +
+                            "resolved from the access point after joining"
+                    )
+                }
                 return@coroutineScope CarNetworkCredentials(
                     ssid = i.ssid,
                     passphrase = i.password,
                     bssid = i.bssid,
                     securityMode = i.securityMode,
                     accessPointType = i.accessPointType,
-                    ipAddress = host,
-                    port = tcpPort,
+                    endpoint = resolved,
                 )
             }
         }
@@ -389,10 +461,28 @@ class WirelessHandshake(
                     "enabled for this phone in the car's Bluetooth device settings."
             }
         )
+        } catch (e: WirelessHandshakeException) {
+            throw e
+        } catch (e: Throwable) {
+            // A read that failed because the deadline closed the socket is not a
+            // Bluetooth error, and reporting it as one sends the next reader
+            // hunting the wrong problem.
+            if (expired.get()) {
+                throw WirelessHandshakeException(deadlineMessage(outstanding(), deadlineMillis))
+            }
+            throw e
         } finally {
             prodder.cancel()
         }
     }
+
+    /** The give-up message, kept in one place so the log and the exception agree. */
+    private fun deadlineMessage(outstanding: String, deadlineMillis: Long): String =
+        "head unit never supplied $outstanding within ${deadlineMillis}ms. It answered " +
+            "the version exchange, so Bluetooth and pairing are fine; it is the Wi-Fi " +
+            "credentials handshake that stalled. Check that Android Auto is enabled for " +
+            "this phone in the car's Bluetooth device settings, and that the car is not " +
+            "already projecting to another phone."
 
     /**
      * Every Wi-Fi frequency the head unit advertised, in MHz.
@@ -495,6 +585,15 @@ class WirelessHandshake(
          * long a wedged head unit can hold the attempt open, not a retry budget.
          */
         const val MAX_SILENCE_PROBES: Int = 3
+
+        /**
+         * How long the whole exchange gets before it is called off.
+         *
+         * Sits inside `BluetoothCarLink`'s own timeout on purpose, so the
+         * failure the user sees is this class's description of what was missing
+         * rather than a bare cancellation from the caller.
+         */
+        const val DEFAULT_DEADLINE_MILLIS: Long = 18_000
 
         /**
          * The AA Wireless RFCOMM service UUID.

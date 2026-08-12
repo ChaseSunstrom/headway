@@ -78,8 +78,8 @@ class WirelessHandshakeTest {
             assertEquals("MyCar-AA", result.ssid)
             assertEquals("hunter2hunter2", result.passphrase)
             assertEquals("aa:bb:cc:dd:ee:ff", result.bssid)
-            assertEquals("192.168.43.1", result.ipAddress)
-            assertEquals(5288, result.port)
+            assertEquals("192.168.43.1", result.endpoint?.ipAddress)
+            assertEquals(5288, result.endpoint?.port)
             assertEquals(WifiSecurityMode.WPA2_PERSONAL, result.securityMode)
         }
     }
@@ -118,7 +118,7 @@ class WirelessHandshakeTest {
             RfcommMessage.read(pair.headUnit) // the info request
             send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
 
-            assertEquals("10.0.0.1", withTimeout(10_000) { phone.await() }.ipAddress)
+            assertEquals("10.0.0.1", withTimeout(10_000) { phone.await() }.endpoint?.ipAddress)
         }
     }
 
@@ -157,7 +157,7 @@ class WirelessHandshakeTest {
             RfcommMessage.read(pair.headUnit)
             send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
 
-            assertEquals("172.16.0.1", withTimeout(10_000) { phone.await() }.ipAddress)
+            assertEquals("172.16.0.1", withTimeout(10_000) { phone.await() }.endpoint?.ipAddress)
         }
     }
 
@@ -183,8 +183,7 @@ class WirelessHandshakeTest {
             bssid = "aa:bb:cc:dd:ee:ff",
             securityMode = WifiSecurityMode.WPA2_PERSONAL,
             accessPointType = AccessPointType.DYNAMIC,
-            ipAddress = "192.168.43.1",
-            port = 5288,
+            endpoint = CarEndpoint("192.168.43.1", 5288),
         )
         // Logs get exported and shared to diagnose real-car failures, so the
         // key must not ride along.
@@ -215,7 +214,7 @@ class WirelessHandshakeTest {
             RfcommMessage.read(pair.headUnit) // the info request
             send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
 
-            assertEquals("192.168.1.1", withTimeout(10_000) { phone.await() }.ipAddress)
+            assertEquals("192.168.1.1", withTimeout(10_000) { phone.await() }.endpoint?.ipAddress)
         }
     }
 
@@ -237,7 +236,7 @@ class WirelessHandshakeTest {
                 "a head unit that spoke first must not be probed",
             )
             send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
-            assertEquals("10.1.1.1", withTimeout(10_000) { phone.await() }.ipAddress)
+            assertEquals("10.1.1.1", withTimeout(10_000) { phone.await() }.endpoint?.ipAddress)
         }
     }
 
@@ -378,8 +377,8 @@ class WirelessHandshakeTest {
                 send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
 
                 val result = withTimeout(10_000) { phone.await() }
-                assertEquals("192.168.43.1", result.ipAddress)
-                assertEquals(5288, result.port)
+                assertEquals("192.168.43.1", result.endpoint?.ipAddress)
+                assertEquals(5288, result.endpoint?.port)
             }
         }
 
@@ -390,9 +389,7 @@ class WirelessHandshakeTest {
             // 5, and its field 1 is a string too. Unguarded, "Chevrolet" reads
             // as an ip_address and the phone tries to connect to it.
             LoopbackTransport.pair().use { pair ->
-                val phone = async(Dispatchers.IO) {
-                    runCatching { WirelessHandshake(pair.phone).perform(maxMessages = 2) }
-                }
+                val phone = async(Dispatchers.IO) { WirelessHandshake(pair.phone).perform() }
 
                 send(
                     pair.headUnit, MessageId.WIFI_VERSION_REQUEST,
@@ -406,32 +403,32 @@ class WirelessHandshakeTest {
                         .build(),
                 )
                 RfcommMessage.read(pair.headUnit) // the version response
+                RfcommMessage.read(pair.headUnit) // the info request
                 send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
 
-                // Credentials arrived but no believable endpoint did, so the
-                // attempt must fail rather than dial a car manufacturer.
-                val outcome = withTimeout(10_000) { phone.await() }
-                assertTrue(
-                    outcome.exceptionOrNull() is WirelessHandshakeException,
-                    "expected a handshake failure, got $outcome",
+                // No believable endpoint arrived, so there must be none -- the
+                // alternative is dialling a car manufacturer by name.
+                val result = withTimeout(10_000) { phone.await() }
+                assertEquals(
+                    null, result.endpoint,
+                    "a head unit description is not an address",
                 )
             }
         }
 
     @Test
-    fun `a head unit that goes quiet mid-exchange is prodded again`() = runBlocking {
-        // The stall the idle-based prodder exists for. aa-proxy-rs records head
-        // units that omit WifiStartRequest entirely and wait for the phone to
-        // ask (bluetooth.rs L2042-L2060). A prodder that disarmed on the first
-        // message would sit here forever, having just answered a version
-        // request, with the car equally patiently waiting for us.
+    fun `the observed Chevrolet flow completes without an endpoint`() = runBlocking {
+        // Captured from the target vehicle, in order:
+        //   rx WIFI_VERSION_REQUEST   (the bytes below)
+        //   tx WIFI_VERSION_RESPONSE  status 0
+        //   tx WIFI_INFO_REQUEST      -- the car volunteers nothing, so ask
+        //   rx WIFI_INFO_RESPONSE     SSID, passphrase, BSSID
+        //   ...and no WifiStartRequest, ever.
+        // Waiting for an endpoint here is what left the app looping with the
+        // credentials already in hand.
         LoopbackTransport.pair().use { pair ->
-            val phone = async(Dispatchers.IO) {
-                WirelessHandshake(pair.phone).perform(silenceProbeMillis = 200)
-            }
+            val phone = async(Dispatchers.IO) { WirelessHandshake(pair.phone).perform() }
 
-            // Speak once -- enough to disarm a "has it ever spoken" check -- and
-            // deliberately omit any endpoint, so nothing is proactively asked.
             pair.headUnit.write(
                 RfcommMessage(MessageId.WIFI_VERSION_REQUEST.number, malibuVersionRequest).encode()
             )
@@ -439,20 +436,74 @@ class WirelessHandshakeTest {
                 MessageId.WIFI_VERSION_RESPONSE.number,
                 withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }.messageId,
             )
+            assertEquals(
+                MessageId.WIFI_INFO_REQUEST.number,
+                withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }.messageId,
+                "the credentials must be asked for, not waited for",
+            )
+            send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
 
-            // Now go quiet. The phone must ask for the credentials itself.
+            val result = withTimeout(10_000) { phone.await() }
+            assertEquals("MyCar-AA", result.ssid)
+            assertEquals("hunter2hunter2", result.passphrase)
+            assertEquals(
+                null, result.endpoint,
+                "no endpoint was offered; the caller resolves one after joining",
+            )
+        }
+    }
+
+    @Test
+    fun `a head unit that ignores the first request is asked again`() = runBlocking {
+        // The stall the idle-based prodder exists for. A prodder that disarmed
+        // on the first message would sit here forever, having just answered a
+        // version request, with the car equally patiently waiting for us.
+        LoopbackTransport.pair().use { pair ->
+            val phone = async(Dispatchers.IO) {
+                WirelessHandshake(pair.phone).perform(silenceProbeMillis = 200)
+            }
+
+            pair.headUnit.write(
+                RfcommMessage(MessageId.WIFI_VERSION_REQUEST.number, malibuVersionRequest).encode()
+            )
+            assertEquals(
+                MessageId.WIFI_VERSION_RESPONSE.number,
+                withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }.messageId,
+            )
+            // Drop the phone's first request on the floor and go quiet.
+            assertEquals(
+                MessageId.WIFI_INFO_REQUEST.number,
+                withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }.messageId,
+            )
+
             val probe = withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }
             assertEquals(
                 MessageId.WIFI_INFO_REQUEST.number, probe.messageId,
-                "after the head unit has spoken, the useful probe is the info request",
+                "an ignored request must be retried, not waited out",
             )
-
             send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
+            assertEquals("MyCar-AA", withTimeout(10_000) { phone.await() }.ssid)
+        }
+    }
+
+    @Test
+    fun `a late endpoint still wins when the head unit sends one first`() = runBlocking {
+        // openauto's head unit sends WifiStartRequest before the phone has said
+        // anything (AndroidBluetoothServer.cpp L79-L86), so the endpoint is
+        // already known by the time credentials arrive and must be kept.
+        LoopbackTransport.pair().use { pair ->
+            val phone = async(Dispatchers.IO) { WirelessHandshake(pair.phone).perform() }
+
             send(
                 pair.headUnit, MessageId.WIFI_START_REQUEST,
                 WifiStartRequest.newBuilder().setIpAddress("192.168.43.1").setPort(5288).build(),
             )
-            assertEquals("192.168.43.1", withTimeout(10_000) { phone.await() }.ipAddress)
+            RfcommMessage.read(pair.headUnit) // the info request
+            send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
+
+            val result = withTimeout(10_000) { phone.await() }
+            assertEquals("192.168.43.1", result.endpoint?.ipAddress)
+            assertEquals(5288, result.endpoint?.port)
         }
     }
 

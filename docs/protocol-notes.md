@@ -151,6 +151,55 @@ plausible-looking number is precisely what produced the bug above, one field
 earlier, so the `announceSelectedWifiChannel` flag on `WirelessHandshake` exists
 and is off. Turn it on only against a log from a unit that needs it.
 
+### The second capture: the car answers, but never offers an endpoint
+
+With the status corrected, the same vehicle produced a complete credentials
+exchange — and revealed a second, independent problem.
+
+```text
+rx id=4 (WIFI_VERSION_REQUEST)   08 01 10 00 18 00 20 f1 2c
+tx id=5 (WIFI_VERSION_RESPONSE)  08 01 10 00 20 00
+                                 ...6.2s of silence...
+tx id=2 (WIFI_INFO_REQUEST)
+rx id=3 (WIFI_INFO_RESPONSE)     0a 0f 6d 79 43 68 ... 20 08
+                                 ...and nothing further, ever.
+```
+
+The `WifiInfoResponse` decodes cleanly under aasdk's schema:
+
+| Field | Wire | Value |
+|---|---|---|
+| 1 | string | SSID |
+| 2 | string | passphrase |
+| 3 | string | BSSID (note: *not* the same as the Bluetooth MAC) |
+| 4 | varint | `security_mode` = 8 |
+| 5 | — | `access_point_type` absent |
+
+Two things follow, and both are behavioural rather than schema-level.
+
+**The head unit does not speak first here.** It sent its version request, then
+waited. It answers `WifiInfoRequest` whenever asked — it was asked twice and
+answered identically both times — but volunteers nothing. openauto's head unit
+sends `WifiVersionRequest` and `WifiStartRequest` back to back without waiting
+for the version response at all
+(`openauto/src/btservice/AndroidBluetoothServer.cpp` L79-L86), and answers
+`WifiInfoRequest` in any order (L160-L178). A phone that waits to be offered
+credentials therefore works against openauto and hangs against this Chevrolet.
+Headway now asks immediately after answering the version request.
+
+**There is no `WifiStartRequest` at all.** No endpoint arrives over Bluetooth,
+and none is carried in the version request either — the request is nine bytes
+with no field 5. aa-proxy-rs handles units that omit `WifiStartRequest` by
+synthesising one from the projection endpoint (`bluetooth.rs` L2042-L2060), but
+that requires an endpoint to exist somewhere, and here none does.
+
+So the endpoint is not obtainable over Bluetooth for this unit. It is, however,
+*discoverable*: the head unit hosts the access point, so it is the DHCP server
+on its own network, and `LinkProperties.getDhcpServerAddress()` on the joined
+`Network` names it without a guess. The default-route gateway is the fallback,
+and the port defaults to 5288 (§3.2) and is configurable. `CarNetworkCredentials`
+therefore carries a **nullable** endpoint: absent is normal, not an error.
+
 ### The field 4/5 ambiguity, and the trap in it
 
 Two schema revisions circulate. Decompiled Gearhead puts

@@ -181,6 +181,39 @@ class CarWifiNetwork(
     }
 
     /**
+     * The head unit's own address on the access point it is hosting.
+     *
+     * Needed because a real 2021 Chevrolet Infotainment 3 unit never sends
+     * `WifiStartRequest`: it answers `WifiInfoRequest` with SSID, passphrase and
+     * BSSID, and then says nothing more, so Bluetooth yields no IP or port. The
+     * unit is the only other host on a network it is hosting, so its address is
+     * discoverable rather than guessable.
+     *
+     * The DHCP server address is preferred over the default-route gateway. On an
+     * access point hosted by the head unit they are the same machine, but a car
+     * AP with no internet may publish no default route at all, in which case the
+     * gateway is absent and the DHCP server is not.
+     *
+     * Returns null if the platform reports neither, which is the caller's cue to
+     * fail with something a person can act on rather than connect to a guess.
+     */
+    fun headUnitAddress(): String? {
+        val joined = network ?: return null
+        val properties = connectivityManager?.getLinkProperties(joined) ?: return null
+
+        properties.dhcpServerAddress?.hostAddress?.let {
+            onStep("head unit is the DHCP server at $it")
+            return it
+        }
+        val gateway = properties.routes
+            .firstOrNull { it.isDefaultRoute && it.hasGateway() }
+            ?.gateway?.hostAddress
+        if (gateway != null) onStep("head unit is the default gateway at $gateway")
+        else onStep("the car network published neither a DHCP server nor a gateway")
+        return gateway
+    }
+
+    /**
      * Opens a TCP socket bound to the car's network.
      *
      * Name resolution goes through [Network.getByName] rather than the default
