@@ -133,8 +133,11 @@ class HeadUnitQuirksTest {
                 suggestCarNetwork = true,
             ),
         )
-        val written = org.json.JSONArray(QuirkStore.serialize(listOf(everything)))
-            .getJSONObject(0).keys().asSequence().toSet()
+        // serialize() wraps the profiles in {"version":N,"profiles":[...]}.
+        val written = org.json.JSONObject(QuirkStore.serialize(listOf(everything)))
+            .getJSONArray("profiles")
+            .getJSONObject(0)
+            .keys().asSequence().toSet()
 
         val unknown = written - QuirkStore.knownProfileKeys
         assertTrue(
