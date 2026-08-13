@@ -82,6 +82,47 @@ Stated so the gap between "CI green" and "works in a car" is never implied away.
   sustained) are properties of a Pixel's encoder and cannot be measured from a
   JVM test.
 
+## Where the real car currently gets to
+
+A 2021 Chevrolet Infotainment 3 unit, as of build 33:
+
+- **Bluetooth: works, every time.** SDP lookup, RFCOMM connect on channel 3,
+  version exchange, and the credentials handshake all complete in under a
+  second. The car hands over SSID, passphrase, BSSID and — inconsistently —
+  its endpoint, 192.168.5.1:7001.
+- **Wi-Fi join: the current wall.** Build 32 requested the network, Android
+  showed its approval prompt, and the request ran the full 75 s to
+  `onUnavailable` with nothing logged in between. Everything downstream is
+  therefore still unreached on this vehicle.
+
+What build 33 changes about that, in rough order of how likely each is to be
+the cause:
+
+1. **The BSSID is pinned again**, alternating with SSID-only matching. The one
+   join this project has ever completed was pinned (`docs/protocol-notes.md`
+   §"The third capture"); the builds that matched on SSID alone could not join
+   at all, and GM puts the vehicle hotspot and the projection access point on
+   the same SSID across two BSSs.
+2. **The join no longer cancels itself.** 75 s was passed to `requestNetwork`'s
+   timeout variant, which does not merely stop waiting — it releases the
+   request and tears down whatever association the platform is mid-way through.
+   AOSP allows up to 120 s measured from the user's tap.
+3. **Bluetooth is now serviced for the whole join**, and keepalive pings
+   (message ids 8/9) are answered. Nothing read that socket during the join
+   before, so a head unit pinging into it heard nothing back.
+4. **The security mode decodes correctly.** The enum was numbered sequentially
+   where every reference uses a bitfield, so wire value 8 read as
+   `WPA2_ENTERPRISE` instead of `WPA2_PERSONAL`, and four legal values would
+   have failed the parse outright.
+5. **The failure now says what happened**: the platform's own verdict where it
+   gives one, a scan counter, screen and keyguard state, process importance,
+   whether the phone associated with anything at all, and a heartbeat every
+   five seconds. A capture that stalls again should be diagnosable from the log
+   alone rather than needing a theory.
+
+`hiddenSsid`, `pinBssid` and `announceWifiChannel` are in the quirk file, so the
+remaining hypotheses can be tested with a text edit instead of a rebuild.
+
 ## What is left
 
 1. **Real-hardware validation.** The one step that cannot be self-performed, and
