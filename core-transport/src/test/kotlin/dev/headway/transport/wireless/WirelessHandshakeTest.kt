@@ -564,6 +564,50 @@ class WirelessHandshakeTest {
     }
 
     @Test
+    fun `the captured Chevrolet exchange happens in exactly this order`() = runBlocking {
+        // Transcribed from a real capture, and asserted as a sequence rather
+        // than as individual messages: every bug in this handshake so far has
+        // been an ordering or a duplicate, not a malformed body.
+        LoopbackTransport.pair().use { pair ->
+            val handshake = WirelessHandshake(pair.phone)
+            val phone = async(Dispatchers.IO) { handshake.perform() }
+            val seen = mutableListOf<Int>()
+
+            pair.headUnit.write(
+                RfcommMessage(MessageId.WIFI_VERSION_REQUEST.number, malibuVersionRequest).encode()
+            )
+            seen += withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }.messageId // version resp
+            seen += withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }.messageId // info req
+
+            // The car answers the info request with the endpoint first, then the
+            // credentials -- which is where the phone used to ask a second time.
+            send(
+                pair.headUnit, MessageId.WIFI_START_REQUEST,
+                WifiStartRequest.newBuilder().setIpAddress("192.168.5.1").setPort(7001).build(),
+            )
+            send(pair.headUnit, MessageId.WIFI_INFO_RESPONSE, credentials())
+            seen += withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }.messageId // start resp
+
+            val result = withTimeout(10_000) { phone.await() }
+            handshake.reportWifiConnected()
+            seen += withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }.messageId // connected
+
+            assertEquals(
+                listOf(
+                    MessageId.WIFI_VERSION_RESPONSE.number,
+                    MessageId.WIFI_INFO_REQUEST.number,
+                    MessageId.WIFI_START_RESPONSE.number,
+                    MessageId.WIFI_CONNECTION_STATUS.number,
+                ),
+                seen,
+                "the phone must send exactly these, once each, in this order",
+            )
+            assertEquals("192.168.5.1", result.endpoint?.ipAddress)
+            assertEquals(7001, result.endpoint?.port, "the car's port, not the reference default")
+        }
+    }
+
+    @Test
     fun `the service UUID matches all three references`() {
         assertEquals(
             "4de17a00-52cb-11e6-bdf4-0800200c9a66",

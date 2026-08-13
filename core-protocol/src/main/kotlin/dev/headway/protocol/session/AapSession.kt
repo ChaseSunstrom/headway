@@ -83,6 +83,13 @@ data class HeadUnitProfile(
  *  ChannelOpenResponse         ------->
  * ```
  *
+ * That is the usual shape, not a contract. The TLS and authentication steps are
+ * driven by [secureAndAuthenticate], which dispatches on whatever the head unit
+ * sends rather than requiring this order — a real 2021 Chevrolet Infotainment 3
+ * unit jumps straight from the version exchange to `AuthComplete` with no TLS at
+ * all, and the `[encrypted]` marks above are then false for the rest of the
+ * session. See [secured].
+ *
  * ## Two things that are the opposite of what you would guess
  *
  * 1. **The phone is the TLS server** even though it opened the TCP connection.

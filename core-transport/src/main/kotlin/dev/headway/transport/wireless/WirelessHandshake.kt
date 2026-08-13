@@ -211,6 +211,14 @@ class WirelessHandshake(
         var projectionEndpoint: WifiProjectionProtocolInfo? = null
         val heardSomething = AtomicBoolean(false)
         val lastActivity = AtomicLong(System.nanoTime())
+
+        // Two paths reach "ask for the credentials" -- answering the version
+        // request and receiving WifiStartRequest -- and a head unit that sends
+        // both gets asked twice. The observed Chevrolet tolerated it, but there
+        // is no reason to send a message twice when the first is still in
+        // flight. The idle prodder deliberately ignores this: re-asking is
+        // exactly its job when the first request was dropped.
+        val askedForCredentials = AtomicBoolean(false)
         val startedAt = System.nanoTime()
         val expired = AtomicBoolean(false)
 
@@ -296,8 +304,15 @@ class WirelessHandshake(
                 MessageId.WIFI_START_REQUEST -> {
                     endpoint = WifiStartRequest.parseFrom(message.payload)
                     onStep("head unit offers ${endpoint!!.ipAddress}:${endpoint!!.port}")
-                    // Ask for the credentials now that we know where to connect.
-                    send(MessageId.WIFI_INFO_REQUEST, aap_protobuf.aaw.WifiInfoRequestOuterClass.WifiInfoRequest.getDefaultInstance())
+                    // Ask for the credentials now that we know where to connect,
+                    // unless answering the version request already did.
+                    if (info == null && askedForCredentials.compareAndSet(false, true)) {
+                        send(
+                            MessageId.WIFI_INFO_REQUEST,
+                            aap_protobuf.aaw.WifiInfoRequestOuterClass.WifiInfoRequest
+                                .getDefaultInstance(),
+                        )
+                    }
                 }
 
                 MessageId.WIFI_INFO_RESPONSE -> {
@@ -379,7 +394,7 @@ class WirelessHandshake(
                     // knows how to answer, and it distinguishes the two readings
                     // in the log. The idle prodder still covers a unit that
                     // needs asking more than once.
-                    if (info == null) {
+                    if (info == null && askedForCredentials.compareAndSet(false, true)) {
                         send(
                             MessageId.WIFI_INFO_REQUEST,
                             aap_protobuf.aaw.WifiInfoRequestOuterClass.WifiInfoRequest
