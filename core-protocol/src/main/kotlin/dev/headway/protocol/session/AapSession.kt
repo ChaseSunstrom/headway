@@ -292,10 +292,20 @@ class AapSession(
                     return
                 }
 
-                else -> throw SessionException(
-                    "expected ENCAPSULATED_SSL or AUTH_COMPLETE, got " +
-                        ControlMessageType.describe(message.messageId)
-                )
+                // The third window a keepalive can land in. Answering it here
+                // costs nothing and closes the last place in bring-up where a
+                // ping would have ended the session -- see `expect` for why
+                // this is handled everywhere rather than where it was last
+                // observed.
+                else -> if (ControlKeepalive.isPing(message)) {
+                    ControlKeepalive.answer(connection, message)
+                    onStep("answered a keepalive during the TLS exchange")
+                } else {
+                    throw SessionException(
+                        "expected ENCAPSULATED_SSL or AUTH_COMPLETE, got " +
+                            ControlMessageType.describe(message.messageId)
+                    )
+                }
             }
         }
     }
@@ -475,20 +485,56 @@ class AapSession(
 
     // --- helpers ------------------------------------------------------------
 
+    /**
+     * Waits for one specific control message, answering keepalives meanwhile.
+     *
+     * ## Why this loops instead of reading once
+     *
+     * A head unit pings whenever it likes, including in the middle of bring-up,
+     * and a phone that does not answer is a phone it concludes has gone away.
+     * This was learned twice from the same real vehicle, one step apart:
+     *
+     * - a `PING_REQUEST` arriving while SENSOR was being opened was skipped, and
+     *   the unit dropped the link 9 ms later;
+     * - then, once that was fixed, `expected SERVICE_DISCOVERY_RESPONSE, got
+     *   PING_REQUEST` — the same message, one step earlier, against a reader
+     *   that failed the session outright.
+     *
+     * Fixing the second window the way the first was fixed would just move the
+     * hole again, so the handling lives here, where every step that waits for a
+     * named control message goes through it.
+     *
+     * Skipping is bounded and logged: a head unit that never sends what is being
+     * waited for is a real failure and must not be waited on forever.
+     */
     private suspend fun expect(type: ControlMessageType): AapMessage {
-        val message = connection.receive()
-        if (message.channelId != ChannelId.CONTROL.id) {
-            throw SessionException(
-                "expected ${type.name} on the control channel, got a message on " +
-                    ChannelId.describe(message.channelId)
-            )
+        var skipped = 0
+        while (true) {
+            val message = connection.receive()
+            if (message.channelId != ChannelId.CONTROL.id) {
+                throw SessionException(
+                    "expected ${type.name} on the control channel, got a message on " +
+                        ChannelId.describe(message.channelId)
+                )
+            }
+            if (message.messageId == type.id) return message
+
+            if (++skipped > MAX_INTERLEAVED_MESSAGES) {
+                throw SessionException(
+                    "no ${type.name} after $skipped interleaved control messages; the last " +
+                        "was ${ControlMessageType.describe(message.messageId)}"
+                )
+            }
+            if (ControlKeepalive.isPing(message)) {
+                ControlKeepalive.answer(connection, message)
+                onStep("answered a keepalive while waiting for ${type.name}")
+            } else {
+                onStep(
+                    "ignoring ${ControlMessageType.describe(message.messageId)} while " +
+                        "waiting for ${type.name}"
+                )
+            }
         }
-        if (message.messageId != type.id) {
-            throw SessionException(
-                "expected ${type.name}, got ${ControlMessageType.describe(message.messageId)}"
-            )
-        }
-        return message
     }
 
     private companion object {

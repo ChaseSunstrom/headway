@@ -322,6 +322,50 @@ class Phase1HandshakeAcceptanceTest {
         }
     }
 
+    /**
+     * A keepalive in *any* bring-up window must be answered, not just one.
+     *
+     * The same real vehicle taught this twice, one step apart. First a ping
+     * during channel open was skipped and the unit dropped the link 9 ms later.
+     * Once that was fixed, the very next log said `expected
+     * SERVICE_DISCOVERY_RESPONSE, got PING_REQUEST` — the same message, one
+     * step earlier, against a reader that failed outright.
+     *
+     * Patching the second window the way the first was patched would only move
+     * the hole again, so `expect` now handles it for every step that waits on a
+     * named control message. This drives a whole session with a ping injected
+     * before *each* of the three things the phone waits for, which is the only
+     * way to prove the hole is closed rather than relocated.
+     */
+    @Test
+    fun `a keepalive before every bring-up step is answered`() = runBlocking {
+        LoopbackTransport.pair().use { pair ->
+            val headUnit = EmulatedHeadUnit(
+                connection = FramedConnection(pair.headUnit),
+                tls = TlsSession(AapTls.headUnitEngine()),
+                config = HeadUnitConfig(),
+            )
+            val session = AapSession(
+                connection = FramedConnection(pair.phone),
+                tls = TlsSession(AapTls.phoneEngine()),
+                identity = PhoneIdentity(deviceName = "Headway Test"),
+            )
+
+            val phone = async(Dispatchers.IO) { runCatching { session.connect() } }
+            val car = async(Dispatchers.IO) {
+                runCatching { headUnit.run(pingBeforeEachStep = true) }
+            }
+
+            val phoneResult = withTimeout(30_000) { phone.await() }
+            assertTrue(
+                phoneResult.isSuccess,
+                "a ping before each bring-up step must not end the session: " +
+                    phoneResult.exceptionOrNull()?.message,
+            )
+            assertTrue(withTimeout(30_000) { car.await() }.isSuccess)
+        }
+    }
+
     @Test
     fun `full handshake through to open channels over the fake transport`() {
         LoopbackTransport.pair().use { pair ->

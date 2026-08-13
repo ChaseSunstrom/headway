@@ -113,13 +113,45 @@ class EmulatedHeadUnit(
      *   decides how many channels it wants, so the caller states the expectation
      *   rather than the emulator guessing when to stop reading.
      */
-    suspend fun run(channelOpens: Int = config.advertisedChannels.size) {
+    suspend fun run(
+        channelOpens: Int = config.advertisedChannels.size,
+        pingBeforeEachStep: Boolean = false,
+    ) {
         sendVersionRequest()
+        if (pingBeforeEachStep) pingUnanswered()
         runTlsHandshake()
+        if (pingBeforeEachStep) pingUnanswered()
         sendAuthComplete()
+        if (pingBeforeEachStep) pingUnanswered()
         answerServiceDiscovery()
-        repeat(channelOpens) { answerChannelOpen() }
+        repeat(channelOpens) {
+            if (pingBeforeEachStep) pingUnanswered()
+            answerChannelOpen()
+        }
         onStep("head unit ready; ${opened.size} channel(s) open")
+    }
+
+    /**
+     * Sends a `PING_REQUEST` without waiting for the answer.
+     *
+     * A real head unit does not block on its keepalives, and neither does this:
+     * the phone's `PING_RESPONSE` lands in the stream and the next `expect`
+     * skips it. What is being modelled is the *timing* — a ping arriving in the
+     * middle of bring-up rather than in a quiet session — because that is the
+     * shape that ended a real session twice.
+     */
+    private suspend fun pingUnanswered(timestamp: Long = 7) {
+        connection.send(
+            AapMessage(
+                channelId = ChannelId.CONTROL.id,
+                control = false,
+                encrypted = false,
+                messageId = ControlMessageType.PING_REQUEST.id,
+                payload = aap_protobuf.service.control.message.PingRequestOuterClass.PingRequest
+                    .newBuilder().setTimestamp(timestamp).build().toByteArray(),
+            )
+        )
+        onStep("sent an unsolicited keepalive mid-bring-up")
     }
 
     // --- version ------------------------------------------------------------
@@ -286,10 +318,10 @@ class EmulatedHeadUnit(
     // --- channel open -------------------------------------------------------
 
     private suspend fun answerChannelOpen() {
-        val message = connection.receive()
-        check(message.messageId == ControlMessageType.CHANNEL_OPEN_REQUEST.id) {
-            "expected CHANNEL_OPEN_REQUEST, got ${ControlMessageType.describe(message.messageId)}"
-        }
+        // Via expect() rather than a bare receive(): the phone may be answering
+        // a keepalive at this exact moment, and a head unit that treated a pong
+        // as a protocol violation would be modelling something no real unit does.
+        val message = expect(ControlMessageType.CHANNEL_OPEN_REQUEST)
         val request = ChannelOpenRequest.parseFrom(message.payload)
 
         // Refuse a channel we never advertised, the way a real unit would --
@@ -313,11 +345,20 @@ class EmulatedHeadUnit(
     // --- helpers ------------------------------------------------------------
 
     private suspend fun expect(type: ControlMessageType): AapMessage {
-        val message = connection.receive()
-        check(message.messageId == type.id) {
-            "expected ${type.name}, got ${ControlMessageType.describe(message.messageId)}"
+        var skipped = 0
+        while (true) {
+            val message = connection.receive()
+            if (message.messageId == type.id) return message
+            // A phone that answers an unsolicited keepalive puts a
+            // PING_RESPONSE in this stream at a moment of its choosing, which is
+            // exactly the behaviour [pingUnanswered] exists to provoke. A real
+            // head unit tracks its own pings rather than treating a late pong as
+            // a protocol violation, so skip them -- bounded, because everything
+            // else here is still a genuine mismatch worth failing on.
+            check(message.messageId == ControlMessageType.PING_RESPONSE.id && ++skipped <= 8) {
+                "expected ${type.name}, got ${ControlMessageType.describe(message.messageId)}"
+            }
         }
-        return message
     }
 
     /**
