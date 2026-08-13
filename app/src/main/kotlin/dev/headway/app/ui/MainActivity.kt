@@ -236,7 +236,12 @@ class MainActivity : AppCompatActivity() {
                     "The system dialog is worded in general terms because it covers " +
                     "every accessibility service. Headway's is registered without " +
                     "permission to read your screen content: it can inject the taps " +
-                    "and swipes the car sends, and nothing else.",
+                    "and swipes the car sends, and nothing else.\n\n" +
+                    "If it switches itself off, that is Android, not a bug. " +
+                    "Uninstalling clears the grant, and force-stopping the app can " +
+                    "too. Nothing here can turn it back on — a service able to " +
+                    "re-enable itself would be a keylogger, which is the whole reason " +
+                    "the platform forbids it. Ordinary updates should keep it.",
             ),
         )
         accessibilityValue = body("Checking...")
@@ -405,7 +410,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openAccessibilitySettings() {
-        val intent = HeadwayAccessibilityService.settingsIntent()
+        val intent = HeadwayAccessibilityService.settingsIntent(this)
             // Launched from an activity, so the new-task flag the service-side
             // helper adds is unwanted here.
             .setFlags(0)

@@ -200,8 +200,44 @@ class HeadwayAccessibilityService : AccessibilityService() {
          * the best the app can do is take the user to the right page and explain
          * what to look for.
          */
-        fun settingsIntent(): Intent =
+        /**
+         * The component the Settings deep link addresses, and the same string
+         * the platform stores in `enabled_accessibility_services`.
+         */
+        fun componentName(context: Context): ComponentName =
+            ComponentName(context, HeadwayAccessibilityService::class.java)
+
+        /**
+         * Opens Accessibility settings, scrolled to Headway where the platform
+         * allows it.
+         *
+         * The grant is lost on uninstall and on force-stop, and cannot be
+         * restored from inside the app — a service that could re-enable itself
+         * would be a keylogger, which is exactly why the platform forbids it. So
+         * the only thing worth optimising is the number of taps between noticing
+         * and fixing it, and that means landing on Headway's own entry rather
+         * than the top of a list.
+         *
+         * `:settings:fragment_args_key` is the documented way to highlight a
+         * preference, and Settings ignores extras it does not understand, so a
+         * device that does not support it simply opens the plain list as before.
+         */
+        fun settingsIntent(context: Context? = null): Intent =
             Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .apply {
+                    val component = context?.let { componentName(it) } ?: return@apply
+                    val key = component.flattenToString()
+                    putExtra(EXTRA_FRAGMENT_ARG_KEY, key)
+                    putExtra(
+                        EXTRA_SHOW_FRAGMENT_ARGUMENTS,
+                        android.os.Bundle().apply { putString(EXTRA_FRAGMENT_ARG_KEY, key) },
+                    )
+                }
+
+        /** `Settings.EXTRA_FRAGMENT_ARG_KEY`, which is public but not constant-exported. */
+        private const val EXTRA_FRAGMENT_ARG_KEY: String = ":settings:fragment_args_key"
+        private const val EXTRA_SHOW_FRAGMENT_ARGUMENTS: String =
+            ":settings:show_fragment_args"
     }
 }
