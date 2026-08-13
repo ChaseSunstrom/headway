@@ -162,6 +162,49 @@ git clone --depth 1 https://github.com/opencardev/openauto.git
 aasdk's protobufs win and the disagreement is recorded rather than resolved
 silently.
 
+## First connect to a real car
+
+Do these in order. Most first-connect failures are one of the first four.
+
+1. **Pair the phone with the car normally**, in Android's Bluetooth settings.
+   Headway does not reimplement pairing and cannot connect without it.
+2. **Turn Wi-Fi on** on the phone. It does not need to be connected to
+   anything — the car's network has no internet — but the radio has to be on.
+   Android refuses Headway's request outright if it is off, and reports that
+   refusal in a way no app can distinguish from any other failure.
+3. **On the car screen**, check the vehicle's own settings: Bluetooth on, Wi-Fi
+   on, and Android Auto enabled for this phone. On Chevrolet Infotainment 3
+   that is Settings → Bluetooth, Settings → Wi-Fi, and Settings → Apps →
+   Android Auto. The head unit's projection access point does not come up until
+   Wi-Fi is enabled there, and a projection access point that is not on the air
+   looks exactly like a phone that cannot see it.
+   *An OnStar data plan is not required* — projection uses the head unit's own
+   access point, not the in-vehicle hotspot's internet.
+4. **Make sure no other phone is already projecting.** A head unit that is
+   busy will still hand over credentials and then refuse the session.
+5. Press **Connect** in Headway. Android will show a prompt asking to let
+   Headway join the car's network. **Tap the car on that prompt and leave it on
+   screen** — do not switch back to Headway to see how it is going. That prompt
+   is a separate activity, and covering it is what makes it unrecoverable.
+   Android remembers the approval afterwards, so this is a once-per-car step,
+   not a once-per-drive one.
+
+If it still does not connect, export the log (**Diagnostics → Export the
+session log**) and read the join lines. Since build 33 they say what the
+platform's own verdict was — `NOT_FOUND`, `AUTHENTICATION`, `ASSOCIATION`,
+`IP_PROVISIONING` or `NO_RESPONSE` — and each one points somewhere different.
+
+### Two knobs worth trying from the quirk file
+
+**Diagnostics → Create the head unit quirk file** writes a JSON file you can
+edit. If the join never succeeds:
+
+- `"hiddenSsid": true` — for a head unit that does not broadcast its network
+  name. It fails identically to a car that is not there.
+- `"pinBssid": true` or `false` — whether to require the exact BSSID the head
+  unit named. Left out, Headway alternates between the two on successive
+  attempts, because both have been necessary on real hardware.
+
 ## Installing and updating
 
 Builds are published as GitHub releases. Once one is installed, **Check for

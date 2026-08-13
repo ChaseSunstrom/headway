@@ -448,7 +448,6 @@ class CarWifiNetwork(
         expected: CarEndpoint? = credentials.endpoint,
     ): Network? {
         if (closed.get() || network != null) return null
-        if (expected == null) return null
         val manager = connectivityManager ?: return null
 
         // getAllNetworks() is deprecated in favour of a registered callback, and
@@ -462,13 +461,30 @@ class CarWifiNetwork(
             val capabilities = manager.getNetworkCapabilities(candidate) ?: continue
             if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
             val properties = manager.getLinkProperties(candidate) ?: continue
-            if (!hostsGateway(properties, expected.ipAddress)) continue
 
-            onStep(
-                "the phone is already on a Wi-Fi network whose gateway is " +
-                    "${expected.ipAddress} — that is this car, so no approval sheet is " +
-                    "needed"
-            )
+            val why = when {
+                // Strongest signal: the head unit named its own address and a
+                // network the phone is on is served by exactly that host.
+                expected != null && hostsGateway(properties, expected.ipAddress) ->
+                    "its gateway is ${expected.ipAddress}, which is the address this head " +
+                        "unit just gave over Bluetooth"
+
+                // No endpoint was announced, which is normal for this vehicle.
+                // Fall back to the shape of the network: a head unit's access
+                // point serves DHCP and has no working internet, so it never
+                // validates. That excludes home Wi-Fi and, usefully, excludes
+                // the car's own OnStar hotspot, which does have internet.
+                expected == null &&
+                    !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                    properties.dhcpServerAddress != null ->
+                    "it serves DHCP from ${properties.dhcpServerAddress?.hostAddress} and has " +
+                        "no working internet, which is what a head unit's access point looks " +
+                        "like. The AAP connect will confirm it"
+
+                else -> null
+            } ?: continue
+
+            onStep("reusing a Wi-Fi network the phone is already on: $why")
             network = candidate
             joinedSsid = credentials.ssid
             adopted = true
@@ -546,7 +562,15 @@ class CarWifiNetwork(
         val wifiOn = runCatching { wifiManager?.isWifiEnabled }.getOrNull()
         val state = ActivityManager.RunningAppProcessInfo()
         runCatching { ActivityManager.getMyMemoryState(state) }
-        return "wifi enabled=$wifiOn, process importance=${importanceName(state.importance)}, " +
+        // 5 GHz support is in here because the target head unit's access point
+        // is on 5745 MHz (channel 149, U-NII-3). A phone that cannot use that
+        // band -- or has fallen back to the worldwide regulatory domain, where
+        // U-NII-3 is unavailable -- will scan forever and find nothing, which
+        // is indistinguishable in every other signal from a car that is not
+        // broadcasting.
+        val fiveGhz = runCatching { wifiManager?.is5GHzBandSupported }.getOrNull()
+        return "wifi enabled=$wifiOn, 5GHz supported=$fiveGhz, " +
+            "process importance=${importanceName(state.importance)}, " +
             "associated=${associatedWifi ?: "nothing"}"
     }
 

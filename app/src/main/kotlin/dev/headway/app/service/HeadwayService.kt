@@ -161,6 +161,26 @@ open class HeadwayService : Service() {
     @Volatile
     private var carWifi: CarWifiNetwork? = null
 
+    /**
+     * How many joins have failed, which decides how the next one matches.
+     *
+     * There are two ways to match the car's access point and the project has
+     * now been burned by committing to each of them. Pinning the BSSID the head
+     * unit announced produced the one successful join on record
+     * (`docs/protocol-notes.md` §"The third capture": pinned to
+     * `ce:44:26:bf:18:ec`, joined 7.6 s later). Matching by SSID alone was then
+     * made the default on the theory that the car's two BSSIDs were one
+     * dual-radio access point — and the builds that followed could not join at
+     * all.
+     *
+     * Neither is safe to hardcode, and the failure mode of guessing wrong is a
+     * silent non-match rather than an error. So alternate: pin on even
+     * attempts, SSID-only on odd. The quirk file can force either once a log
+     * says which this car needs.
+     */
+    @Volatile
+    private var failedJoins: Int = 0
+
     private val notificationManager: NotificationManager?
         get() = getSystemService(NotificationManager::class.java)
 
@@ -366,13 +386,19 @@ open class HeadwayService : Service() {
             run {
                 // Reused across attempts, not scoped to this one. See carWifi.
                 val wifi = carWifi ?: CarWifiNetwork(this, onStep = ::step).also { carWifi = it }
+                // Alternate unless the quirk file has an opinion. See failedJoins.
+                val pinBssid = quirks.pinBssid ?: (failedJoins % 2 == 0)
                 val network = try {
                     // If the user has already put the phone on the car's Wi-Fi
                     // themselves, use that and skip the approval sheet entirely.
                     // This is the escape hatch for a phone where the sheet keeps
                     // going unanswered, and it costs one cheap lookup.
                     wifi.adoptExistingCarNetwork(credentials)
-                        ?: wifi.join(credentials, hiddenSsid = quirks.hiddenSsid, pinBssid = quirks.pinBssid)
+                        ?: wifi.join(
+                            credentials,
+                            hiddenSsid = quirks.hiddenSsid,
+                            pinBssid = pinBssid,
+                        )
                 } catch (e: Throwable) {
                     // Tell the head unit before dropping Bluetooth. Otherwise it
                     // is left mid-bootstrap believing the phone is still coming,
@@ -387,6 +413,14 @@ open class HeadwayService : Service() {
                     // CarWifiNetwork cannot be joined again, so it must not be
                     // the one the next attempt picks up.
                     releaseCarWifi()
+                    if (e !is kotlinx.coroutines.CancellationException) {
+                        failedJoins++
+                        step(
+                            "the next attempt will match " +
+                                if (quirks.pinBssid != null) "as the quirk file says"
+                                else if (pinBssid) "on the SSID alone" else "on the BSSID too"
+                        )
+                    }
                     throw CarNetworkJoinException(e)
                 }
                 Log.i(TAG, "bound to car network $network")

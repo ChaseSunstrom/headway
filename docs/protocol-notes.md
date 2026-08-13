@@ -187,11 +187,27 @@ for the version response at all
 credentials therefore works against openauto and hangs against this Chevrolet.
 Headway now asks immediately after answering the version request.
 
-**There is no `WifiStartRequest` at all.** No endpoint arrives over Bluetooth,
-and none is carried in the version request either — the request is nine bytes
-with no field 5. aa-proxy-rs handles units that omit `WifiStartRequest` by
-synthesising one from the projection endpoint (`bluetooth.rs` L2042-L2060), but
-that requires an endpoint to exist somewhere, and here none does.
+**`WifiStartRequest` is sent inconsistently.** In this capture there is none at
+all: no endpoint arrives over Bluetooth, and none is carried in the version
+request either — the request is nine bytes with no field 5. aa-proxy-rs handles
+units that omit `WifiStartRequest` by synthesising one from the projection
+endpoint (`bluetooth.rs` L2042-L2060), but that requires an endpoint to exist
+somewhere, and in this capture none does.
+
+A later capture from the same vehicle **does** contain one:
+
+```text
+rx id=1 (WIFI_START_REQUEST)   0a 0b "192.168.5.1" 10 d9 36
+                               -> 192.168.5.1:7001
+```
+
+So the absence is not a property of this head unit, and code must not treat it
+as one. **7001 is the observed AAP port for Chevrolet Infotainment 3**, against
+the reference default of 5288 (§3.2) — which is why the port a unit names is
+remembered per Bluetooth address rather than being re-guessed each session. The
+correlation worth recording is that the captures carrying `WifiStartRequest` are
+the ones where the access point was up; a unit that names where to connect is a
+unit that is ready to project.
 
 So the endpoint is not obtainable over Bluetooth for this unit. It is, however,
 *discoverable*: the head unit hosts the access point, so it is the DHCP server

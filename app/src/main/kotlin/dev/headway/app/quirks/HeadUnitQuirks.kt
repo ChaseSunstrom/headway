@@ -194,14 +194,24 @@ data class HeadUnitQuirks(
     /**
      * Require the exact BSSID the head unit named over Bluetooth.
      *
-     * Off, and it should stay off for the target vehicle: it announces
-     * `ce:44:26:bf:18:ec` while the platform's own scan sees two BSSIDs for
-     * that one SSID, which is what a dual-radio access point looks like.
-     * Pinning the wrong radio does not fail loudly — the request simply never
-     * matches. Exposed because a driveway with two identical cars in it is the
-     * one case where SSID-only matching is genuinely ambiguous.
+     * **Null means automatic**, which is the default and the right answer for
+     * an unknown car: Headway pins on one attempt and matches by SSID alone on
+     * the next, so neither choice can be a dead end. Set it explicitly only
+     * when a log shows which one this car needs.
+     *
+     * The history is worth knowing, because it was reasoned wrong once in each
+     * direction. Pinning was removed on the theory that the target vehicle's
+     * two BSSIDs for one SSID — `ce:22:26:bf:18:ec` and `ce:44:26:bf:18:ec` —
+     * were a dual-radio access point, so pinning the announced one would match
+     * nothing. But `docs/protocol-notes.md` §"The third capture" records a
+     * *successful* pinned join to `ce:44:26:bf:18:ec`, 7.6 s after the request,
+     * and the SSID-only builds that followed could not join at all. On GM
+     * vehicles the vehicle hotspot and the projection access point share an
+     * SSID on separate BSSs, so the two BSSIDs are two different networks
+     * rather than two radios carrying one — and only the one Bluetooth names
+     * carries projection.
      */
-    val pinBssid: Boolean = false,
+    val pinBssid: Boolean? = null,
 
     val touch: TouchQuirks = TouchQuirks(),
 ) {
@@ -213,7 +223,7 @@ data class HeadUnitQuirks(
     /** Human-readable one-liner for the log export and the settings screen. */
     fun describe(): String = "fragment=$maxFragmentSize version=$announcedVersion " +
         "mediaAudioOverAap=$mediaAudioOverAap keyframe=$keyframeIntervalFrames " +
-        "hiddenSsid=$hiddenSsid pinBssid=$pinBssid " +
+        "hiddenSsid=$hiddenSsid pinBssid=${pinBssid ?: "auto"} " +
         "touch=${if (touch.isIdentity) "identity" else touch.toString()}"
 
     companion object {
@@ -567,7 +577,12 @@ class QuirkStore(
                     .put(KEY_MEDIA_AUDIO_OVER_AAP, quirks.mediaAudioOverAap)
                     .put(KEY_KEYFRAME_INTERVAL, quirks.keyframeIntervalFrames)
                     .put(KEY_HIDDEN_SSID, quirks.hiddenSsid)
-                    .put(KEY_PIN_BSSID, quirks.pinBssid)
+                    .apply {
+                        // Omitted when automatic: an absent key is what "let
+                        // Headway alternate" looks like, and writing `false`
+                        // would silently pin the template to SSID-only matching.
+                        quirks.pinBssid?.let { put(KEY_PIN_BSSID, it) }
+                    }
                     .put(
                         KEY_TOUCH,
                         JSONObject()
@@ -662,7 +677,9 @@ class QuirkStore(
                     ),
                     keyframeIntervalFrames = keyframe,
                     hiddenSsid = json.optBoolean(KEY_HIDDEN_SSID, defaults.hiddenSsid),
-                    pinBssid = json.optBoolean(KEY_PIN_BSSID, defaults.pinBssid),
+                    pinBssid =
+                        if (json.has(KEY_PIN_BSSID)) json.optBoolean(KEY_PIN_BSSID, false)
+                        else defaults.pinBssid,
                     touch = touch,
                 ),
             )
