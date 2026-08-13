@@ -1071,13 +1071,14 @@ class CarWifiNetwork(
                 // WifiNetworkSpecifier connection -- the builder has no setting
                 // for it -- so Headway cannot fix this from inside the join.
                 "The phone got onto the car's Wi-Fi and the car never gave it an " +
-                    "address. Two things, in order. First, restart the car's infotainment " +
-                    "system (turn the car off and on again) - that clears the address " +
-                    "table the head unit has filled up. Second, stop Headway refilling it: " +
-                    "in Android's Wi-Fi settings join the car's network by hand once, open " +
-                    "it, and set Privacy to 'Use per-network randomized MAC'. Headway will " +
-                    "then reuse that connection instead of asking for a new one, with a " +
-                    "new hardware address, on every attempt."
+                    "address. Check the Bluetooth profile line above first: a head unit " +
+                    "that does not consider a phone connected often will not finish " +
+                    "bringing projection up, and that looks exactly like this. If those " +
+                    "are connected, the other cause is the head unit's address table " +
+                    "being full - turn the vehicle's Wi-Fi off and on in the car's " +
+                    "settings, then join the car's network by hand once in Android's " +
+                    "Wi-Fi settings and set Privacy to 'Use per-network randomized MAC' " +
+                    "so it stops refilling. See the README for how to tell the two apart."
             WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_ASSOCIATION,
             WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NO_RESPONSE ->
                 "The access point was seen but would not complete the association. If it " +

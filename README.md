@@ -225,15 +225,37 @@ privacy. Android gives an app no way to influence the MAC of the connection it
 requests, so Headway cannot fix it from the inside — it stops retrying instead,
 because each retry consumes another address.
 
-Two steps, in order:
+**You cannot inspect a head unit's address table.** It has no administration
+page — the usual advice about clearing one assumes a home router, and none of
+that applies to a car. So test it from the outside instead:
 
-1. **Restart the car's infotainment system** (turn the car off and on again).
-   That clears the address table.
-2. **Join the car's Wi-Fi by hand, once**, from Android's Wi-Fi settings. Open
-   the saved network and set **Privacy** to *Use per-network randomized MAC*
-   (Settings → Network & internet → Internet → the network → Privacy). That
-   setting is per-network: every other network keeps the default. From then on
-   the phone presents one stable address to that car.
+- **Join the car's Wi-Fi with a device that has never connected to it** — a
+  laptop, another phone. If that device gets an address, the table is not full
+  and this is not your problem.
+- **Set a static IP** (below). If the session then comes up, leasing was the
+  only thing broken.
+
+Note also that DHCP leases expire, typically within a few hours on an embedded
+server. A table that fills up during an afternoon of retries should recover on
+its own overnight. If the failure persists across a night, exhaustion is
+probably *not* the cause and the Bluetooth checks above are the better lead.
+
+To clear it anyway, in increasing order of disruption:
+
+1. **Turn the vehicle's Wi-Fi off and on** in the car's settings. This restarts
+   the access point and usually its DHCP server with it. Try this first.
+2. **Fully power the infotainment system down.** Switching the ignition off is
+   often not enough — these units stay awake for a while. Turn the car off,
+   open the driver's door, lock the car and leave it for ten minutes.
+3. **Factory-reset the infotainment system** (Settings → System → Return to
+   Factory Settings on Chevrolet Infotainment 3). This loses your pairings and
+   settings, so it is a last resort.
+
+Then **join the car's Wi-Fi by hand, once**, from Android's Wi-Fi settings, and
+set **Privacy** to *Use per-network randomized MAC* (Settings → Network &
+internet → Internet → the network → Privacy). That setting is per-network:
+every other network keeps the default. From then on the phone presents one
+stable address to that car, so the table stops filling.
 
 **To tell the two apart:** connect real Android Auto, let it come fully up,
 disconnect it, and immediately press Connect in Headway. If that joins where a
