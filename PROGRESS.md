@@ -84,7 +84,8 @@ Stated so the gap between "CI green" and "works in a car" is never implied away.
 
 ## Where the real car currently gets to
 
-A 2021 Chevrolet Infotainment 3 unit, as of build 33:
+A 2021 Chevrolet Infotainment 3 unit. The last capture is from build 32; what
+follows is where that build got to and what has changed since.
 
 - **Bluetooth: works, every time.** SDP lookup, RFCOMM connect on channel 3,
   version exchange, and the credentials handshake all complete in under a
@@ -95,7 +96,7 @@ A 2021 Chevrolet Infotainment 3 unit, as of build 33:
   `onUnavailable` with nothing logged in between. Everything downstream is
   therefore still unreached on this vehicle.
 
-What build 33 changes about that, in rough order of how likely each is to be
+What has changed since that capture, in rough order of how likely each is to be
 the cause:
 
 1. **The BSSID is pinned again**, alternating with SSID-only matching. The one

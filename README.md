@@ -194,7 +194,7 @@ Do these in order. Most first-connect failures are one of the first four.
    not a once-per-drive one.
 
 If it still does not connect, export the log (**Diagnostics → Export the
-session log**) and read the join lines. Since build 33 they say what the
+session log**) and read the join lines. They now say what the
 platform's own verdict was — `NOT_FOUND`, `AUTHENTICATION`, `ASSOCIATION`,
 `IP_PROVISIONING` or `NO_RESPONSE` — and each one points somewhere different.
 
