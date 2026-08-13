@@ -49,15 +49,45 @@ class VoskSpeechRecognizer(
     private val model = Model(modelPath)
     private var recognizer = Recognizer(model, sampleRateHz.toFloat())
 
+    /**
+     * Segments Vosk has already finalised during this utterance.
+     *
+     * Vosk splits on internal silence, and `getResult()` both returns and
+     * *consumes* the segment it split off. `getFinalResult()` then returns only
+     * what came after the last split. So a command spoken with any pause in it
+     * -- "open... calculator" -- lost everything before the pause, and the
+     * command engine was handed "calculator" and asked to make sense of it.
+     * Whatever [accept] hands back is kept here so [finish] can return the whole
+     * thing.
+     */
+    private val segments = StringBuilder()
+
     override fun accept(pcm: ByteArray, length: Int): String? {
         // True means Vosk decided the utterance ended (it saw enough silence).
         val complete = recognizer.acceptWaveForm(pcm, length)
-        return if (complete) extractText(recognizer.result) else null
+        if (!complete) return null
+        val segment = extractText(recognizer.result)
+        if (segment.isNotEmpty()) {
+            if (segments.isNotEmpty()) segments.append(' ')
+            segments.append(segment)
+        }
+        return segment
     }
 
-    override fun finish(): String = extractText(recognizer.finalResult)
+    override fun finish(): String {
+        val tail = extractText(recognizer.finalResult)
+        val whole = buildString {
+            append(segments)
+            if (tail.isNotEmpty()) {
+                if (isNotEmpty()) append(' ')
+                append(tail)
+            }
+        }
+        return whole
+    }
 
     override fun reset() {
+        segments.setLength(0)
         recognizer.close()
         recognizer = Recognizer(model, sampleRateHz.toFloat())
     }

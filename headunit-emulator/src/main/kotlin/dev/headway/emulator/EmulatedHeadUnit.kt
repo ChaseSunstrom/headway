@@ -320,6 +320,36 @@ class EmulatedHeadUnit(
         return message
     }
 
+    /**
+     * Sends one control-channel keepalive and asserts the phone answers it.
+     *
+     * A real head unit pings for the life of the session and drops it when the
+     * pongs stop — openauto's `AndroidAutoEntity` runs exactly this loop. The
+     * emulator did not, so Headway's complete absence of a `PING_RESPONSE`
+     * handler was invisible to every acceptance test: a session that came up in
+     * CI would have died seconds into a real drive, and nothing here would have
+     * noticed.
+     *
+     * @return the round-trip the phone reported, in the units the ping carried.
+     */
+    suspend fun ping(timestamp: Long = 1): Long {
+        connection.send(
+            AapMessage(
+                channelId = ChannelId.CONTROL.id,
+                control = false,
+                encrypted = true,
+                messageId = ControlMessageType.PING_REQUEST.id,
+                payload = aap_protobuf.service.control.message.PingRequestOuterClass.PingRequest
+                    .newBuilder().setTimestamp(timestamp).build().toByteArray(),
+            )
+        )
+        val reply = expect(ControlMessageType.PING_RESPONSE)
+        val pong = aap_protobuf.service.control.message.PingResponseOuterClass.PingResponse
+            .parseFrom(reply.payload)
+        onStep("phone answered the keepalive with timestamp ${pong.timestamp}")
+        return pong.timestamp
+    }
+
     companion object {
         const val MAX_TLS_FLIGHTS = 10
 

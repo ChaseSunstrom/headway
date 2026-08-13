@@ -22,6 +22,7 @@ import dev.headway.protocol.control.VersionHandshake
 import dev.headway.protocol.framing.AapMessage
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.FramedConnection
+import dev.headway.protocol.control.ControlKeepalive
 import dev.headway.protocol.session.AapSession
 import dev.headway.protocol.session.HeadUnitProfile
 import dev.headway.protocol.session.PhoneIdentity
@@ -86,6 +87,59 @@ class Phase1HandshakeAcceptanceTest {
         val profile = withTimeout(60_000) { phoneSide.await() }
         withTimeout(60_000) { headUnitSide.await() }
         profile to headUnit
+    }
+
+    @Test
+    fun `the phone answers the head unit's keepalive ping`() = runBlocking {
+        // The gap this closes. A head unit pings for the life of the session and
+        // drops it when the answers stop, but the emulator never pinged, so
+        // Headway's complete absence of a PING_RESPONSE handler was invisible:
+        // every acceptance test passed while a real session would have died a
+        // few seconds in.
+        LoopbackTransport.pair().use { pair ->
+            val phoneConnection = FramedConnection(pair.phone)
+            val headUnit = EmulatedHeadUnit(
+                connection = FramedConnection(pair.headUnit),
+                tls = TlsSession(AapTls.headUnitEngine()),
+                config = HeadUnitConfig(),
+            )
+            val session = AapSession(
+                connection = phoneConnection,
+                tls = TlsSession(AapTls.phoneEngine()),
+                identity = PhoneIdentity(deviceName = "Headway Test"),
+            )
+
+            val phoneSide = async(Dispatchers.IO) {
+                session.connect()
+                // Stand in for HeadwayService.runChannels, which is Android-only:
+                // drain the connection and answer keepalives, which is exactly
+                // what the service's default loop does.
+                //
+                // The catch is teardown, not tolerance: this loop has no reason
+                // to stop on its own, so it is still reading when the test closes
+                // the transport pair, and the resulting EOF is the test ending
+                // rather than anything the phone did wrong.
+                runCatching {
+                    while (true) {
+                        val message = phoneConnection.receive()
+                        if (ControlKeepalive.isPing(message)) {
+                            ControlKeepalive.answer(phoneConnection, message)
+                        }
+                    }
+                }
+            }
+            val headUnitSide = async(Dispatchers.IO) {
+                headUnit.run()
+                // Two, because one round trip could be answered by accident and
+                // a session's worth cannot.
+                assertEquals(4242L, headUnit.ping(4242L), "the timestamp must be echoed back")
+                assertEquals(4243L, headUnit.ping(4243L))
+            }
+
+            withTimeout(60_000) { headUnitSide.await() }
+            phoneSide.cancel()
+        }
+        Unit
     }
 
     @Test

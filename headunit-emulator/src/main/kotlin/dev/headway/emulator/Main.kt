@@ -30,6 +30,9 @@ import dev.headway.transport.tls.AapTls
 import dev.headway.transport.tls.TlsSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.io.EOFException
@@ -213,17 +216,28 @@ Typical use:
 
             println("\nSession up. Reporting traffic for ${seconds}s.\n")
             val tally = Tally()
-            val deadline = System.nanoTime() + seconds * 1_000_000_000L
-            while (System.nanoTime() < deadline) {
-                val message = try {
-                    withTimeout(2_000) { connection.receive() }
-                } catch (e: EOFException) {
-                    println("\nPhone disconnected.")
-                    break
-                } catch (e: Exception) {
-                    continue
+            // Bounded by cancelling the reader, not by timing out each read.
+            //
+            // This used to wrap every receive() in withTimeout(2_000) and
+            // swallow the timeout. That closed the socket: a cancelled read on
+            // a StreamTransport tears the transport down -- which is exactly
+            // what makes cancellation work at all -- so any phone that went
+            // quiet for two seconds, which every phone does between video
+            // frames while the user reads the screen, had its session killed by
+            // the tool that was supposed to be observing it.
+            coroutineScope {
+                val reader = launch {
+                    try {
+                        while (true) {
+                            val message = connection.receive()
+                            tally.record(message.channelId, message.messageId, message.payload)
+                        }
+                    } catch (e: EOFException) {
+                        println("\nPhone disconnected.")
+                    }
                 }
-                tally.record(message.channelId, message.messageId, message.payload)
+                delay(seconds * 1_000L)
+                reader.cancel()
             }
 
             println()

@@ -40,6 +40,7 @@ import dev.headway.app.link.CarWifiNetwork
 import dev.headway.app.quirks.HeadUnitIdentity
 import dev.headway.app.quirks.HeadUnitQuirks
 import dev.headway.app.quirks.QuirkStore
+import dev.headway.protocol.control.ControlKeepalive
 import dev.headway.protocol.framing.MessageFragmenter
 import dev.headway.protocol.io.FramedConnection
 import dev.headway.protocol.session.AapSession
@@ -574,16 +575,14 @@ open class HeadwayService : Service() {
     protected open suspend fun runChannels(connection: FramedConnection, profile: HeadUnitProfile) {
         while (true) {
             val message = connection.receive()
+            if (ControlKeepalive.isPing(message)) {
+                ControlKeepalive.answer(connection, message)
+                continue
+            }
             Log.v(TAG, "unhandled message on channel ${message.channelId}")
         }
     }
 
-    // Same reasoning as runSession: BLUETOOTH_CONNECT is granted in the UI
-    // before the service starts, and a SecurityException from here unwinds into
-    // the supervisor's failure path with a readable message. Annotated on this
-    // function too because lint checks the call site, so the annotation on the
-    // caller does not reach the calls inside it.
-    @SuppressLint("MissingPermission")
     private fun resolveCar(adapter: BluetoothAdapter): BluetoothDevice {
         // Logged on every attempt, not just failures. A head unit that stops
         // advertising the service between attempts is a real and confusing
