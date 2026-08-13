@@ -36,6 +36,7 @@ import dev.headway.app.BuildConfig
 import dev.headway.app.R
 import dev.headway.app.link.BluetoothCarLink
 import dev.headway.app.log.SessionLog
+import dev.headway.app.link.CarWifiException
 import dev.headway.app.link.CarWifiNetwork
 import dev.headway.app.quirks.HeadUnitIdentity
 import dev.headway.app.quirks.HeadUnitQuirks
@@ -233,6 +234,12 @@ open class HeadwayService : Service() {
             publish(state)
             updateNotification(describe(state))
             Log.i(TAG, "link state: $state")
+        },
+        terminalFailure = { failure ->
+            // Retrying an exhausted DHCP table burns another address on a head
+            // unit that is not releasing them, so the loop stops and the user
+            // gets the two steps that actually fix it. Everything else retries.
+            platformReasonOf(failure) == DHCP_FAILURE
         },
         delayOverrideFor = { failure ->
             // See CarNetworkJoinException: a fresh request straight after a
@@ -694,6 +701,30 @@ open class HeadwayService : Service() {
 
     companion object {
         private const val TAG = "HeadwayService"
+
+        /**
+         * The platform's name for "associated, but never got an address".
+         *
+         * See `CarWifiNetwork.adviceFor`: on GrapheneOS this is usually its
+         * per-connection MAC randomization meeting a head unit whose DHCP table
+         * is small and does not evict, and Android exposes no way for an app to
+         * influence the MAC of a `WifiNetworkSpecifier` connection — the
+         * builder has no setting for it. So Headway cannot retry its way out of
+         * this one; every retry is another address consumed.
+         */
+        const val DHCP_FAILURE: String = "IP_PROVISIONING"
+
+        /** Digs the platform's failure code out of a wrapped join failure. */
+        internal fun platformReasonOf(failure: Throwable): String? {
+            var current: Throwable? = failure
+            // Bounded, because a cause chain can be circular.
+            var hops = 0
+            while (current != null && hops++ < 8) {
+                (current as? CarWifiException)?.platformReason?.let { return it }
+                current = current.cause
+            }
+            return null
+        }
 
         /**
          * How long to wait after a failed Wi-Fi join before trying again.

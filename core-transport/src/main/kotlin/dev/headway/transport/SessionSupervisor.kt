@@ -92,6 +92,20 @@ class SessionSupervisor(
      * the caller can be explicit about what it wants.
      */
     private val delayOverrideFor: (Throwable) -> Long? = { null },
+    /**
+     * Failures that must stop the loop instead of being retried.
+     *
+     * Retrying is almost always right here — the usual failure is "the car is
+     * not in range yet". But not always: a join that fails because the head
+     * unit's DHCP table is full is made *worse* by every retry, since each
+     * attempt consumes another address on a unit that is not releasing them.
+     * Automatic recovery is the wrong instinct when the automation is the cause,
+     * so the loop stops and the message tells the user what to do.
+     *
+     * Returning true publishes [LinkState.GaveUp] and returns from [run]; the
+     * user pressing Connect again starts a fresh supervisor.
+     */
+    private val terminalFailure: (Throwable) -> Boolean = { false },
     /** Null means retry forever, which is the default and the intended behaviour. */
     private val maxAttempts: Int? = null,
     /** Injected so tests can run the state machine without real waiting. */
@@ -155,6 +169,11 @@ class SessionSupervisor(
                 // cancellation is still distinguished above.
                 consecutiveFailures++
                 e
+            }
+
+            if (failure != null && terminalFailure(failure)) {
+                report(LinkState.GaveUp(describe(failure)))
+                return
             }
 
             // The attempt limit bounds attempts, not just failures. Checking it

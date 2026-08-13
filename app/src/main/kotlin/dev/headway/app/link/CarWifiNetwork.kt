@@ -40,9 +40,19 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Raised when the phone cannot join, or stay on, the car's access point. */
-class CarWifiException(message: String, cause: Throwable? = null) :
-    RuntimeException(message, cause)
+/**
+ * Raised when the phone cannot join, or stay on, the car's access point.
+ *
+ * @param platformReason the `STATUS_LOCAL_ONLY_CONNECTION_FAILURE_*` name when
+ *   Android gave one. Carried separately from the message because the supervisor
+ *   has to make a decision on it — some of these are worth retrying immediately
+ *   and at least one is made strictly worse by retrying.
+ */
+class CarWifiException(
+    message: String,
+    cause: Throwable? = null,
+    val platformReason: String? = null,
+) : RuntimeException(message, cause)
 
 /**
  * Joins the head unit's access point and hands back the [Network] object.
@@ -685,7 +695,8 @@ class CarWifiNetwork(
             // abandoned.
             available.completeExceptionally(
                 CarWifiException(
-                    "Android could not join ${spec.ssid}: $name. " + adviceFor(reason)
+                    "Android could not join ${spec.ssid}: $name. " + adviceFor(reason),
+                    platformReason = name,
                 )
             )
         }
@@ -1022,8 +1033,30 @@ class CarWifiNetwork(
                     "Un-pair and re-pair the phone in the car's Bluetooth settings, which " +
                     "makes it issue a fresh key."
             WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_IP_PROVISIONING ->
-                "The phone associated but the head unit never gave it an address. The car " +
-                    "is usually still starting up; try again in a moment."
+                // The one failure that retrying makes worse, which is why the
+                // supervisor treats it as terminal.
+                //
+                // Association and authentication both succeeded -- the car
+                // accepted the passphrase and let the phone onto the radio --
+                // and then no DHCP lease arrived. On GrapheneOS the usual cause
+                // is its default per-connection MAC randomization meeting a head
+                // unit whose DHCP table is small and does not evict: every
+                // attempt looks like a brand new device, the table fills, and
+                // the unit stops issuing leases to anyone. GrapheneOS documents
+                // exactly this failure and its fix
+                // (https://grapheneos.org/usage, Wi-Fi privacy).
+                //
+                // Android gives an app no way to influence the MAC of a
+                // WifiNetworkSpecifier connection -- the builder has no setting
+                // for it -- so Headway cannot fix this from inside the join.
+                "The phone got onto the car's Wi-Fi and the car never gave it an " +
+                    "address. Two things, in order. First, restart the car's infotainment " +
+                    "system (turn the car off and on again) - that clears the address " +
+                    "table the head unit has filled up. Second, stop Headway refilling it: " +
+                    "in Android's Wi-Fi settings join the car's network by hand once, open " +
+                    "it, and set Privacy to 'Use per-network randomized MAC'. Headway will " +
+                    "then reuse that connection instead of asking for a new one, with a " +
+                    "new hardware address, on every attempt."
             WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_ASSOCIATION,
             WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NO_RESPONSE ->
                 "The access point was seen but would not complete the association. If it " +

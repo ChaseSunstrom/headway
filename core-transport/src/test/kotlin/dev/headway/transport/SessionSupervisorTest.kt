@@ -140,6 +140,33 @@ class SessionSupervisorTest {
     }
 
     @Test
+    fun `a terminal failure stops the loop instead of making things worse`() = runBlocking {
+        // Retrying is the right instinct for almost everything here, and exactly
+        // wrong for one case: a head unit whose DHCP table is full gives out no
+        // more addresses, and every retry consumes another one. The loop has to
+        // stop and let the message do the work.
+        class DhcpExhausted : RuntimeException("no address")
+
+        val h = Harness()
+        var attempt = 0
+        val supervisor = SessionSupervisor(
+            runSession = { _ ->
+                attempt++
+                throw DhcpExhausted()
+            },
+            onState = { h.states += it },
+            terminalFailure = { it is DhcpExhausted },
+            sleep = h::sleep,
+        )
+        // No maxAttempts: without the terminal check this would never return.
+        withTimeout(10_000) { supervisor.run() }
+
+        assertEquals(1, attempt, "a terminal failure must not be retried")
+        assertTrue(h.states.last() is LinkState.GaveUp, "got ${h.states.last()}")
+        assertTrue(h.slept.isEmpty(), "there is nothing to wait for: ${h.slept}")
+    }
+
+    @Test
     fun `a listener that throws cannot stop the link`() = runBlocking {
         // onState drives a notification and a log, both diagnostics. Three of
         // the calls sit outside the session's own try block, so before they were

@@ -114,10 +114,18 @@ follows is where that build got to and what has changed since.
   version exchange, and the credentials handshake all complete in under a
   second. The car hands over SSID, passphrase, BSSID and — inconsistently —
   its endpoint, 192.168.5.1:7001.
-- **Wi-Fi join: the current wall.** Build 32 requested the network, Android
-  showed its approval prompt, and the request ran the full 75 s to
-  `onUnavailable` with nothing logged in between. Everything downstream is
-  therefore still unreached on this vehicle.
+- **Wi-Fi association: works, with the BSSID pinned.** The instrumented build
+  settled this. The phone authenticates and associates with the car's access
+  point; the log's `IP_PROVISIONING` verdict is only reachable after that
+  succeeds.
+- **DHCP: the current wall.** The head unit accepts the phone onto the radio
+  and then never issues it an address. GrapheneOS's default per-connection MAC
+  randomization makes every attempt a new device to the head unit, whose DHCP
+  table is small and does not evict; GrapheneOS documents the failure. Android
+  exposes no way for an app to influence the MAC of a `WifiNetworkSpecifier`
+  connection, so Headway now reports it, stops retrying (each retry consumes
+  another address), and tells the user the two steps that clear it. See the
+  README.
 
 What has changed since that capture, in rough order of how likely each is to be
 the cause:

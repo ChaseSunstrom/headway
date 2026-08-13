@@ -198,6 +198,33 @@ session log**) and read the join lines. They now say what the
 platform's own verdict was — `NOT_FOUND`, `AUTHENTICATION`, `ASSOCIATION`,
 `IP_PROVISIONING` or `NO_RESPONSE` — and each one points somewhere different.
 
+### If the log says `IP_PROVISIONING`
+
+This one has a specific cause and a specific fix. It means the phone got onto
+the car's Wi-Fi — the passphrase was right and the radio accepted it — and then
+the head unit never handed out an IP address.
+
+On GrapheneOS the usual reason is its default **per-connection MAC
+randomization** meeting a head unit with a small DHCP table that does not evict
+old entries. Every connection attempt looks like a brand-new device, the table
+fills up, and the unit stops issuing addresses to anybody. GrapheneOS
+[documents this exact failure](https://grapheneos.org/usage) under Wi-Fi
+privacy. Android gives an app no way to influence the MAC of the connection it
+requests, so Headway cannot fix it from the inside — it stops retrying instead,
+because each retry consumes another address.
+
+Two steps, in order:
+
+1. **Restart the car's infotainment system** (turn the car off and on again).
+   That clears the address table.
+2. **Join the car's Wi-Fi by hand, once**, from Android's Wi-Fi settings. Open
+   the saved network and set **Privacy** to *Use per-network randomized MAC*.
+   From then on the phone presents one stable address to that car.
+
+Headway notices when the phone is already on the car's network and uses it
+directly, so after step 2 there is no approval prompt and no new MAC on any
+future connection.
+
 ### Two knobs worth trying from the quirk file
 
 **Diagnostics → Create the head unit quirk file** writes a JSON file you can
