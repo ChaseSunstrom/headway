@@ -95,6 +95,58 @@ object AapTls {
     fun phoneKeyMaterial(): KeyMaterial = loadResourceKeyMaterial("phone")
 
     /**
+     * The phone's key material, preferring a pair the user supplied.
+     *
+     * ## Why this has to be replaceable
+     *
+     * The bundled phone certificate expired on 2022-08-24 and cannot be
+     * reissued without Google's CA key (BLOCKERS.md B-003). A real 2021
+     * Chevrolet Infotainment 3 unit checks it: the session reaches
+     * `AUTH_COMPLETE`, the unit answers `STATUS_AUTHENTICATION_FAILURE`, and the
+     * car screen says the phone and vehicle calendars are set to different dates
+     * and times — which is its rendering of a certificate validity failure.
+     * Nothing in the protocol layer can fix that, and no reference ships a valid
+     * replacement: AACS carries the identical expired certificate, and
+     * aa-proxy-rs deliberately loads its pair from a path the operator provides
+     * (`src/ssl_rustls.rs` L440-L441) rather than bundling one at all.
+     *
+     * So Headway does the same thing. If both files exist and parse, they are
+     * used; anything else falls back to the bundled pair, because a car that
+     * cannot connect is a better outcome than an app that will not start.
+     *
+     * @param certPem PEM certificate, or null to use the bundled one.
+     * @param keyPem PKCS#8 PEM private key, or null.
+     */
+    fun phoneKeyMaterial(certPem: String?, keyPem: String?): KeyMaterial {
+        if (certPem.isNullOrBlank() || keyPem.isNullOrBlank()) return phoneKeyMaterial()
+        return runCatching {
+            KeyMaterial(parseCertificate(certPem), parsePkcs8PrivateKey(keyPem))
+        }.getOrElse { phoneKeyMaterial() }
+    }
+
+    /**
+     * Whether [material] is usable at [at], and what to say if not.
+     *
+     * Returns null when the certificate is inside its validity window. The
+     * check is done by Headway rather than left to the head unit because the
+     * head unit's rejection arrives as a bare status code after a full TCP and
+     * TLS bring-up, and a log that says the certificate expired four years ago
+     * before any of that happens saves the reader the whole chain.
+     */
+    fun validityProblem(material: KeyMaterial, at: java.util.Date = java.util.Date()): String? {
+        val cert = material.certificate
+        return when {
+            at.before(cert.notBefore) ->
+                "the phone certificate is not valid until ${cert.notBefore} and this device " +
+                    "thinks it is $at"
+            at.after(cert.notAfter) ->
+                "the phone certificate expired on ${cert.notAfter} and this device thinks it " +
+                    "is $at"
+            else -> null
+        }
+    }
+
+    /**
      * The head-unit certificate, used by the emulator to play the car's role.
      * Valid until 2045. Source: `aasdk/cert/headunit.crt` and `.key`.
      */

@@ -262,6 +262,45 @@ disconnect it, and immediately press Connect in Headway. If that joins where a
 cold attempt does not, it is projection state rather than the address table,
 and the Bluetooth checks above are the fix.
 
+### If the car says the phone and vehicle calendars disagree
+
+It does not mean your clocks are wrong. That message is a Chevrolet Infotainment
+3 unit reporting a **certificate validity failure**, and in the log it shows up
+as the session completing TLS and then
+
+```
+head unit rejected authentication: STATUS_AUTHENTICATION_FAILURE
+```
+
+The certificate every open-source Android Auto implementation carries — Headway
+and AACS ship the identical one — expired on **2022-08-24**. It is signed by
+Google's Automotive Link CA, so it cannot be reissued or re-dated by anyone
+outside Google, and a self-signed replacement only helps if the head unit checks
+dates without checking the chain. This unit returned
+`STATUS_AUTHENTICATION_FAILURE` rather than `STATUS_CERTIFICATE_ERROR`, which
+reads as "the chain was fine, the dates were not".
+
+**There is no automatic fix, and no reference implementation has one.**
+aa-proxy-rs, which is actively maintained and works with real head units, does
+not bundle a certificate at all — it loads the pair from a path the operator
+provides. Headway does the same, with a one-time import:
+
+**Diagnostics → Import a certificate and key.** Pick the PEM certificate, then
+its PKCS#8 private key. Every session from then on uses them; there is nothing
+to repeat. The screen shows which certificate is in use and when it expires, and
+the session log says the same on every attempt.
+
+If your key is in RSA rather than PKCS#8 form, convert it once:
+
+```bash
+openssl pkcs8 -topk8 -nocrypt -in phone.key -out phone_key.pem
+```
+
+The other option, if you have no certificate to import, is to set the **car's**
+clock to a date inside the expired certificate's validity window — it ran from
+2014-07-04 to 2022-08-24. That makes the head unit's check pass. It is a real
+workaround and a bad one: it leaves the car's clock wrong.
+
 ### Or skip DHCP entirely with a static IP
 
 If the head unit will not hand out an address, stop asking it for one. This

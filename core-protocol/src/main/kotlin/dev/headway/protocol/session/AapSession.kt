@@ -211,6 +211,31 @@ class AapSession(
      * `SSLv23_server_method` (L293-L305), and Headway matches — so it never
      * speaks first: every flight it sends answers one the head unit sent.
      */
+    /**
+     * What an authentication rejection usually means, for the three codes a
+     * phone can actually provoke.
+     *
+     * The generic failure gets the longest answer because it is the one a real
+     * head unit returns for an expired certificate: a 2021 Chevrolet
+     * Infotainment 3 unit answers -3 and puts "the phone and vehicle calendars
+     * are set to different dates and times" on its screen, which sends everyone
+     * who reads it to the clock settings instead of to the certificate.
+     */
+    private fun authFailureAdvice(status: Int): String = when (status) {
+        MessageStatus.STATUS_AUTHENTICATION_FAILURE.number,
+        MessageStatus.STATUS_AUTHENTICATION_FAILURE_CERT_EXPIRED.number,
+        MessageStatus.STATUS_CERTIFICATE_ERROR.number ->
+            ". This is almost always the phone certificate. The one every open-source " +
+                "implementation ships expired on 2022-08-24, and a head unit that checks it " +
+                "refuses the session here -- some of them describe it on screen as the phone " +
+                "and vehicle clocks disagreeing, which is misleading. Import a valid " +
+                "certificate from Headway's Diagnostics screen. See BLOCKERS.md B-003"
+        MessageStatus.STATUS_AUTHENTICATION_FAILURE_CERT_NOT_YET_VALID.number ->
+            ". The certificate is not valid yet, which usually means the head unit's clock " +
+                "is set to a date before the certificate was issued"
+        else -> ""
+    }
+
     private suspend fun secureAndAuthenticate() {
         var flights = 0
         while (true) {
@@ -234,7 +259,11 @@ class AapSession(
                 ControlMessageType.AUTH_COMPLETE.id -> {
                     val status = parseAuthStatus(message.payload)
                     if (status != MessageStatus.STATUS_SUCCESS.number) {
-                        throw SessionException("head unit rejected authentication: status $status")
+                        throw SessionException(
+                            "head unit rejected authentication: " +
+                                "${MessageStatus.forNumber(status)?.name ?: "status $status"}" +
+                                authFailureAdvice(status)
+                        )
                     }
                     if (!tls.handshakeComplete) {
                         // Not a failure to route around quietly: it means every

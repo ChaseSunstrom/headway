@@ -38,6 +38,7 @@ import dev.headway.app.link.BluetoothCarLink
 import dev.headway.app.log.SessionLog
 import dev.headway.app.link.CarWifiException
 import dev.headway.app.link.CarWifiNetwork
+import dev.headway.app.link.PhoneCertificateStore
 import dev.headway.app.quirks.HeadUnitIdentity
 import dev.headway.app.quirks.HeadUnitQuirks
 import dev.headway.app.quirks.QuirkStore
@@ -547,9 +548,25 @@ open class HeadwayService : Service() {
                         transport,
                         fragmenter = MessageFragmenter(quirks.maxFragmentSize),
                     )
+                    val certificates = PhoneCertificateStore.inAppStorage(this)
+                    val keyMaterial = certificates.keyMaterial()
+                    step("presenting ${certificates.describe()}")
+                    AapTls.validityProblem(keyMaterial)?.let {
+                        // Said before the session rather than after it fails. A
+                        // head unit reports this as a bare status code once TCP,
+                        // TLS and the version exchange have all succeeded, and a
+                        // real Chevrolet renders it on screen as the phone and
+                        // vehicle calendars disagreeing -- which sends the reader
+                        // to the clock rather than to the certificate.
+                        step(
+                            "WARNING: $it. A head unit that checks this will refuse the " +
+                                "session with an authentication failure. Import a valid " +
+                                "certificate from Diagnostics; see BLOCKERS.md B-003"
+                        )
+                    }
                     val session = AapSession(
                         connection = connection,
-                        tls = TlsSession(AapTls.phoneEngine()),
+                        tls = TlsSession(AapTls.phoneEngine(keyMaterial)),
                         identity = PhoneIdentity(),
                         announcedVersion = quirks.announcedVersion,
                         onStep = ::step,

@@ -36,6 +36,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
@@ -518,6 +519,21 @@ class CarWifiNetwork(
                 else -> null
             } ?: continue
 
+            // A network with no IPv4 address is the DHCP failure seen from the
+            // other side: the phone is associated, the head unit never issued a
+            // lease, and every socket on it will fail. Adopting it would turn a
+            // nameable problem into a connect timeout.
+            if (properties.linkAddresses.none { it.address is java.net.Inet4Address }) {
+                onStep(
+                    "the phone is on a Wi-Fi network whose router is ${routerOf(properties)} " +
+                        "but it has no IPv4 address, so the head unit never gave it one. " +
+                        "Nothing can be sent over it. Either set a static IP on that network " +
+                        "in Android's Wi-Fi settings, or set Privacy to 'Use per-network " +
+                        "randomized MAC' so the car stops seeing a new device every time"
+                )
+                continue
+            }
+
             onStep("reusing a Wi-Fi network the phone is already on: $why")
             network = candidate
             joinedSsid = credentials.ssid
@@ -895,12 +911,34 @@ class CarWifiNetwork(
     suspend fun openSocket(host: String, port: Int, connectTimeoutMillis: Int = 10_000): Socket {
         val joined = network ?: throw CarWifiException("not joined to the car's network")
         return withContext(Dispatchers.IO) {
-            val address = joined.getByName(host)
-                ?: throw CarWifiException("could not resolve $host on the car's network")
-            // createSocket() with no arguments returns an unconnected socket
-            // already bound to this network, which is what lets us apply our own
-            // connect timeout instead of the factory's.
-            val socket = joined.socketFactory.createSocket()
+            val address = runCatching { joined.getByName(host) }.getOrNull()
+                ?: InetAddress.getByName(host)
+
+            // Bound to the car's network first: the car AP has no internet, so it
+            // is never the default route while mobile data is up, and an unbound
+            // socket would go out over cellular and reach nothing.
+            //
+            // But binding can fail outright. A real capture shows
+            // "Binding socket to network 147 failed: EPERM" -- the kernel refuses
+            // a netId the process is not permitted to use, which is what a
+            // network that has been torn down since it was looked up becomes. An
+            // app that treats that as fatal gives up while the car is sitting
+            // there reachable over a perfectly good default route, which is
+            // exactly the case when the *user* joined the car's Wi-Fi by hand.
+            //
+            // So fall back to an ordinary socket and say so. If the car network
+            // is not the default route this will fail too, a second later, with
+            // a message that names both attempts.
+            val socket = try {
+                joined.socketFactory.createSocket()
+            } catch (e: Exception) {
+                onStep(
+                    "could not bind a socket to the car network ($joined): ${e.message}. " +
+                        "Falling back to an unbound socket, which works when the phone's " +
+                        "default route is already the car"
+                )
+                Socket()
+            }
             try {
                 socket.connect(InetSocketAddress(address, port), connectTimeoutMillis)
             } catch (e: Throwable) {

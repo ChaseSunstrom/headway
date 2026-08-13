@@ -125,6 +125,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var connectButton: Button
     private lateinit var parkedOnlySwitch: SwitchCompat
     private lateinit var updateValue: TextView
+    private lateinit var certificateValue: TextView
     private lateinit var updateButton: Button
 
     private var uiScope: CoroutineScope? = null
@@ -139,6 +140,49 @@ class MainActivity : AppCompatActivity() {
      * being safe to touch.
      */
     private var updateScope: CoroutineScope? = null
+
+    /** Holds the certificate PEM between the two file picks. */
+    private var pendingCertPem: String? = null
+
+    private val pickKey =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            val certPem = pendingCertPem
+            pendingCertPem = null
+            if (uri == null || certPem == null) {
+                toast("Import cancelled")
+                return@registerForActivityResult
+            }
+            val keyPem = readTextFrom(uri) ?: return@registerForActivityResult
+            val store = dev.headway.app.link.PhoneCertificateStore.inAppStorage(this)
+            val problem = store.store(certPem, keyPem)
+            if (problem == null) {
+                SessionLog.shared.info(TAG, "imported a phone certificate: ${store.describe()}")
+                AlertDialog.Builder(this)
+                    .setTitle("Certificate imported")
+                    .setMessage(store.describe() + "\n\nEvery session from now on uses it.")
+                    .setPositiveButton("OK", null)
+                    .show()
+            } else {
+                AlertDialog.Builder(this)
+                    .setTitle("Could not import that pair")
+                    .setMessage(problem)
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+            refresh()
+        }
+
+    private val pickCertificate =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri == null) {
+                toast("Import cancelled")
+                return@registerForActivityResult
+            }
+            pendingCertPem = readTextFrom(uri) ?: return@registerForActivityResult
+            toast("Now pick the matching private key (PKCS#8 .pem)")
+            runCatching { pickKey.launch(arrayOf("*/*")) }
+                .onFailure { toast("No file picker available") }
+        }
 
     private val permissionRequest =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
@@ -338,6 +382,36 @@ class MainActivity : AppCompatActivity() {
             button("Create the head unit quirk file") { createQuirkTemplate() },
         )
 
+        column.addView(sectionTitle("Phone certificate"))
+        certificateValue = body(
+            dev.headway.app.link.PhoneCertificateStore.inAppStorage(this).describe(),
+        )
+        column.addView(certificateValue)
+        column.addView(
+            body(
+                "The certificate every open-source Android Auto implementation " +
+                    "ships expired in August 2022. A head unit that checks it lets " +
+                    "the session get all the way through TLS and then refuses to " +
+                    "authenticate — some describe it on screen as the phone and " +
+                    "vehicle clocks disagreeing. Import a valid certificate and " +
+                    "key once and every session after that uses them.",
+            ),
+        )
+        column.addView(
+            button("Import a certificate and key") {
+                toast("Pick the certificate (.pem) first")
+                runCatching { pickCertificate.launch(arrayOf("*/*")) }
+                    .onFailure { toast("No file picker available") }
+            },
+        )
+        column.addView(
+            button("Go back to the bundled certificate") {
+                dev.headway.app.link.PhoneCertificateStore.inAppStorage(this).clear()
+                refresh()
+                toast("Using the bundled certificate again")
+            },
+        )
+
         column.addView(sectionTitle("Updates"))
         column.addView(
             body(
@@ -368,6 +442,10 @@ class MainActivity : AppCompatActivity() {
         // car launcher and with anything else that may have changed it while this
         // activity was stopped.
         parkedOnlySwitch.isChecked = HeadwaySettings.parkedOnlyVideo(this)
+        if (::certificateValue.isInitialized) {
+            certificateValue.text =
+                dev.headway.app.link.PhoneCertificateStore.inAppStorage(this).describe()
+        }
     }
 
     private fun refreshPermissions() {
@@ -883,6 +961,10 @@ class MainActivity : AppCompatActivity() {
         row.addView(body(explanation))
         return row
     }
+
+    private fun readTextFrom(uri: Uri): String? = runCatching {
+        contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+    }.getOrNull().also { if (it == null) toast("Could not read that file") }
 
     /** One activity-lifecycle line into the exportable log. */
     private fun note(what: String) {
