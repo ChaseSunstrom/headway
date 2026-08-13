@@ -442,8 +442,27 @@ class BluetoothCarLink(
                 android.bluetooth.BluetoothProfile.STATE_DISCONNECTED -> "disconnected"
                 else -> "unknown"
             }
-            return "Bluetooth profiles: headset=${state(android.bluetooth.BluetoothProfile.HEADSET)}, " +
-                "a2dp=${state(android.bluetooth.BluetoothProfile.A2DP)}"
+            val headset = state(android.bluetooth.BluetoothProfile.HEADSET)
+            val a2dp = state(android.bluetooth.BluetoothProfile.A2DP)
+            val warning = if (headset == "connected" || a2dp == "connected") "" else
+                " — WARNING: neither is connected. A head unit generally treats the phone " +
+                    "as present for projection only once it is connected for calls or " +
+                    "media, and one that does not think a phone is there may bring its " +
+                    "access point up without finishing projection bring-up. Connect the " +
+                    "car for Phone calls and Media audio in Bluetooth settings, and check " +
+                    "Android Auto is still enabled for this phone on the car screen"
+            return "Bluetooth profiles: headset=$headset, a2dp=$a2dp$warning"
+        }
+
+        /** True when the car is connected on neither classic audio profile. */
+        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+        fun audioProfilesDisconnected(adapter: BluetoothAdapter): Boolean {
+            fun disconnected(profile: Int): Boolean =
+                runCatching { adapter.getProfileConnectionState(profile) }
+                    .getOrDefault(android.bluetooth.BluetoothProfile.STATE_DISCONNECTED) !=
+                    android.bluetooth.BluetoothProfile.STATE_CONNECTED
+            return disconnected(android.bluetooth.BluetoothProfile.HEADSET) &&
+                disconnected(android.bluetooth.BluetoothProfile.A2DP)
         }
 
         @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)

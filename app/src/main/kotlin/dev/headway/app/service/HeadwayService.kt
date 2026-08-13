@@ -441,6 +441,27 @@ open class HeadwayService : Service() {
                         runCatching {
                             link.reportWifiFailed(Status.STATUS_WIFI_NETWORK_UNAVAILABLE)
                         }
+                        // Said here, at the failure, and not only in the
+                        // start-of-attempt log line. The first Headway join that
+                        // ever succeeded happened moments after Android Auto had
+                        // been connected -- i.e. with these profiles up -- and
+                        // every failure since has been with both down. That is
+                        // one observation, not a proof, but it is the strongest
+                        // correlation in the record and the user cannot act on
+                        // it if it is buried thirty lines above the error.
+                        if (runCatching {
+                                BluetoothCarLink.audioProfilesDisconnected(adapter)
+                            }.getOrDefault(false)
+                        ) {
+                            step(
+                                "note: the car is connected for neither calls nor media " +
+                                    "audio. Head units generally start projection only for a " +
+                                    "phone they consider present, so connect the car for " +
+                                    "Phone calls and Media audio in Bluetooth settings, and " +
+                                    "check Android Auto is still enabled for this phone on " +
+                                    "the car screen, before the next attempt"
+                            )
+                        }
                     }
                     // join() closes itself on failure, and a closed
                     // CarWifiNetwork cannot be joined again, so it must not be

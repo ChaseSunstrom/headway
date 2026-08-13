@@ -204,9 +204,21 @@ This one has a specific cause and a specific fix. It means the phone got onto
 the car's Wi-Fi — the passphrase was right and the radio accepted it — and then
 the head unit never handed out an IP address.
 
-On GrapheneOS the usual reason is its default **per-connection MAC
-randomization** meeting a head unit with a small DHCP table that does not evict
-old entries. Every connection attempt looks like a brand-new device, the table
+There are two candidate causes and they have different fixes, so check the
+Bluetooth one first — it is free.
+
+**The head unit may not think a phone is present.** A head unit generally
+completes projection bring-up, DHCP included, only for a phone it considers
+connected. If the log line `Bluetooth profiles:` reads `headset=disconnected,
+a2dp=disconnected`, connect the car for **Phone calls** and **Media audio** in
+Bluetooth settings, and check **Android Auto is still enabled for this phone**
+on the car screen. Disabling Android Auto in the *car* is not the same as not
+using the Android Auto *app*; Headway takes the place of the app and still
+needs the car's permission.
+
+**Or the head unit's address table is full.** On GrapheneOS the cause is its
+default **per-connection MAC randomization** meeting a head unit with a small
+DHCP table that does not evict old entries. Every connection attempt looks like a brand-new device, the table
 fills up, and the unit stops issuing addresses to anybody. GrapheneOS
 [documents this exact failure](https://grapheneos.org/usage) under Wi-Fi
 privacy. Android gives an app no way to influence the MAC of the connection it
@@ -218,8 +230,15 @@ Two steps, in order:
 1. **Restart the car's infotainment system** (turn the car off and on again).
    That clears the address table.
 2. **Join the car's Wi-Fi by hand, once**, from Android's Wi-Fi settings. Open
-   the saved network and set **Privacy** to *Use per-network randomized MAC*.
-   From then on the phone presents one stable address to that car.
+   the saved network and set **Privacy** to *Use per-network randomized MAC*
+   (Settings → Network & internet → Internet → the network → Privacy). That
+   setting is per-network: every other network keeps the default. From then on
+   the phone presents one stable address to that car.
+
+**To tell the two apart:** connect real Android Auto, let it come fully up,
+disconnect it, and immediately press Connect in Headway. If that joins where a
+cold attempt does not, it is projection state rather than the address table,
+and the Bluetooth checks above are the fix.
 
 Headway notices when the phone is already on the car's network and uses it
 directly, so after step 2 there is no approval prompt and no new MAC on any
