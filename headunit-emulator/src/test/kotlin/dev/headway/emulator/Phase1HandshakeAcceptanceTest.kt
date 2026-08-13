@@ -17,6 +17,9 @@
 
 package dev.headway.emulator
 
+import dev.headway.protocol.control.ControlMessageType
+import dev.headway.protocol.control.VersionHandshake
+import dev.headway.protocol.framing.AapMessage
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.FramedConnection
 import dev.headway.protocol.session.AapSession
@@ -76,6 +79,69 @@ class Phase1HandshakeAcceptanceTest {
         val profile = withTimeout(60_000) { phoneSide.await() }
         withTimeout(60_000) { headUnitSide.await() }
         profile to headUnit
+    }
+
+    @Test
+    fun `a head unit that skips TLS still gets a session`() = runBlocking {
+        // Observed on a real 2021 Chevrolet Infotainment 3 unit: it answers the
+        // version response with AUTH_COMPLETE and never sends a single
+        // ENCAPSULATED_SSL flight. The old code demanded ENCAPSULATED_SSL next
+        // and failed with "expected ENCAPSULATED_SSL, got AUTH_COMPLETE",
+        // refusing a session the head unit had just declared good.
+        //
+        // AACS's phone side dispatches on message type rather than order
+        // (AaCommunicator.cpp handleMessageContent), which is why it would have
+        // survived this and a sequential reader did not.
+        LoopbackTransport.pair().use { pair ->
+            val car = FramedConnection(pair.headUnit)
+            val session = AapSession(
+                connection = FramedConnection(pair.phone),
+                tls = TlsSession(AapTls.phoneEngine()),
+                identity = PhoneIdentity(deviceName = "Headway Test"),
+            )
+            // runCatching because this test stops at service discovery: the
+            // phone is left waiting for a response that never comes, and the
+            // EOF from tearing the pair down is teardown noise, not a result.
+            val phoneSide = async(Dispatchers.IO) { runCatching { session.connect() } }
+
+            // Version, exactly as the car sends it.
+            car.send(VersionHandshake.request(1, 5))
+            val versionReply = withTimeout(10_000) { car.receive() }
+            assertEquals(ControlMessageType.VERSION_RESPONSE.id, versionReply.messageId)
+            // [u16 major][u16 minor][u16 status]
+            val answeredMinor = ((versionReply.payload[2].toInt() and 0xFF) shl 8) or
+                (versionReply.payload[3].toInt() and 0xFF)
+            assertEquals(
+                5, answeredMinor,
+                "answering 1.6 to a 1.5 head unit claims a version it never offered",
+            )
+
+            // Straight to AUTH_COMPLETE: no TLS at all. AuthResponse.status is
+            // field 1, varint 0 = success.
+            car.send(
+                AapMessage(
+                    channelId = ChannelId.CONTROL.id,
+                    control = false,
+                    encrypted = false,
+                    messageId = ControlMessageType.AUTH_COMPLETE.id,
+                    payload = byteArrayOf(0x08, 0x00),
+                )
+            )
+
+            // The phone must now proceed, in plaintext, to service discovery.
+            val discovery = withTimeout(10_000) { car.receive() }
+            assertEquals(
+                ControlMessageType.SERVICE_DISCOVERY_REQUEST.id, discovery.messageId,
+                "an authenticated session must continue even with no TLS",
+            )
+            assertTrue(
+                !discovery.encrypted,
+                "no TLS happened, so nothing may claim to be encrypted",
+            )
+
+            phoneSide.cancel()
+            Unit
+        }
     }
 
     @Test

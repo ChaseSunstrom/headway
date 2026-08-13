@@ -155,21 +155,23 @@ open class HeadwayService : Service() {
     )
 
     /**
-     * One attempt at the whole chain, from radio to open channels.
+     * The AAP port this head unit last announced, if it ever has.
      *
-     * Returning normally means the session ended cleanly; throwing hands the
-     * failure to [SessionSupervisor], which backs off and calls this again. Every
-     * resource is scoped to this function so that both outcomes release the
-     * Bluetooth socket, the network request and the TCP socket — a leaked
-     * network request is worse than a failed connection, because the phone stays
-     * associated to an access point with no internet.
-     *
-     * The Bluetooth permission is not checked here. It is granted in the UI
-     * before the service is ever started, and if it is somehow missing the
-     * platform throws `SecurityException`, which [BluetoothCarLink] converts into
-     * a link failure with a readable message — a state the supervisor and the
-     * notification already handle. A second check here would only duplicate it.
+     * Persisted rather than held in memory because the useful case is the run
+     * *after* a restart: a head unit that names its port only sometimes should
+     * not send the phone back to guessing every time the service starts.
      */
+    private fun rememberedPort(): Int? =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getInt(KEY_LEARNED_PORT, 0).takeIf { it > 0 }
+
+    private fun rememberPort(port: Int) {
+        if (port <= 0 || port == rememberedPort()) return
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putInt(KEY_LEARNED_PORT, port)
+            .apply()
+        step("remembering that this head unit listens on port $port")
+    }
+
     /**
      * Connects to the head unit, allowing for a listener that is not up yet.
      *
@@ -210,6 +212,22 @@ open class HeadwayService : Service() {
         }
     }
 
+    /**
+     * One attempt at the whole chain, from radio to open channels.
+     *
+     * Returning normally means the session ended cleanly; throwing hands the
+     * failure to [SessionSupervisor], which backs off and calls this again. Every
+     * resource is scoped to this function so that both outcomes release the
+     * Bluetooth socket, the network request and the TCP socket — a leaked
+     * network request is worse than a failed connection, because the phone stays
+     * associated to an access point with no internet.
+     *
+     * The Bluetooth permission is not checked here. It is granted in the UI
+     * before the service is ever started, and if it is somehow missing the
+     * platform throws `SecurityException`, which [BluetoothCarLink] converts into
+     * a link failure with a readable message — a state the supervisor and the
+     * notification already handle. A second check here would only duplicate it.
+     */
     @SuppressLint("MissingPermission")
     private suspend fun runSession() {
         // Which build produced this log. Every real-car diagnosis so far has had
@@ -233,16 +251,29 @@ open class HeadwayService : Service() {
                 val network = wifi.join(credentials)
                 Log.i(TAG, "bound to car network $network")
 
-                // The head unit may never have said where to connect -- the
-                // observed Chevrolet does not -- in which case it is found on
-                // the access point it is hosting.
+                // The head unit may never say where to connect. The observed
+                // Chevrolet sends WifiStartRequest on some attempts and not
+                // others, which made the whole link look flaky: the runs where
+                // it spoke used its port, the runs where it stayed quiet used
+                // the canonical 5288 and got ECONNREFUSED. The port it gave was
+                // 7001, so the default was simply wrong for this car.
+                //
+                // A port learned from this head unit beats a constant from the
+                // references, so remember it and prefer it next time.
                 val endpoint = credentials.endpoint ?: run {
                     val host = wifi.headUnitAddress() ?: throw IllegalStateException(
                         "the head unit offered no endpoint over Bluetooth and the car " +
                             "network reports no DHCP server or gateway to fall back on"
                     )
-                    CarEndpoint(host, TcpTransport.DEFAULT_PORT)
+                    val port = rememberedPort() ?: TcpTransport.DEFAULT_PORT
+                    step(
+                        "head unit named no port; using " +
+                            if (rememberedPort() != null) "$port, remembered from an earlier session"
+                            else "the default $port"
+                    )
+                    CarEndpoint(host, port)
                 }
+                credentials.endpoint?.let { rememberPort(it.port) }
                 // Tell the head unit the phone is on its network before trying
                 // to reach it. A real phone sends this and a head unit waits for
                 // it (see WirelessHandshake.reportWifiConnected); skipping it is
@@ -417,6 +448,10 @@ open class HeadwayService : Service() {
         const val ACTION_STOP: String = "dev.headway.app.action.STOP"
 
         /** Bluetooth address of the car; omitted means "find it among the paired devices". */
+        /** Where the learned head-unit port lives. */
+        private const val PREFS: String = "headway_link"
+        private const val KEY_LEARNED_PORT: String = "learned_aap_port"
+
         const val EXTRA_CAR_ADDRESS: String = "dev.headway.app.extra.CAR_ADDRESS"
 
         const val CHANNEL_ID: String = "headway.link"

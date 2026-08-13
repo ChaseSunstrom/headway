@@ -119,6 +119,18 @@ class AapSession(
     val openedChannelIds: List<Int> get() = openChannels.toList()
 
     /**
+     * Whether TLS was actually negotiated, and therefore whether frames after
+     * authentication may set the encrypted flag.
+     *
+     * Normally true — the sequence above is what every reference shows. It is
+     * false against a head unit that authenticates without a TLS handshake at
+     * all, which a real 2021 Chevrolet Infotainment 3 unit does; setting the
+     * flag then would claim an encryption that does not exist, and the framing
+     * layer rejects it rather than putting a lie on the wire.
+     */
+    private val secured: Boolean get() = tls.handshakeComplete
+
+    /**
      * Runs the whole bring-up and returns what the head unit offers.
      *
      * @param channelsToOpen decides which advertised channels to open. Defaults
@@ -128,8 +140,7 @@ class AapSession(
         channelsToOpen: (HeadUnitProfile) -> List<Int> = { it.channelIds },
     ): HeadUnitProfile {
         val version = versionHandshake()
-        runTlsHandshake()
-        awaitAuthComplete()
+        secureAndAuthenticate()
         val discovered = discoverServices(version)
         profile = discovered
 
@@ -154,9 +165,19 @@ class AapSession(
         } else {
             VersionHandshake.STATUS_NO_COMPATIBLE_VERSION
         }
-        connection.send(
-            VersionHandshake.response(announcedVersion.major, announcedVersion.minor, status)
-        )
+        // Never announce a minor above the head unit's.
+        //
+        // AACS -- the only reference implementing this side -- answers a flat
+        // 1.5 whatever the head unit said (`AaCommunicator.cpp` L85-L93), and
+        // the observed Chevrolet announces 1.5 while Headway's default is
+        // aasdk's 1.6. Claiming a higher minor than the peer offered invites it
+        // to expect messages this implementation has never been tested against,
+        // for no gain: nothing here needs anything above 1.5.
+        val minor = minOf(announcedVersion.minor, version.minor)
+        if (minor != announcedVersion.minor) {
+            onStep("answering AAP $version with 1.$minor rather than announcing higher")
+        }
+        connection.send(VersionHandshake.response(announcedVersion.major, minor, status))
         if (status != VersionHandshake.STATUS_MATCH) {
             throw SessionException(
                 "head unit announced AAP $version; Headway implements major ${VersionHandshake.MAJOR}"
@@ -168,26 +189,65 @@ class AapSession(
     // --- step 2: TLS --------------------------------------------------------
 
     /**
-     * Pumps the TLS handshake through `ENCAPSULATED_SSL` control messages.
+     * Drives the TLS handshake and the authentication that follows it.
      *
-     * The phone is the TLS server, so it never speaks first here: every flight
-     * it sends is a reply to one the head unit sent.
+     * Dispatches on whatever the head unit sends rather than demanding a fixed
+     * order, which is how AACS's phone side is written
+     * (`AACS/AAServer/src/AaCommunicator.cpp` `handleMessageContent`, L219-L248:
+     * a type switch, not a sequence). The difference is not stylistic. A real
+     * 2021 Chevrolet Infotainment 3 unit answers the version response with
+     * `AUTH_COMPLETE` and no TLS flight at all, and a sequential reader that
+     * insists on `ENCAPSULATED_SSL` next fails the session on a head unit that
+     * is telling it the session is already good to go.
+     *
+     * The phone is the TLS server — AACS uses `SSL_set_accept_state` and
+     * `SSLv23_server_method` (L293-L305), and Headway matches — so it never
+     * speaks first: every flight it sends answers one the head unit sent.
      */
-    private suspend fun runTlsHandshake() {
+    private suspend fun secureAndAuthenticate() {
         var flights = 0
-        while (!tls.handshakeComplete) {
-            if (++flights > MAX_TLS_FLIGHTS) {
-                throw SessionException("TLS handshake did not converge after $flights flights")
-            }
-            val incoming = expect(ControlMessageType.ENCAPSULATED_SSL)
-            val outgoing = tls.continueHandshake(incoming.payload)
-            if (outgoing.isNotEmpty()) {
-                connection.send(encapsulatedSsl(outgoing))
+        while (true) {
+            val message = expectControl()
+            when (message.messageId) {
+                ControlMessageType.ENCAPSULATED_SSL.id -> {
+                    if (++flights > MAX_TLS_FLIGHTS) {
+                        throw SessionException(
+                            "TLS handshake did not converge after $flights flights"
+                        )
+                    }
+                    val outgoing = tls.continueHandshake(message.payload)
+                    if (outgoing.isNotEmpty()) connection.send(encapsulatedSsl(outgoing))
+                    if (tls.handshakeComplete) {
+                        // Only now may frames carry the encrypted flag.
+                        connection.cryptor = tls
+                        onStep("TLS established")
+                    }
+                }
+
+                ControlMessageType.AUTH_COMPLETE.id -> {
+                    val status = parseAuthStatus(message.payload)
+                    if (status != MessageStatus.STATUS_SUCCESS.number) {
+                        throw SessionException("head unit rejected authentication: status $status")
+                    }
+                    if (!tls.handshakeComplete) {
+                        // Not a failure to route around quietly: it means every
+                        // frame from here on is plaintext, which is worth saying
+                        // out loud in a log someone will read later.
+                        onStep(
+                            "head unit authenticated the session without a TLS handshake; " +
+                                "continuing unencrypted"
+                        )
+                    }
+                    onStep("authentication complete")
+                    return
+                }
+
+                else -> throw SessionException(
+                    "expected ENCAPSULATED_SSL or AUTH_COMPLETE, got " +
+                        ControlMessageType.describe(message.messageId)
+                )
             }
         }
-        // Only now may frames carry the encrypted flag.
-        connection.cryptor = tls
-        onStep("TLS established")
     }
 
     private fun encapsulatedSsl(payload: ByteArray) = AapMessage(
@@ -201,20 +261,24 @@ class AapSession(
     // --- step 3: auth -------------------------------------------------------
 
     /**
-     * Waits for the head unit's `AuthComplete`.
+     * Reads one control-channel message, whatever type it is.
      *
-     * Its payload is an `AuthResponse` with `required int32 status = 1`
+     * `AuthComplete`'s payload is an `AuthResponse` with
+     * `required int32 status = 1`
      * (`aap_protobuf/service/control/message/AuthResponse.proto`), which AACS
      * shows on the wire as `00 04 08 00` — message id 4, then field 1 varint 0,
      * i.e. `STATUS_SUCCESS` (`AACS/AAClient/src/AaCommunicator.cpp` L143-L151).
      */
-    private suspend fun awaitAuthComplete() {
-        val message = expect(ControlMessageType.AUTH_COMPLETE)
-        val status = parseAuthStatus(message.payload)
-        if (status != MessageStatus.STATUS_SUCCESS.number) {
-            throw SessionException("head unit rejected authentication: status $status")
+    private suspend fun expectControl(): AapMessage {
+        val message = connection.receive()
+        if (message.channelId != ChannelId.CONTROL.id) {
+            throw SessionException(
+                "expected a control message, got one on " +
+                    ChannelId.describe(message.channelId)
+            )
         }
-        onStep("authentication complete")
+        onStep("rx control ${ControlMessageType.describe(message.messageId)}")
+        return message
     }
 
     /**
@@ -255,7 +319,7 @@ class AapSession(
                 channelId = ChannelId.CONTROL.id,
                 control = false,
                 // Everything after AuthComplete travels inside the TLS session.
-                encrypted = true,
+                encrypted = secured,
                 messageId = ControlMessageType.SERVICE_DISCOVERY_REQUEST.id,
                 payload = request.toByteArray(),
             )
@@ -295,7 +359,7 @@ class AapSession(
             AapMessage(
                 channelId = channelId,
                 control = false,
-                encrypted = true,
+                encrypted = secured,
                 messageId = ControlMessageType.CHANNEL_OPEN_REQUEST.id,
                 payload = request.toByteArray(),
             )
