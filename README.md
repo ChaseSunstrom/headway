@@ -240,6 +240,27 @@ disconnect it, and immediately press Connect in Headway. If that joins where a
 cold attempt does not, it is projection state rather than the address table,
 and the Bluetooth checks above are the fix.
 
+### Or skip DHCP entirely with a static IP
+
+If the head unit will not hand out an address, stop asking it for one. This
+cannot be done through Headway — Android gives an app no IP configuration for a
+network it requests — so it goes through the same manual-join path:
+
+1. Join the car's Wi-Fi by hand from Android's Wi-Fi settings.
+2. Open the saved network → **Advanced** → **IP settings** → **Static**.
+3. Set an address on the head unit's subnet that is not the head unit itself.
+   The log line `head unit offers 192.168.5.1:7001` names it, so
+   `192.168.5.150` with **gateway** `192.168.5.1`, **prefix length** `24` and
+   DNS `192.168.5.1` fits that car. A high address avoids colliding with
+   whatever the unit hands out when it is working.
+4. Press Connect. Headway adopts the connection you already have.
+
+This is worth doing even if you think the address table is fine, because it
+tells you something either way. If the session comes up, addressing was the
+whole problem. If the phone is on the network and the AAP connect still fails,
+the head unit is not ready to project and no amount of address wrangling will
+change that — go back to the Bluetooth checks.
+
 Headway notices when the phone is already on the car's network and uses it
 directly, so after step 2 there is no approval prompt and no new MAC on any
 future connection.

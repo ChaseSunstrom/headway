@@ -504,10 +504,16 @@ class CarWifiNetwork(
                 // the car's own OnStar hotspot, which does have internet.
                 expected == null &&
                     !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
-                    properties.dhcpServerAddress != null ->
-                    "it serves DHCP from ${properties.dhcpServerAddress?.hostAddress} and has " +
-                        "no working internet, which is what a head unit's access point looks " +
-                        "like. The AAP connect will confirm it"
+                    routerOf(properties) != null ->
+                    // Either a DHCP server or a plain default-route gateway.
+                    // The gateway alternative is not a nicety: a user working
+                    // around a head unit that will not hand out a lease does it
+                    // by setting a static IP, and a static configuration has no
+                    // DHCP server at all. Requiring one would have disqualified
+                    // exactly the setup this path exists to support.
+                    "its router is ${routerOf(properties)} and it has no working internet, " +
+                        "which is what a head unit's access point looks like. The AAP " +
+                        "connect will confirm it"
 
                 else -> null
             } ?: continue
@@ -555,6 +561,21 @@ class CarWifiNetwork(
         }.isSuccess
         if (registered) adoptedWatch = watch
     }
+
+    /**
+     * The other end of this network: its DHCP server, or failing that the
+     * default-route gateway.
+     *
+     * On an access point hosted by a head unit these are the same machine. The
+     * gateway is the fallback rather than the first choice because a car
+     * network may publish no default route at all, but it is the *only* answer
+     * when the phone is statically configured.
+     */
+    private fun routerOf(properties: LinkProperties): String? =
+        properties.dhcpServerAddress?.hostAddress
+            ?: properties.routes
+                .firstOrNull { it.isDefaultRoute && it.hasGateway() }
+                ?.gateway?.hostAddress
 
     /** True if [address] is the DHCP server or the default gateway on [properties]. */
     private fun hostsGateway(properties: LinkProperties, address: String): Boolean {
