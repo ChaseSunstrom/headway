@@ -481,20 +481,65 @@ class ScreenEncoder(
         scratch = ByteArray(maxOf(size, scratch.size * 2))
     }
 
+    /**
+     * Configures the encoder, dropping optional keys until it accepts them.
+     *
+     * Two keys here are preferences rather than requirements, and an encoder is
+     * allowed to reject either:
+     *
+     * - **profile/level.** Baseline is what the channel negotiated, but some
+     *   encoders refuse an explicit pair instead of clamping it. Their default
+     *   is baseline anyway.
+     * - **`KEY_PREPEND_HEADER_TO_SYNC_FRAMES`.** Self-contained IDRs are worth
+     *   having (see [mediaFormat]) but a head unit that receives the codec
+     *   config once still decodes a stream without them.
+     *
+     * The ladder exists because dropping only the first was not enough: adding
+     * the prepend key broke `theEncoderStartsStopsAndRestartsWithoutStrandingTheCodec`
+     * on the CI emulator's software AVC encoder, and there was no rung that
+     * could give it up. An optimisation must never be the reason the car gets
+     * no picture, so every combination is tried and the one that worked is
+     * logged — on a real head unit that line is the difference between "this
+     * encoder is fussy" and an afternoon of guessing.
+     */
     private fun configureWithProfileFallback(codec: MediaCodec) {
-        try {
-            codec.configure(mediaFormat(withProfile = true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        } catch (e: Exception) {
-            // Baseline is what the channel negotiated, but some encoders reject an
-            // explicit profile/level pair rather than clamping it. Their default is
-            // baseline anyway, so dropping the keys is better than failing to cast.
-            onStep("encoder rejected an explicit H.264 profile/level: ${e.message}")
-            codec.reset()
-            codec.configure(mediaFormat(withProfile = false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        val attempts = listOf(
+            Attempt(withProfile = true, prependHeaders = true),
+            Attempt(withProfile = false, prependHeaders = true),
+            Attempt(withProfile = true, prependHeaders = false),
+            Attempt(withProfile = false, prependHeaders = false),
+        )
+        var lastFailure: Exception? = null
+        for ((index, attempt) in attempts.withIndex()) {
+            try {
+                if (index > 0) codec.reset()
+                codec.configure(
+                    mediaFormat(attempt.withProfile, attempt.prependHeaders),
+                    null,
+                    null,
+                    MediaCodec.CONFIGURE_FLAG_ENCODE,
+                )
+                if (index > 0) {
+                    onStep(
+                        "encoder accepted configuration with profile=" +
+                            "${attempt.withProfile}, prependHeaders=" +
+                            "${attempt.prependHeaders} after ${index} rejection(s); " +
+                            "last was ${lastFailure?.message}"
+                    )
+                }
+                return
+            } catch (e: Exception) {
+                lastFailure = e
+            }
         }
+        throw ScreenEncoderException(
+            "the encoder rejected every configuration tried", lastFailure,
+        )
     }
 
-    private fun mediaFormat(withProfile: Boolean): MediaFormat =
+    private data class Attempt(val withProfile: Boolean, val prependHeaders: Boolean)
+
+    private fun mediaFormat(withProfile: Boolean, prependHeaders: Boolean = true): MediaFormat =
         MediaFormat.createVideoFormat(
             MediaFormat.MIMETYPE_VIDEO_AVC,
             configuration.width,
@@ -517,7 +562,10 @@ class ScreenEncoder(
             // mid-session, gets IDRs it cannot decode and shows a black screen
             // until something restarts the encoder. Self-contained IDRs cost a
             // few tens of bytes each and remove the whole class of problem.
-            setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
+            //
+            // Optional, and given up by configureWithProfileFallback on an
+            // encoder that will not take it.
+            if (prependHeaders) setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
             setLong(
                 MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,
                 configuration.repeatFrameAfterMicros,
