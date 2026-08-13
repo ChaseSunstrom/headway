@@ -110,6 +110,40 @@ class HeadUnitQuirksTest {
         assertEquals(profile, load.profiles[0])
     }
 
+    /**
+     * Headway must not warn about its own output.
+     *
+     * `serialize` writes the template users edit, and `parse` reports any key it
+     * does not recognise. A knob added to one and not the other means a user
+     * sets a documented setting and is told it was ignored — which is worse
+     * than not having the knob, because it reads as their mistake. `certificate`
+     * shipped in exactly that state, so this is a regression test, not a
+     * precaution.
+     */
+    @Test
+    fun everyKeyTheTemplateWritesIsAKeyTheParserKnows() {
+        // Every nullable knob set, because serialize omits the ones left null —
+        // and those are exactly the ones that slipped through before.
+        val everything = QuirkProfile(
+            makePattern = "Chevrolet",
+            modelPattern = "Infotainment*",
+            quirks = HeadUnitQuirks.DEFAULT.copy(
+                pinBssid = true,
+                certificate = "internal",
+                suggestCarNetwork = true,
+            ),
+        )
+        val written = org.json.JSONArray(QuirkStore.serialize(listOf(everything)))
+            .getJSONObject(0).keys().asSequence().toSet()
+
+        val unknown = written - QuirkStore.knownProfileKeys
+        assertTrue(
+            "serialize writes $unknown, which parse would report as unknown keys. " +
+                "Add them to PROFILE_KEYS.",
+            unknown.isEmpty(),
+        )
+    }
+
     @Test
     fun unknownKeysAreIgnoredAndReported() {
         // The case the warnings exist for: a user hand-edits the file, mistypes a

@@ -587,11 +587,24 @@ class QuirkStore(
         private const val KEY_OFFSET_Y = "offsetY"
         private const val KEY_USE_TOUCHSCREEN_GEOMETRY = "useTouchscreenGeometry"
 
+        /**
+         * Keys a profile may contain. Anything else is reported as unknown.
+         *
+         * **Every key `serialize` writes must be in here.** A key that is
+         * written but not listed makes Headway warn about its own output: the
+         * user sets a documented knob, and the log tells them it was ignored.
+         * `HeadUnitQuirksTest` asserts the two sets agree, because this has
+         * already happened once — `certificate` shipped without being listed.
+         */
         private val PROFILE_KEYS = setOf(
             KEY_MAKE, KEY_MODEL, KEY_MAX_FRAGMENT_SIZE, KEY_ANNOUNCED_VERSION,
             KEY_MEDIA_AUDIO_OVER_AAP, KEY_KEYFRAME_INTERVAL, KEY_TOUCH,
             KEY_HIDDEN_SSID, KEY_PIN_BSSID, KEY_ANNOUNCE_WIFI_CHANNEL,
+            KEY_CERTIFICATE, KEY_SUGGEST_CAR_NETWORK,
         )
+
+        /** Exposed so a test can prove [PROFILE_KEYS] covers everything written. */
+        internal val knownProfileKeys: Set<String> get() = PROFILE_KEYS
 
         private val TOUCH_KEYS = setOf(
             KEY_INVERT_X, KEY_INVERT_Y, KEY_SWAP_AXES, KEY_SCALE_X, KEY_SCALE_Y,
