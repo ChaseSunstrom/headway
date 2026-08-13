@@ -500,7 +500,9 @@ class WirelessHandshake(
             // Bluetooth error, and reporting it as one sends the next reader
             // hunting the wrong problem.
             if (expired.get()) {
-                throw WirelessHandshakeException(deadlineMessage(outstanding(), deadlineMillis))
+                throw WirelessHandshakeException(
+                    deadlineMessage(outstanding(), deadlineMillis, heardSomething.get())
+                )
             }
             throw e
         } finally {
@@ -509,12 +511,25 @@ class WirelessHandshake(
     }
 
     /** The give-up message, kept in one place so the log and the exception agree. */
-    private fun deadlineMessage(outstanding: String, deadlineMillis: Long): String =
-        "head unit never supplied $outstanding within ${deadlineMillis}ms. It answered " +
-            "the version exchange, so Bluetooth and pairing are fine; it is the Wi-Fi " +
-            "credentials handshake that stalled. Check that Android Auto is enabled for " +
-            "this phone in the car's Bluetooth device settings, and that the car is not " +
-            "already projecting to another phone."
+    private fun deadlineMessage(
+        outstanding: String,
+        deadlineMillis: Long,
+        heardAnything: Boolean,
+    ): String = if (heardAnything) {
+        "head unit never supplied $outstanding within ${deadlineMillis}ms. It did talk, " +
+            "so Bluetooth and pairing are fine; it is the Wi-Fi credentials handshake that " +
+            "stalled. Check that Android Auto is enabled for this phone in the car's " +
+            "Bluetooth device settings, and that the car is not already projecting to " +
+            "another phone."
+    } else {
+        // The distinct never-spoke case, which was previously unreachable once
+        // the deadline fired first: telling this user 'it answered the version
+        // exchange' sends them to the Wi-Fi handshake when the unit never said a
+        // word.
+        "head unit accepted the RFCOMM connection and then sent nothing at all for " +
+            "${deadlineMillis}ms, including after being prompted. Check that Android Auto " +
+            "is enabled for this phone in the car's Bluetooth device settings."
+    }
 
     /**
      * Tells the head unit the phone is now on its access point.

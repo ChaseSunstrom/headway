@@ -55,6 +55,7 @@ import dev.headway.app.service.HeadwayService
 import dev.headway.transport.LinkState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
@@ -474,7 +475,13 @@ class MainActivity : AppCompatActivity() {
         scope.launch {
             val release = try {
                 updater.check()
-            } catch (e: UpdateException) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Not only UpdateException: check() can surface an IOException, a
+                // JSON error or anything else, and an uncaught exception here has
+                // no CoroutineExceptionHandler above it, so it would take the
+                // whole app down instead of just failing the check.
                 updateValue.text = "Could not check: ${e.message}"
                 updateButton.isEnabled = true
                 return@launch
@@ -535,7 +542,13 @@ class MainActivity : AppCompatActivity() {
                 updateValue.text = "Starting the installer..."
                 updater.install(apk)
                 updateValue.text = "Waiting for you to confirm the install"
-            } catch (e: UpdateException) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // install() can throw SecurityException if the user revokes the
+                // install permission between the check and the commit, and
+                // catching only UpdateException would let that kill the app
+                // mid-update. Any failure here is a failed update, not a crash.
                 SessionLog.shared.info(TAG, "update failed: ${e.message}")
                 updateValue.text = "Update failed: ${e.message}"
             } finally {

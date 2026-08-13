@@ -63,7 +63,7 @@ class SessionSupervisorTest {
     fun `a failing session is retried with growing delay capped at the maximum`() = runBlocking {
         val h = Harness()
         val supervisor = SessionSupervisor(
-            runSession = { throw EOFException("head unit went away") },
+            runSession = { _ -> throw EOFException("head unit went away") },
             onState = { h.states += it },
             initialDelayMillis = 500,
             maxDelayMillis = 8_000,
@@ -84,7 +84,7 @@ class SessionSupervisorTest {
         // CLAUDE.md: "reconnecting automatically within 15 seconds of the car
         // being available". Worst case is one full capped wait that began just
         // before the car came back, plus the connect attempt after it.
-        val supervisor = SessionSupervisor(runSession = {}, maxDelayMillis = 8_000)
+        val supervisor = SessionSupervisor(runSession = { _ -> }, maxDelayMillis = 8_000)
         val worstWait = supervisor.backoffFor(consecutiveFailures = 50)
         assertEquals(8_000L, worstWait, "backoff must stay capped no matter how long the car was gone")
         assertTrue(
@@ -100,11 +100,12 @@ class SessionSupervisorTest {
         val h = Harness()
         var call = 0
         val supervisor = SessionSupervisor(
-            runSession = {
+            runSession = { onUp ->
                 call++
                 // Fail three times to build up backoff, then succeed, then a
                 // clean end again.
                 if (call in 1..3) throw EOFException("out of range")
+                onUp()
             },
             onState = { h.states += it },
             initialDelayMillis = 500,
@@ -128,7 +129,7 @@ class SessionSupervisorTest {
         val running = CompletableDeferred<Unit>()
         val job = launch {
             SessionSupervisor(
-                runSession = {
+                runSession = { _ ->
                     running.complete(Unit)
                     awaitCancellation()
                 },
@@ -157,7 +158,7 @@ class SessionSupervisorTest {
         val h = Harness()
         var calls = 0
         val supervisor = SessionSupervisor(
-            runSession = {
+            runSession = { _ ->
                 calls++
                 // A real timeout, produced the way the link produces one.
                 if (calls < 3) withTimeout(1) { delay(10_000) }
@@ -183,7 +184,7 @@ class SessionSupervisorTest {
         val h = Harness()
         var call = 0
         val supervisor = SessionSupervisor(
-            runSession = {
+            runSession = { _ ->
                 call++
                 throw EOFException("still out of range")
             },
@@ -209,7 +210,7 @@ class SessionSupervisorTest {
         val h = Harness()
         var call = 0
         SessionSupervisor(
-            runSession = { if (++call == 1) throw EOFException("bt flapped") },
+            runSession = { onUp -> if (++call == 1) throw EOFException("bt flapped") else onUp() },
             onState = { h.states += it },
             maxAttempts = 2,
             sleep = h::sleep,
@@ -227,7 +228,7 @@ class SessionSupervisorTest {
     fun `a failure with no message still produces a legible cause`() = runBlocking {
         val h = Harness()
         SessionSupervisor(
-            runSession = { throw EOFException() },
+            runSession = { _ -> throw EOFException() },
             onState = { h.states += it },
             maxAttempts = 1,
             sleep = h::sleep,

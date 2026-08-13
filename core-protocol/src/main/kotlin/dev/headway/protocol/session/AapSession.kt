@@ -372,21 +372,43 @@ class AapSession(
             )
         )
 
-        val message = connection.receive()
-        if (message.messageId != ControlMessageType.CHANNEL_OPEN_RESPONSE.id) {
-            throw SessionException(
-                "expected CHANNEL_OPEN_RESPONSE for ${ChannelId.describe(channelId)}, got " +
-                    ControlMessageType.describe(message.messageId)
-            )
+        // Read until the response for *this* channel arrives, skipping anything
+        // interleaved rather than failing the whole bring-up on it. A head unit
+        // is free to emit a PING_REQUEST or a focus notification between channel
+        // opens -- openauto chains a VideoFocusNotification onto one -- and the
+        // old code threw SessionException on the first such message and restarted
+        // the entire session. Matching on channelId as well as message id also
+        // stops another channel's response being mistaken for this one's.
+        var skipped = 0
+        while (true) {
+            val message = connection.receive()
+            val isOurResponse =
+                message.messageId == ControlMessageType.CHANNEL_OPEN_RESPONSE.id &&
+                    message.channelId == channelId
+            if (!isOurResponse) {
+                if (++skipped > MAX_INTERLEAVED_MESSAGES) {
+                    throw SessionException(
+                        "no CHANNEL_OPEN_RESPONSE for ${ChannelId.describe(channelId)} after " +
+                            "$skipped interleaved messages"
+                    )
+                }
+                onStep(
+                    "ignoring ${ControlMessageType.describe(message.messageId)} on " +
+                        "${ChannelId.describe(message.channelId)} while opening " +
+                        ChannelId.describe(channelId)
+                )
+                continue
+            }
+            val response = ChannelOpenResponse.parseFrom(message.payload)
+            if (response.status != MessageStatus.STATUS_SUCCESS) {
+                throw SessionException(
+                    "head unit refused ${ChannelId.describe(channelId)}: ${response.status}"
+                )
+            }
+            openChannels += channelId
+            onStep("channel ${ChannelId.describe(channelId)} open")
+            return
         }
-        val response = ChannelOpenResponse.parseFrom(message.payload)
-        if (response.status != MessageStatus.STATUS_SUCCESS) {
-            throw SessionException(
-                "head unit refused ${ChannelId.describe(channelId)}: ${response.status}"
-            )
-        }
-        openChannels += channelId
-        onStep("channel ${ChannelId.describe(channelId)} open")
     }
 
     // --- helpers ------------------------------------------------------------
@@ -413,5 +435,13 @@ class AapSession(
          * that still fails fast if a head unit loops.
          */
         const val MAX_TLS_FLIGHTS = 10
+
+        /**
+         * How many unrelated messages may arrive between a channel-open request
+         * and its response before Headway concludes the response is not coming.
+         * Bounded so a head unit that never answers fails the attempt instead of
+         * reading forever.
+         */
+        const val MAX_INTERLEAVED_MESSAGES = 16
     }
 }

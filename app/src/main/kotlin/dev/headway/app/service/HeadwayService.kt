@@ -34,7 +34,12 @@ import androidx.core.app.ServiceCompat
 import dev.headway.app.BuildConfig
 import dev.headway.app.R
 import dev.headway.app.link.BluetoothCarLink
+import dev.headway.app.log.SessionLog
 import dev.headway.app.link.CarWifiNetwork
+import dev.headway.app.quirks.HeadUnitIdentity
+import dev.headway.app.quirks.HeadUnitQuirks
+import dev.headway.app.quirks.QuirkStore
+import dev.headway.protocol.framing.MessageFragmenter
 import dev.headway.protocol.io.FramedConnection
 import dev.headway.protocol.session.AapSession
 import dev.headway.protocol.session.HeadUnitProfile
@@ -146,7 +151,7 @@ open class HeadwayService : Service() {
     }
 
     private fun supervisor() = SessionSupervisor(
-        runSession = { runSession() },
+        runSession = { onUp -> runSession(onUp) },
         onState = { state ->
             publish(state)
             updateNotification(describe(state))
@@ -157,20 +162,28 @@ open class HeadwayService : Service() {
     /**
      * The AAP port this head unit last announced, if it ever has.
      *
+     * Keyed by the car's Bluetooth address, not stored globally: a port learned
+     * from one car must never be tried against a different one. The old single
+     * key meant pairing a second car whose head unit listens on 5288 would keep
+     * dialling the first car's 7001 and fail every cycle, with nothing to
+     * unlearn it.
+     *
      * Persisted rather than held in memory because the useful case is the run
      * *after* a restart: a head unit that names its port only sometimes should
      * not send the phone back to guessing every time the service starts.
      */
-    private fun rememberedPort(): Int? =
-        getSharedPreferences(PREFS, MODE_PRIVATE).getInt(KEY_LEARNED_PORT, 0).takeIf { it > 0 }
+    private fun rememberedPort(address: String): Int? =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getInt(portKey(address), 0).takeIf { it > 0 }
 
-    private fun rememberPort(port: Int) {
-        if (port <= 0 || port == rememberedPort()) return
+    private fun rememberPort(address: String, port: Int) {
+        if (port <= 0 || port == rememberedPort(address)) return
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-            .putInt(KEY_LEARNED_PORT, port)
+            .putInt(portKey(address), port)
             .apply()
-        step("remembering that this head unit listens on port $port")
+        step("remembering that the head unit at $address listens on port $port")
     }
+
+    private fun portKey(address: String): String = "$KEY_LEARNED_PORT.$address"
 
     /**
      * Connects to the head unit, allowing for a listener that is not up yet.
@@ -229,7 +242,7 @@ open class HeadwayService : Service() {
      * notification already handle. A second check here would only duplicate it.
      */
     @SuppressLint("MissingPermission")
-    private suspend fun runSession() {
+    private suspend fun runSession(onUp: () -> Unit = {}) {
         // Which build produced this log. Every real-car diagnosis so far has had
         // to start by guessing that from which log messages are present, and
         // guessing wrong sends the reader after a bug that was already fixed --
@@ -245,6 +258,10 @@ open class HeadwayService : Service() {
 
         BluetoothCarLink(car, adapter, onStep = ::step).use { link ->
             val credentials = link.fetchCredentials()
+            // CarNetworkCredentials.toString already redacts the passphrase, but
+            // register it with the scrubber too, so it cannot leak through some
+            // other log line before the export is shared for diagnosis.
+            SessionLog.shared.protect(credentials.passphrase)
             Log.i(TAG, "head unit offered $credentials")
 
             // Every capture that reached TCP had the car announce its endpoint;
@@ -286,38 +303,60 @@ open class HeadwayService : Service() {
                         "the head unit offered no endpoint over Bluetooth and the car " +
                             "network reports no DHCP server or gateway to fall back on"
                     )
-                    val port = rememberedPort() ?: TcpTransport.DEFAULT_PORT
+                    val learned = rememberedPort(car.address)
+                    val port = learned ?: TcpTransport.DEFAULT_PORT
                     step(
                         "head unit named no port; using " +
-                            if (rememberedPort() != null) "$port, remembered from an earlier session"
+                            if (learned != null) "$port, remembered from an earlier session"
                             else "the default $port"
                     )
                     CarEndpoint(host, port)
                 }
-                credentials.endpoint?.let { rememberPort(it.port) }
+                credentials.endpoint?.let { rememberPort(car.address, it.port) }
                 Log.i(TAG, "opening the AAP session to $endpoint")
 
                 // Sockets come from the network, never from `new Socket()`:
                 // the car AP has no internet and is not the default route.
                 val socket = connectWithRetry(wifi, endpoint)
 
+                // Apply the head-unit quirk file's pre-session knobs. Resolved
+                // against an unknown identity here because the head unit's make
+                // and model are not known until service discovery, which is
+                // itself part of the session these knobs configure; the resolve
+                // therefore yields the catch-all profile plus any user entry that
+                // matches every unit. Identity-specific touch corrections are
+                // applied later, once discovery has run. Without this the file
+                // the settings screen tells users to edit did nothing at all.
+                val quirks = QuirkStore.inAppStorage(this).quirksFor(HeadUnitIdentity())
+                if (quirks != HeadUnitQuirks.DEFAULT) {
+                    step("applying head unit quirks: ${quirks.describe()}")
+                }
+
                 TcpTransport.wrap(socket).use { transport ->
-                    val connection = FramedConnection(transport)
+                    val connection = FramedConnection(
+                        transport,
+                        fragmenter = MessageFragmenter(quirks.maxFragmentSize),
+                    )
                     val session = AapSession(
                         connection = connection,
                         tls = TlsSession(AapTls.phoneEngine()),
                         identity = PhoneIdentity(),
+                        announcedVersion = quirks.announcedVersion,
                         onStep = ::step,
                     )
                     val profile = session.connect()
-                    // SessionSupervisor emits LinkState.Connected only once
-                    // runSession *returns*, i.e. after the session has ended, so
-                    // the notification would otherwise read "Connecting" for the
-                    // entire drive. This is the only place that knows the link is
-                    // actually up.
+
+                    // The link is genuinely up now: version, TLS-or-auth,
+                    // service discovery and channel open all completed. Signal it
+                    // so LinkState.Connected reaches the UI while the session is
+                    // live rather than at the moment it ends. Then a richer
+                    // notification than describe(Connected) would give.
+                    onUp()
                     updateNotification(
                         "Connected to ${profile.displayName ?: car.name ?: car.address}"
                     )
+                    step("session up: ${profile.displayName ?: "head unit"}, " +
+                        "${profile.channelIds.size} channel(s) advertised")
 
                     coroutineScope {
                         // A phone that drives out of range keeps a socket that
@@ -454,7 +493,12 @@ open class HeadwayService : Service() {
     }
 
     private fun step(message: String) {
-        Log.d(TAG, message)
+        // Into the exportable log, not only logcat. MainActivity tells the user
+        // "if the car refuses to connect, export the log and send it" -- and
+        // until this went through SessionLog the export held UI and
+        // accessibility lines but not one line of the handshake, join or session
+        // bring-up, which is the entire reason the export exists.
+        SessionLog.shared.info(TAG, message)
     }
 
     companion object {

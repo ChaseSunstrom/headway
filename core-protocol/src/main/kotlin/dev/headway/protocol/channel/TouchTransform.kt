@@ -191,8 +191,13 @@ class TouchTransform(
      * UI, one on the bar. The rules, in order:
      *
      * 1. If the pointer the event is *about* — the one at `actionIndex` — is in a
-     *    bar, the whole event is dropped. Delivering a DOWN whose coordinates we
-     *    had to invent would start a gesture the driver did not start.
+     *    bar, the whole event is dropped **unless it is a lift**. Delivering a
+     *    DOWN whose coordinates we had to invent would start a gesture the driver
+     *    did not start; but dropping the UP that ends a real gesture leaves the
+     *    injected touch held on the phone forever, because the accessibility
+     *    dispatcher built a stroke from the DOWN/MOVED stream and never sees the
+     *    finger come up. A lift in a bar is therefore delivered, clamped to the
+     *    nearest phone pixel — the finger did leave the screen there.
      * 2. Pointers that are in a bar are removed from the list, and `actionIndex`
      *    is rebased onto the surviving list so it still points at the same finger.
      * 3. Pointer ids are preserved, since that is the only stable handle across
@@ -202,13 +207,18 @@ class TouchTransform(
      */
     fun map(touch: CarInputEvent.Touch): PhoneTouch? {
         val changed = touch.pointers.getOrNull(touch.actionIndex) ?: return null
-        if (toPhone(changed.x, changed.y) == null) return null
+        val lift = touch.action == TouchAction.UP || touch.action == TouchAction.POINTER_UP
+        if (toPhone(changed.x, changed.y) == null && !lift) return null
 
         val mapped = ArrayList<PhonePointer>(touch.pointers.size)
         var actionIndex = -1
         for ((index, pointer) in touch.pointers.withIndex()) {
-            val point = toPhone(pointer.x, pointer.y) ?: continue
-            if (index == touch.actionIndex) actionIndex = mapped.size
+            val isAction = index == touch.actionIndex
+            // The action pointer of a lift is kept even in a bar, clamped; every
+            // other bar pointer is dropped as before.
+            val point = toPhone(pointer.x, pointer.y)
+                ?: if (isAction && lift) clampToPhone(pointer.x, pointer.y) else continue
+            if (isAction) actionIndex = mapped.size
             mapped += PhonePointer(pointer.id, point.x, point.y)
         }
         if (actionIndex < 0) return null
@@ -221,6 +231,18 @@ class TouchTransform(
             surface = touch.surface,
         )
     }
+
+    /**
+     * Where a car point lands once projected onto the phone and clamped into it.
+     *
+     * Unlike [toPhone] this never returns null: a bar point is pulled to the
+     * nearest edge of the content area. Only for the finger-lift case above,
+     * where the exact pixel does not matter but the event must be delivered.
+     */
+    private fun clampToPhone(carX: Int, carY: Int): PhonePoint = PhonePoint(
+        ((carX - contentRect.left) / scale).coerceIn(0.0, phoneWidth.toDouble()),
+        ((carY - contentRect.top) / scale).coerceIn(0.0, phoneHeight.toDouble()),
+    )
 
     override fun toString(): String =
         "TouchTransform(car=${carWidth}x$carHeight phone=${phoneWidth}x$phoneHeight " +

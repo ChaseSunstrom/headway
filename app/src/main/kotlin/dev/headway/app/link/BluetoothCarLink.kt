@@ -29,8 +29,10 @@ import dev.headway.protocol.io.Transport
 import dev.headway.transport.StreamTransport
 import dev.headway.transport.wireless.CarNetworkCredentials
 import dev.headway.transport.wireless.WirelessHandshake
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -156,6 +158,13 @@ class BluetoothCarLink(
                 onStep("connecting RFCOMM to ${device.address} ($label)")
                 withTimeout(connectTimeoutMillis) { connectBlocking(opened) }
             } catch (e: Throwable) {
+                // A genuine cancellation -- the user pressed Disconnect, or the
+                // service is shutting down -- must propagate, not be retried as
+                // the next RFCOMM mode and then reported as a Bluetooth failure.
+                // (withTimeout's own TimeoutCancellationException is a subtype,
+                // but that means "this mode timed out" and *should* fall through
+                // to the next mode, so it is deliberately not rethrown here.)
+                if (e is CancellationException && e !is TimeoutCancellationException) throw e
                 lastFailure = e
                 onStep("$label RFCOMM failed: ${e.message}")
                 // Close this socket directly rather than via close(): close()
@@ -185,6 +194,12 @@ class BluetoothCarLink(
                     exchange.perform()
                 }
             } catch (e: Throwable) {
+                // Same as above: real cancellation propagates, a handshake
+                // timeout falls through to the diagnostics and the next mode.
+                if (e is CancellationException && e !is TimeoutCancellationException) {
+                    close()
+                    throw e
+                }
                 val elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000
 
                 // Say what happened. A head unit that accepts the socket and

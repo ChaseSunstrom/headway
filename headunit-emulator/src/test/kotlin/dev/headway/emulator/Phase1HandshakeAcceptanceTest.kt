@@ -56,6 +56,13 @@ import org.junit.jupiter.api.Test
  */
 class Phase1HandshakeAcceptanceTest {
 
+    private fun channelOpenSuccess(): ByteArray =
+        aap_protobuf.service.control.message.ChannelOpenResponseOuterClass.ChannelOpenResponse
+            .newBuilder()
+            .setStatus(aap_protobuf.shared.MessageStatusOuterClass.MessageStatus.STATUS_SUCCESS)
+            .build()
+            .toByteArray()
+
     /** Runs a complete bring-up over the given transport pair. */
     private fun bringUp(
         pair: LoopbackTransport.Pair,
@@ -141,6 +148,58 @@ class Phase1HandshakeAcceptanceTest {
 
             phoneSide.cancel()
             Unit
+        }
+    }
+
+    @Test
+    fun `a control message interleaved with a channel open does not fail the session`() = runBlocking {
+        // A head unit is free to emit a PING_REQUEST or a focus notification
+        // between channel opens; openauto chains a VideoFocusNotification onto
+        // one. The old reader threw on the first such message and restarted the
+        // whole session. This drives the phone opening a single channel while
+        // the "car" slips an unrelated control message in before the response.
+        LoopbackTransport.pair().use { pair ->
+            val car = FramedConnection(pair.headUnit)
+            val session = AapSession(
+                connection = FramedConnection(pair.phone),
+                tls = TlsSession(AapTls.phoneEngine()),
+                identity = PhoneIdentity(deviceName = "Headway Test"),
+            )
+
+            val opening = async(Dispatchers.IO) {
+                runCatching { session.openChannel(ChannelId.MEDIA_SINK_VIDEO.id) }
+            }
+
+            // Read the phone's ChannelOpenRequest.
+            val request = withTimeout(10_000) { car.receive() }
+            assertEquals(ControlMessageType.CHANNEL_OPEN_REQUEST.id, request.messageId)
+            assertEquals(ChannelId.MEDIA_SINK_VIDEO.id, request.channelId)
+
+            // Slip an unrelated control message in first...
+            car.send(
+                AapMessage(
+                    channelId = ChannelId.CONTROL.id,
+                    control = false,
+                    encrypted = false,
+                    messageId = ControlMessageType.PING_REQUEST.id,
+                    payload = ByteArray(0),
+                )
+            )
+            // ...then the real response on the video channel.
+            car.send(
+                AapMessage(
+                    channelId = ChannelId.MEDIA_SINK_VIDEO.id,
+                    control = false,
+                    encrypted = false,
+                    messageId = ControlMessageType.CHANNEL_OPEN_RESPONSE.id,
+                    payload = channelOpenSuccess(),
+                )
+            )
+
+            assertTrue(
+                withTimeout(10_000) { opening.await() }.isSuccess,
+                "an interleaved ping must not fail the channel open",
+            )
         }
     }
 

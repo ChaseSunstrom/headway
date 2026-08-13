@@ -65,8 +65,14 @@ class SessionSupervisor(
     /**
      * Establishes and then *runs* one session, returning when it ends normally.
      * Throwing signals a failure that should be retried.
+     *
+     * The `onUp` argument must be invoked once the link is actually established
+     * — not before, not after. It is what drives [LinkState.Connected]. A
+     * session that only signalled by returning would report "Connected" at the
+     * instant it *ended*, so the UI would read "Connecting" for an entire drive
+     * and flash green exactly when the car went away.
      */
-    private val runSession: suspend () -> Unit,
+    private val runSession: suspend (onUp: () -> Unit) -> Unit,
     /** Called on every state change; wired to the notification and the log. */
     private val onState: (LinkState) -> Unit = {},
     private val initialDelayMillis: Long = 500,
@@ -100,8 +106,9 @@ class SessionSupervisor(
             onState(LinkState.Connecting(attempts))
 
             val failure = try {
-                runSession()
-                onState(LinkState.Connected)
+                // Connected is signalled from inside the session, when the link
+                // is up, not here on return -- return means it has ended.
+                runSession { onState(LinkState.Connected) }
                 completedSessions++
                 // A session that ended cleanly is not a failure, so the next
                 // attempt starts from the short delay rather than inheriting the

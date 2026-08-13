@@ -320,6 +320,27 @@ class TouchTransformTest {
         assertNull(t.map(touch), "a DOWN in the bar must not start a gesture")
     }
 
+    @Test
+    fun `a lift whose changed pointer is in a bar is delivered clamped, not dropped`() {
+        // The finger began on the image, dragged into the pillarbox bar, and
+        // lifted there. Dropping this UP -- as a DOWN in the same place is
+        // dropped -- would leave the injected gesture held on the phone forever.
+        val t = TouchTransform(800, 480, 1080, 2400)
+        val up = CarInputEvent.Touch(
+            timestampMicros = 9,
+            action = TouchAction.UP,
+            actionIndex = 0,
+            pointers = listOf(TouchPointer(id = 0, x = 20, y = 240)), // deep in the left bar
+            surface = TouchSurface.TOUCHSCREEN,
+        )
+
+        val mapped = t.map(up)
+        assertNotNull(mapped, "an UP must be delivered even from a bar so the gesture can end")
+        assertEquals(TouchAction.UP, mapped!!.action)
+        // Clamped to the image's left edge, not placed hundreds of pixels into it.
+        assertEquals(0.0, mapped.pointers.single().x, 1e-9)
+    }
+
     /**
      * A second finger resting on the bar must not shift `actionIndex`: the event
      * is still about the finger it was about, which is now at a different list

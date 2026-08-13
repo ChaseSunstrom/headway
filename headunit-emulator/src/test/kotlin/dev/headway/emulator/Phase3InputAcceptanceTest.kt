@@ -350,7 +350,7 @@ class Phase3InputAcceptanceTest {
      * blank part of the screen would operate the phone.
      */
     @Test
-    fun `a touch on the pillarbox bar is dropped, not clamped onto the image edge`() =
+    fun `a touch that begins in the pillarbox bar starts no gesture`() =
         withInputChannel { h ->
             assertTrue(h.transform.pillarboxed, "a portrait phone on this panel must pillarbox")
 
@@ -362,10 +362,19 @@ class Phase3InputAcceptanceTest {
             assertEquals(listOf(TouchAction.DOWN, TouchAction.UP), touches.map { it.action })
             assertEquals(40, touches[0].pointers.single().x)
 
-            // ... and the transform refuses to place them.
-            for (touch in touches) {
-                assertNull(h.transform.map(touch), "x=40 is 250 px inside the left bar")
-            }
+            // The DOWN is dropped: no gesture may start from invented
+            // coordinates. The UP is delivered clamped to the image edge rather
+            // than dropped, so that a real drag ending in the bar is not left
+            // hanging -- but with no DOWN before it there is no active gesture,
+            // and GestureBuilder ignores an UP that ends nothing. The net effect
+            // is unchanged: a bar tap injects no phone touch.
+            assertNull(h.transform.map(touches[0]), "the DOWN in the bar must not start a gesture")
+            val up = h.transform.map(touches[1])
+            assertNotNull(up, "the UP must be delivered so a drag ending in the bar can finish")
+            assertEquals(
+                0.0, up!!.pointers.single().x, 10.0,
+                "an UP from the bar is clamped to the image edge, not placed 250px into it",
+            )
         }
 
     @Test
