@@ -222,6 +222,35 @@ class MainActivity : AppCompatActivity() {
             refresh()
         }
 
+    /**
+     * Screen-capture consent, asked at Connect rather than when video starts.
+     *
+     * The timing is forced by the car, not chosen. A real 2021 Chevrolet
+     * Infotainment 3 unit gives the phone about fifteen seconds between the last
+     * channel opening and the first video frame before it closes the session --
+     * measured at 15 s, 16 s and 19 s across three real sessions. A consent
+     * dialog inside that window would have to be answered by someone who is
+     * usually driving, and a refusal or a slow tap costs the whole session.
+     *
+     * So consent is obtained first and the session is started with the grant
+     * already in hand. Declining is fine: the link still comes up, without
+     * video, which is exactly what a first-connection diagnosis needs anyway.
+     */
+    private val requestProjection =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val data = result.data
+            if (result.resultCode == RESULT_OK && data != null) {
+                SessionLog.shared.info(TAG, "screen capture granted; starting the link with video")
+            } else {
+                SessionLog.shared.info(
+                    TAG,
+                    "screen capture declined; starting the link without video. The car will " +
+                        "connect but its screen will stay on the connecting page",
+                )
+            }
+            connectWithProjection(result.resultCode, data)
+        }
+
     private val permissionRequest =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
             granted.filterValues { !it }.keys.forEach {
@@ -679,7 +708,30 @@ class MainActivity : AppCompatActivity() {
         // CarLauncherActivity already does this for the car screen; the phone
         // screen needs it for exactly as long as the join does.
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        HeadwayService.start(this)
+        // Ask for screen capture before the session, not during it. See
+        // requestProjection: the car's patience is about fifteen seconds.
+        val projectionManager =
+            getSystemService(android.media.projection.MediaProjectionManager::class.java)
+        val consent = runCatching { projectionManager?.createScreenCaptureIntent() }.getOrNull()
+        if (consent == null) {
+            SessionLog.shared.info(TAG, "no screen capture available on this device; " +
+                "connecting without video")
+            connectWithProjection(RESULT_CANCELED, null)
+            return
+        }
+        runCatching { requestProjection.launch(consent) }.onFailure {
+            SessionLog.shared.info(TAG, "could not ask for screen capture: ${it.message}")
+            connectWithProjection(RESULT_CANCELED, null)
+        }
+    }
+
+    /** Starts the service, with the projection grant if the user gave one. */
+    private fun connectWithProjection(resultCode: Int, data: android.content.Intent?) {
+        HeadwayService.start(
+            this,
+            projectionResultCode = resultCode,
+            projectionData = data,
+        )
         // The one moment where the user has a job: Android shows an approval
         // prompt for the car's network, and it has to be tapped.
         //

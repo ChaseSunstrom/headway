@@ -47,6 +47,8 @@ import dev.headway.protocol.control.ControlKeepalive
 import dev.headway.protocol.control.ControlMessageType
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.framing.MessageFragmenter
+import dev.headway.app.video.CarVideoStream
+import dev.headway.protocol.io.ChannelDemultiplexer
 import dev.headway.protocol.io.FramedConnection
 import dev.headway.protocol.session.AapSession
 import dev.headway.protocol.session.AuthenticationRejectedException
@@ -217,6 +219,17 @@ open class HeadwayService : Service() {
     @Volatile
     private var addressingFailures: Int = 0
 
+    /**
+     * The screen-capture grant, held for the life of the service.
+     *
+     * Not per session: consent is a user gesture, and asking again on every
+     * reconnect would put a dialog in front of someone who is driving.
+     * `ScreenEncoder.stop()` deliberately leaves the projection alone for the
+     * same reason.
+     */
+    @Volatile
+    private var projection: android.media.projection.MediaProjection? = null
+
     private val notificationManager: NotificationManager?
         get() = getSystemService(NotificationManager::class.java)
 
@@ -237,6 +250,7 @@ open class HeadwayService : Service() {
         }
 
         intent?.getStringExtra(EXTRA_CAR_ADDRESS)?.let { carAddress = it }
+        adoptProjectionGrant(intent)
 
         // Re-delivered intents and a second tap on "connect" must not start a
         // second supervisor; two of them would fight over the same radio.
@@ -925,24 +939,65 @@ open class HeadwayService : Service() {
      * reconnects. Video, input and audio wiring replaces this by overriding it
      * and dispatching each message to its channel.
      */
-    protected open suspend fun runChannels(connection: FramedConnection, profile: HeadUnitProfile) {
-        while (true) {
-            val message = connection.receive()
-            if (ControlKeepalive.isPing(message)) {
-                // Encrypted whenever the session is, regardless of how the ping
-                // arrived. See ControlKeepalive.answer: a live cryptor is the
-                // signal, not the incoming flag.
-                ControlKeepalive.answer(connection, message, connection.cryptor != null)
-                continue
-            }
-            // Into the exportable log rather than only logcat. This was Log.v,
-            // so everything a head unit sent after bring-up was invisible in the
-            // file users are actually asked to share -- and post-bring-up is
-            // where the remaining unknowns live.
+    protected open suspend fun runChannels(
+        connection: FramedConnection,
+        profile: HeadUnitProfile,
+    ) = coroutineScope {
+        // Every view must be registered before the pump starts, or the first
+        // messages for a channel arrive before anyone is subscribed and are
+        // counted unroutable. That is the demultiplexer's documented contract.
+        val demux = ChannelDemultiplexer(
+            connection,
+            onUnroutable = { message ->
+                // The emulator advertises six channels; this car advertises
+                // thirteen. Anything arriving on one nothing subscribed to is a
+                // gap in the wiring worth seeing, not noise to swallow.
+                step(
+                    "no handler for ${ControlMessageType.describe(message.messageId)} on " +
+                        "${ChannelId.describe(message.channelId)} (${message.payload.size} bytes)"
+                )
+            },
+        )
+        val control = demux.channel(ChannelId.CONTROL.id)
+
+        val video = projection?.let { token ->
+            CarVideoStream.of(profile, { id -> demux.channel(id) }, token, ::step)
+        }
+        if (video == null) {
             step(
-                "unhandled ${ControlMessageType.describe(message.messageId)} on " +
-                    "${ChannelId.describe(message.channelId)} (${message.payload.size} bytes)"
+                if (projection == null) {
+                    "no screen capture grant, so no video will be sent. The car will stay on " +
+                        "its connecting screen and will close the session in about 15 seconds"
+                } else {
+                    "the head unit advertised no H.264 video sink, so there is nothing to send"
+                }
             )
+        }
+
+        val pump = launch { demux.pump() }
+        try {
+            // Keepalives, on the control channel view rather than the raw
+            // connection -- the pump owns the socket now.
+            launch {
+                while (true) {
+                    val message = control.receive()
+                    if (ControlKeepalive.isPing(message)) {
+                        ControlKeepalive.answer(control, message, connection.cryptor != null)
+                    } else {
+                        step(
+                            "control: ${ControlMessageType.describe(message.messageId)} " +
+                                "(${message.payload.size} bytes)"
+                        )
+                    }
+                }
+            }
+
+            video?.start(this)
+            pump.join()
+        } finally {
+            video?.let { step(it.describe()) }
+            video?.stop()
+            demux.closeAll()
         }
     }
 
@@ -984,6 +1039,61 @@ open class HeadwayService : Service() {
             setShowBadge(false)
         }
         notificationManager?.createNotificationChannel(channel)
+    }
+
+    /**
+     * Takes the screen-capture grant out of the start intent, if there is one.
+     *
+     * ## The ordering Android 14 enforces, and why it is done here
+     *
+     * `getMediaProjection` throws unless a foreground service with the
+     * `mediaProjection` type is *already* running, and `startForeground` throws
+     * if that type is claimed without a live projection token. The two
+     * requirements point at each other, and the only way through is this order:
+     * re-enter the foreground with the type first, then redeem the token. That
+     * is why the grant is adopted in [onStartCommand] rather than lazily when
+     * video starts -- by then the service has been foreground for a while under
+     * the wrong type, and the transition is a `stopForeground`/`startForeground`
+     * churn that drops the notification.
+     *
+     * A refused or absent grant is not an error. The car link is worth having on
+     * its own -- it is how a first connection gets diagnosed -- so the session
+     * runs without video and says so once, rather than failing.
+     */
+    private fun adoptProjectionGrant(intent: Intent?) {
+        val data = intent?.let {
+            @Suppress("DEPRECATION")
+            it.getParcelableExtra<Intent>(EXTRA_PROJECTION_DATA)
+        } ?: return
+        val resultCode = intent.getIntExtra(EXTRA_PROJECTION_RESULT, android.app.Activity.RESULT_CANCELED)
+        if (resultCode != android.app.Activity.RESULT_OK) {
+            step("screen capture was not granted; this session will connect without video")
+            return
+        }
+
+        // The type first. See the KDoc above: the order is not a preference.
+        runCatching {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                buildNotification(getString(R.string.app_name), describe(mutableLinkState.value)),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+            )
+        }.onFailure {
+            step("could not claim the mediaProjection foreground type: ${it.message}. " +
+                "This session will connect without video")
+            return
+        }
+
+        val manager = getSystemService(android.media.projection.MediaProjectionManager::class.java)
+        projection = runCatching { manager?.getMediaProjection(resultCode, data) }
+            .getOrElse {
+                step("Android refused the screen capture grant: ${it.message}. " +
+                    "This session will connect without video")
+                null
+            }
+        if (projection != null) step("screen capture granted; video will start with the session")
     }
 
     private fun startForegroundNow() {
@@ -1218,6 +1328,12 @@ open class HeadwayService : Service() {
 
         const val EXTRA_CAR_ADDRESS: String = "dev.headway.app.extra.CAR_ADDRESS"
 
+        /** The `resultCode` from the screen-capture consent activity. */
+        const val EXTRA_PROJECTION_RESULT: String = "dev.headway.app.extra.PROJECTION_RESULT"
+
+        /** The `Intent` the consent activity returned; the projection token. */
+        const val EXTRA_PROJECTION_DATA: String = "dev.headway.app.extra.PROJECTION_DATA"
+
         const val CHANNEL_ID: String = "headway.link"
         const val NOTIFICATION_ID: Int = 1
 
@@ -1233,9 +1349,23 @@ open class HeadwayService : Service() {
         val linkState: StateFlow<LinkState> = mutableLinkState.asStateFlow()
 
         /** Starts the service, optionally naming which paired device is the car. */
-        fun start(context: android.content.Context, carAddress: String? = null) {
+        fun start(
+            context: android.content.Context,
+            carAddress: String? = null,
+            projectionResultCode: Int = android.app.Activity.RESULT_CANCELED,
+            projectionData: Intent? = null,
+        ) {
             val intent = Intent(context, HeadwayService::class.java).apply {
                 if (carAddress != null) putExtra(EXTRA_CAR_ADDRESS, carAddress)
+                // The projection grant travels with the start intent because it
+                // must be in hand *before* the session comes up: a real head
+                // unit gives the phone about fifteen seconds from channel open
+                // to first frame before it hangs up, which is far too little to
+                // put a consent dialog in front of a driver.
+                if (projectionData != null) {
+                    putExtra(EXTRA_PROJECTION_RESULT, projectionResultCode)
+                    putExtra(EXTRA_PROJECTION_DATA, projectionData)
+                }
             }
             context.startForegroundService(intent)
         }
