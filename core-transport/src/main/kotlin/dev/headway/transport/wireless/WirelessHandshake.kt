@@ -366,7 +366,23 @@ class WirelessHandshake(
                         )
                     }
                     info = parsed
-                    onStep("received credentials for SSID '${parsed.ssid}'")
+                    // Byte length and hex, not just the name. Android matches
+                    // the SSID with a byte-exact literal comparison against the
+                    // scan result, so a trailing space, a non-ASCII lookalike or
+                    // an unexpected encoding produces a network that never
+                    // matches and a log line that looks completely correct.
+                    val ssidBytes = parsed.ssid.toByteArray()
+                    onStep(
+                        "received credentials for SSID '${parsed.ssid}' " +
+                            "(${ssidBytes.size} bytes: ${RfcommMessage.hex(ssidBytes, limit = 32)})"
+                    )
+                    if (parsed.ssid != parsed.ssid.trim() || ssidBytes.size > MAX_SSID_BYTES) {
+                        onStep(
+                            "warning: that SSID has surrounding whitespace or is longer than " +
+                                "$MAX_SSID_BYTES bytes, either of which can stop Android " +
+                                "matching it"
+                        )
+                    }
                 }
 
                 MessageId.WIFI_VERSION_REQUEST -> {
@@ -789,6 +805,9 @@ class WirelessHandshake(
          * why, because a non-zero status is the phone declining.
          */
         const val STATUS_SUCCESS: Int = 0
+
+        /** 802.11 caps an SSID at 32 octets; anything longer cannot be matched. */
+        const val MAX_SSID_BYTES: Int = 32
 
         /**
          * How long to let the head unit speak before prompting it.

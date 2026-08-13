@@ -407,6 +407,43 @@ class BluetoothCarLink(
          * audio profiles on one and the projection service on another, so the
          * device carrying A2DP is not necessarily the one to dial.
          */
+        /**
+         * Whether the car's classic Bluetooth profiles are connected, in words.
+         *
+         * Worth logging on every attempt because both dongle references treat
+         * profile connectivity as what *wakes* Android Auto, not as incidental
+         * to it: aa-proxy-rs connects the headset profile before opening the AA
+         * RFCOMM link (`src/bluetooth.rs` L6184) and notes that mishandling it
+         * "can leave Android stuck at 'Android Auto is starting'". A head unit
+         * can answer the SDP query and the whole credentials exchange — quickly,
+         * as the observed Chevrolet does — and still not consider a projection
+         * session to have begun, in which case its access point never comes up
+         * and the phone spends the whole join looking for something that is not
+         * there.
+         *
+         * Diagnostic only. Headway does not connect profiles itself: that is the
+         * OS's job and the user's setting, and an app that forced them on would
+         * be overriding a deliberate choice.
+         *
+         * `getProfileConnectionState` reports whether *any* device is connected
+         * on that profile rather than which one, so this says "something is" and
+         * not "the car is". That is still enough to tell the two failures apart.
+         */
+        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+        fun describeProfileState(adapter: BluetoothAdapter): String {
+            fun state(profile: Int): String = when (
+                runCatching { adapter.getProfileConnectionState(profile) }.getOrNull()
+            ) {
+                android.bluetooth.BluetoothProfile.STATE_CONNECTED -> "connected"
+                android.bluetooth.BluetoothProfile.STATE_CONNECTING -> "connecting"
+                android.bluetooth.BluetoothProfile.STATE_DISCONNECTING -> "disconnecting"
+                android.bluetooth.BluetoothProfile.STATE_DISCONNECTED -> "disconnected"
+                else -> "unknown"
+            }
+            return "Bluetooth profiles: headset=${state(android.bluetooth.BluetoothProfile.HEADSET)}, " +
+                "a2dp=${state(android.bluetooth.BluetoothProfile.A2DP)}"
+        }
+
         @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
         fun describeBondedDevices(adapter: BluetoothAdapter): String {
             val devices = bondedDevices(adapter)

@@ -172,6 +172,10 @@ Do these in order. Most first-connect failures are one of the first four.
    anything — the car's network has no internet — but the radio has to be on.
    Android refuses Headway's request outright if it is off, and reports that
    refusal in a way no app can distinguish from any other failure.
+   On GrapheneOS, also leave Headway's **Network** permission on. It is
+   tempting to revoke it on an app that never uses the internet, but that
+   toggle makes the platform pretend every network is down, including the
+   car's — nothing is sent anywhere either way.
 3. **On the car screen**, check the vehicle's own settings: Bluetooth on, Wi-Fi
    on, and Android Auto enabled for this phone. On Chevrolet Infotainment 3
    that is Settings → Bluetooth, Settings → Wi-Fi, and Settings → Apps →

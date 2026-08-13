@@ -300,10 +300,29 @@ open class HeadwayService : Service() {
                 throw e
             } catch (e: Exception) {
                 if (System.nanoTime() >= deadline) {
+                    // Two very different failures reach here and the old message
+                    // asserted the wrong one. ECONNREFUSED means the head unit
+                    // answered and nothing is bound to the port. Anything else —
+                    // and in particular a socket that cannot be created or
+                    // routed at all — is what a revoked Network permission looks
+                    // like on GrapheneOS, where the platform "pretends the
+                    // network is down" rather than throwing something nameable.
+                    // Telling that user their port is wrong sends them to edit a
+                    // quirk file about a setting in Settings.
+                    val refused = e is java.net.ConnectException &&
+                        e.message?.contains("refused", ignoreCase = true) == true
                     throw IllegalStateException(
-                        "the head unit never accepted an AAP connection on $endpoint " +
-                            "after $attempt attempts over ${totalMillis}ms. It is reachable, " +
-                            "so the port is wrong or it is refusing the session: ${e.message}",
+                        if (refused) {
+                            "the head unit refused an AAP connection on $endpoint after " +
+                                "$attempt attempts over ${totalMillis}ms. It is reachable, so " +
+                                "the port is wrong or it is not ready to project: ${e.message}"
+                        } else {
+                            "could not reach $endpoint at all after $attempt attempts over " +
+                                "${totalMillis}ms (${e.message}). If Headway's Network " +
+                                "permission is switched off — GrapheneOS has one, and it makes " +
+                                "the platform pretend every network is down — turn it back on: " +
+                                "the car link needs it even though it never uses the internet."
+                        },
                         e,
                     )
                 }
@@ -566,6 +585,8 @@ open class HeadwayService : Service() {
         // time rather than once at startup.
         runCatching { BluetoothCarLink.describeBondedDevices(adapter) }
             .onSuccess { Log.i(TAG, it) }
+        runCatching { BluetoothCarLink.describeProfileState(adapter) }
+            .onSuccess { step(it) }
 
         val address = carAddress
         if (address != null) {
