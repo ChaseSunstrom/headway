@@ -223,3 +223,90 @@ it too.
 **What would remove it:** nothing available to an unprivileged app. If a future
 Android exposes a companion-device Wi-Fi association that does not re-prompt,
 that is the path.
+
+---
+
+## B-006 — GrapheneOS gives every network Headway joins a new MAC, and fixes that for Android Auto only
+
+**Status:** Open — half mitigated in code, half not mitigable at all. **This is
+why the target car never issues an address.**
+
+**Blocked:** Getting a DHCP lease from the head unit without the user editing
+Wi-Fi settings by hand.
+
+**Why:** The join reaches `IP_PROVISIONING` — association and authentication
+both succeed, and provisioning does not complete. GrapheneOS carries a carve-out
+for exactly this failure, keyed on Google's Android Auto package
+(`WifiConfiguration.java` L3400-L3405):
+
+```java
+if (android.app.compat.gms.GmsCompat.isAndroidAuto()) {
+    // Per-connection MAC randomization doesn't work with some cars, see
+    // https://github.com/GrapheneOS/os-issue-tracker/issues/4139
+    macRandomizationSetting = RANDOMIZATION_PERSISTENT;
+    mIsSendDhcpHostnameEnabled = true;
+}
+```
+
+So this is a known car bug that GrapheneOS has already fixed — for one package,
+identified by `GmsCompat.isAndroidAuto()`. Headway is not that package, and
+neither half of the fix is reachable from the join it makes:
+
+1. **The MAC.** `WifiNetworkFactory.handleConnectToNetworkUserSelectionInternal()`
+   builds `new WifiConfiguration(specifier.wifiConfiguration)`
+   (`WifiNetworkFactory.java` L1160-L1161), so the configuration originates in
+   the *requesting app's* process. In Headway's process GrapheneOS's default is
+   `RANDOMIZATION_ALWAYS` (= 100, a GrapheneOS-only value,
+   `WifiConfiguration.java` L1913) which re-randomizes on **every connect** —
+   not per network, as AOSP's persistent default does. `WifiNetworkFactory`
+   never touches the field and `WifiNetworkSpecifier.Builder` has no setter.
+   Worse, GrapheneOS Settings' per-network Privacy control is gated on
+   `isSaved()`, and a specifier network is not saved, so the *user* cannot reach
+   it either.
+2. **The DHCP hostname (option 12).** GrapheneOS defaults
+   `mIsSendDhcpHostnameEnabled` to false where AOSP defaults it true, and flips
+   it back inside the same carve-out — so GrapheneOS judged a stable MAC alone
+   insufficient. `WifiConfiguration.setSendDhcpHostnameEnabled` is `@SystemApi`
+   behind `NETWORK_SETTINGS`/`NETWORK_SETUP_WIZARD`, absent from both
+   `WifiNetworkSpecifier.Builder` and `WifiNetworkSuggestion.Builder`
+   (confirmed with `javap` against `android-35/android.jar`). The only API-35
+   hostname method is `WifiManager.setSendDhcpHostnameRestriction`, which is
+   privileged and only ever *restricts*. **There is no unprivileged lever for
+   this at all.**
+
+**What is not established:** *why* the head unit refuses. Pool exhaustion fits,
+but os-issue-tracker#4139 describes exhaustion "after 255 rides", whereas this
+phone has never once received a lease from this car — which fits outright
+refusal better. A unit that rejects locally-administered MACs, or one that drops
+requests carrying no hostname, explains the evidence equally well. Note also
+that `IP_PROVISIONING` means "provisioning did not complete", **not** "no
+DHCPOFFER arrived": a lease that fails duplicate-address detection lands here
+too. Do not write "the pool is exhausted" anywhere as fact.
+
+**Workarounds shipped:**
+
+- `CarWifiNetwork.adviceFor` names both GrapheneOS toggles — Privacy → "Use
+  per-network randomized MAC" and "Send device name to network" — because the
+  user's own Settings screen is the only place that reaches both.
+  `CarWifiNetworkTest` asserts the advice mentions each, so half of it cannot
+  drift away.
+- **Set up this car's Wi-Fi** in Diagnostics fires
+  `Settings.ACTION_WIFI_ADD_NETWORKS` with the SSID and passphrase the head unit
+  gave over Bluetooth, so the network gets *saved* — which is what puts those
+  two toggles in front of the user — without anyone transcribing a passphrase.
+  Public, unprivileged, not `@SystemApi`.
+- `"suggestCarNetwork": true` in the quirk file swaps the specifier for a
+  `WifiNetworkSuggestion` carrying `RANDOMIZATION_PERSISTENT`, the only public
+  API with a MAC randomization preference. Off by default: the first suggestion
+  needs an approval notification whose refusal is sticky, the platform rather
+  than Headway decides when to associate, and it does nothing for the hostname.
+- Addressing failures now get two attempts rather than one
+  (`HeadwayService.MAX_ADDRESSING_ATTEMPTS`), because the second distinguishes
+  "the table was full and a slot freed" from "this station is refused
+  regardless" — and the log records which.
+- A static IP on a saved car network remains the documented fallback.
+
+**What would actually fix it:** GrapheneOS making the `isAndroidAuto()`
+carve-out reachable by non-GMS Android Auto implementations — an app-level
+opt-in, or a widened predicate. That is upstream work in
+`os-issue-tracker#4139`, not something this project can ship.

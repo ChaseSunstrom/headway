@@ -359,6 +359,90 @@ class CarWifiNetworkTest {
         )
     }
 
+    /**
+     * The advice for a missing lease must name both GrapheneOS toggles.
+     *
+     * This text is the entire deliverable for the one failure Headway cannot
+     * fix in code, so it is asserted rather than left to drift. GrapheneOS's own
+     * Android Auto carve-out sets `macRandomizationSetting = PERSISTENT` **and**
+     * `mIsSendDhcpHostnameEnabled = true` together, and only the user can reach
+     * either for Headway — advice naming just one of them would send a reader
+     * away half-fixed and reading a log that looks identical.
+     */
+    @Test
+    fun theAddressFailureAdviceNamesBothGrapheneOsToggles() {
+        val advice = CarWifiNetwork.adviceFor(
+            android.net.wifi.WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_IP_PROVISIONING,
+        )
+        assertTrue(
+            "the advice must name the per-network MAC setting; got: $advice",
+            advice.contains("per-network randomized MAC"),
+        )
+        assertTrue(
+            "the advice must name the DHCP hostname setting, which is the other half " +
+                "of GrapheneOS's own fix; got: $advice",
+            advice.contains("Send device name to network"),
+        )
+    }
+
+    /**
+     * A suggestion must not pin a BSSID.
+     *
+     * This vehicle presents two BSSIDs for one SSID and only one carries
+     * projection (`docs/protocol-notes.md`, "The third capture"). A pinned
+     * suggestion that picks the wrong one matches nothing at all, silently —
+     * and the entire purpose of suggesting the network is that the platform
+     * finds it without Headway's help.
+     */
+    @Test
+    fun theCarSuggestionIsNotPinnedToOneBssid() {
+        val suggestion = CarWifiProvisioning.suggestionFor(
+            CarWifiProvisioning.CarCredentials(ssid = "myChevrolet1189", passphrase = "abcd1234efgh"),
+        )
+        assertNull("a pinned BSSID would match only one of the car's two BSSs", suggestion.bssid)
+        assertEquals("myChevrolet1189", suggestion.ssid)
+    }
+
+    /**
+     * And it must ask for the stable MAC, which is the only reason it exists.
+     *
+     * `RANDOMIZATION_PERSISTENT` is per-network rather than per-connection. A
+     * suggestion without it would be indistinguishable from the specifier path
+     * it replaces, while costing the user an approval notification.
+     */
+    @Test
+    fun theCarSuggestionAsksForAPerNetworkMac() {
+        val suggestion = CarWifiProvisioning.suggestionFor(
+            CarWifiProvisioning.CarCredentials(ssid = "myChevrolet1189", passphrase = "abcd1234efgh"),
+        )
+        assertEquals(
+            android.net.wifi.WifiNetworkSuggestion.RANDOMIZATION_PERSISTENT,
+            suggestion.macRandomizationSetting,
+        )
+    }
+
+    /** A duplicate suggestion is success, not failure — it means it is registered. */
+    @Test
+    fun anAlreadyRegisteredSuggestionCountsAsSuccess() {
+        assertNull(
+            CarWifiProvisioning.statusMessage(
+                android.net.wifi.WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_ADD_DUPLICATE,
+            ),
+        )
+        assertNull(
+            CarWifiProvisioning.statusMessage(
+                android.net.wifi.WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS,
+            ),
+        )
+        // The sticky one has to say how to undo it, or a single stray tap on the
+        // notification looks like a permanent app fault.
+        val disallowed = CarWifiProvisioning.statusMessage(
+            android.net.wifi.WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_APP_DISALLOWED,
+        )
+        assertNotNull(disallowed)
+        assertTrue(disallowed!!.contains("Wi-Fi control"))
+    }
+
     private fun granted(permission: String): Boolean =
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 }

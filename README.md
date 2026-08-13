@@ -263,14 +263,60 @@ on the car screen. Disabling Android Auto in the *car* is not the same as not
 using the Android Auto *app*; Headway takes the place of the app and still
 needs the car's permission.
 
-**Or the head unit's address table is full.** On GrapheneOS the cause is its
-default **per-connection MAC randomization** meeting a head unit with a small
-DHCP table that does not evict old entries. Every connection attempt looks like a brand-new device, the table
-fills up, and the unit stops issuing addresses to anybody. GrapheneOS
-[documents this exact failure](https://grapheneos.org/usage) under Wi-Fi
-privacy. Android gives an app no way to influence the MAC of the connection it
-requests, so Headway cannot fix it from the inside — it stops retrying instead,
-because each retry consumes another address.
+**Or — most likely — it is the GrapheneOS car bug, which GrapheneOS has already
+fixed for Google's Android Auto and cannot fix for anything else.**
+
+GrapheneOS gives every network an app joins a **brand new MAC address on every
+single connection**, so the car sees an unfamiliar device every time. It carries
+a carve-out for exactly this, keyed on Google's Android Auto package
+(`WifiConfiguration.java` L3400-L3405):
+
+```java
+if (android.app.compat.gms.GmsCompat.isAndroidAuto()) {
+    // Per-connection MAC randomization doesn't work with some cars, see
+    // https://github.com/GrapheneOS/os-issue-tracker/issues/4139
+    macRandomizationSetting = RANDOMIZATION_PERSISTENT;
+    mIsSendDhcpHostnameEnabled = true;
+}
+```
+
+Note it is **two** settings, and Headway can reach neither from the network it
+requests: the MAC comes from a configuration built in Headway's own process
+(where the GrapheneOS default re-randomizes every connect), and the DHCP
+hostname setter is a system API. Worse, a network an app *requests* is not a
+*saved* network, so it has no Settings entry for you to fix either.
+
+**The fix is to make it a saved network and set both by hand — once.**
+
+1. **Diagnostics → Set up this car's Wi-Fi.** This hands the network name and
+   password Headway learned over Bluetooth to Android's own "save this network"
+   panel, so you never type them. (Joining by hand in Wi-Fi settings works just
+   as well if you prefer.)
+2. On that saved network, open the gear icon and set:
+   - **Privacy → "Use per-network randomized MAC"**
+   - **"Send device name to network" → on**
+3. Press Connect.
+
+Set the first, retry; if it still fails, set the second and retry. **Which one
+fixes it is genuinely useful information** — it is the difference between the
+car objecting to an unfamiliar MAC and the car objecting to a request with no
+hostname, and nobody has established which yet. Please report it.
+
+There is also `"suggestCarNetwork": true` in the quirk file, which makes Headway
+register the car as a Wi-Fi *suggestion* rather than requesting it. That is the
+only public API carrying a MAC preference, so it reaches the first setting
+without a Settings trip — but Android then decides when to connect rather than
+Headway, the first one needs you to accept a notification, and it does nothing
+about the hostname. It is off by default for those reasons.
+
+`BLOCKERS.md` B-006 has the full account with source citations.
+
+**If neither toggle helps, the head unit's address table may be full** — though
+be sceptical of that story if this phone has *never* received an address from
+this car. Exhaustion explains a car that worked and then stopped, not one that
+never worked. Note too that `IP_PROVISIONING` means "provisioning did not
+finish", not "no offer arrived", so an address that arrived and was rejected
+looks identical from here.
 
 **You cannot inspect a head unit's address table.** It has no administration
 page — the usual advice about clearing one assumes a home router, and none of
@@ -428,6 +474,13 @@ edit. If the join never succeeds:
   on each rejection. Set it once the log has told you which one the car takes,
   to skip the failed sessions. It moves that one to the front rather than
   pinning it, so a stale value costs an attempt, not the connection.
+- `"suggestCarNetwork": true` — register the car as a Wi-Fi *suggestion* with a
+  per-network MAC instead of requesting the network. The only public API that
+  can pin the MAC, so it is the in-app half of the fix for a car that will not
+  hand out an address. Off by default: Android rather than Headway decides when
+  to connect, the first one needs you to accept a notification (and refusing it
+  once blocks Headway until you re-allow it in Settings → Apps → Special app
+  access → Wi-Fi control), and it does nothing about the DHCP hostname.
 
 ## Installing and updating
 

@@ -126,6 +126,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var parkedOnlySwitch: SwitchCompat
     private lateinit var updateValue: TextView
     private lateinit var certificateValue: TextView
+    private lateinit var carWifiValue: TextView
     private lateinit var updateButton: Button
 
     private var uiScope: CoroutineScope? = null
@@ -182,6 +183,43 @@ class MainActivity : AppCompatActivity() {
             toast("Now pick the matching private key (PKCS#8 .pem)")
             runCatching { pickKey.launch(arrayOf("*/*")) }
                 .onFailure { toast("No file picker available") }
+        }
+
+    /**
+     * The system panel that saves the car's Wi-Fi.
+     *
+     * `StartActivityForResult` rather than a plain start, because the panel
+     * reports what it did in `EXTRA_WIFI_NETWORK_RESULT_LIST` and "already
+     * saved" is a success the user should not be left guessing about.
+     */
+    private val addCarNetwork =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val codes = result.data
+                ?.getIntegerArrayListExtra(android.provider.Settings.EXTRA_WIFI_NETWORK_RESULT_LIST)
+                ?.toList()
+                .orEmpty()
+            val message = dev.headway.app.link.CarWifiProvisioning
+                .describeResult(result.resultCode, codes)
+            SessionLog.shared.info(TAG, "add-networks panel: $message")
+            AlertDialog.Builder(this)
+                .setTitle("Car Wi-Fi")
+                .setMessage(
+                    message + "\n\nNow open Android's Wi-Fi settings, tap the gear next " +
+                        "to the car's network, and set:\n\n" +
+                        "  • Privacy → \"Use per-network randomized MAC\"\n" +
+                        "  • \"Send device name to network\" → on\n\n" +
+                        "Those two are what GrapheneOS turns on for Google's Android Auto " +
+                        "and cannot turn on for any other app. They are the most likely " +
+                        "reason the car will not hand out an address.",
+                )
+                .setPositiveButton("Open Wi-Fi settings") { _, _ ->
+                    runCatching {
+                        startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+                    }.onFailure { toast("No Wi-Fi settings activity on this device") }
+                }
+                .setNegativeButton("Later", null)
+                .show()
+            refresh()
         }
 
     private val permissionRequest =
@@ -382,6 +420,27 @@ class MainActivity : AppCompatActivity() {
             button("Create the head unit quirk file") { createQuirkTemplate() },
         )
 
+        column.addView(sectionTitle("Car Wi-Fi"))
+        column.addView(
+            body(
+                "If the car accepts the phone onto its Wi-Fi and then never gives " +
+                    "it an address, this is the fix to try. GrapheneOS gives every " +
+                    "network Headway joins a brand new MAC address each time, so the " +
+                    "car sees an unfamiliar device on every attempt — and GrapheneOS " +
+                    "already turns that off for Google's Android Auto, keyed to that " +
+                    "app, which Headway cannot reach.\n\n" +
+                    "Saving the car's network puts the two controls that fix it in " +
+                    "front of you: Privacy → \"Use per-network randomized MAC\", and " +
+                    "\"Send device name to network\". This button fills in the network " +
+                    "name and password so you do not have to.",
+            ),
+        )
+        carWifiValue = body(describeCarWifi())
+        column.addView(carWifiValue)
+        column.addView(
+            button("Set up this car's Wi-Fi") { setUpCarWifi() },
+        )
+
         column.addView(sectionTitle("Phone certificate"))
         certificateValue = body(
             dev.headway.app.link.PhoneCertificateStore.inAppStorage(this).describe(),
@@ -445,6 +504,59 @@ class MainActivity : AppCompatActivity() {
         if (::certificateValue.isInitialized) {
             certificateValue.text =
                 dev.headway.app.link.PhoneCertificateStore.inAppStorage(this).describe()
+        }
+        if (::carWifiValue.isInitialized) carWifiValue.text = describeCarWifi()
+    }
+
+    /** What Headway knows about the car's network, for the settings screen. */
+    private fun describeCarWifi(): String {
+        val known = dev.headway.app.service.HeadwayService.lastCarWifi(this)
+            ?: return "No car network known yet — connect once so the head unit hands " +
+                "its Wi-Fi details over Bluetooth, then come back here."
+        return "Ready to save \"${known.ssid}\", learned from the car over Bluetooth."
+    }
+
+    /**
+     * Hands the car's Wi-Fi to the system's add-networks panel.
+     *
+     * Launched from here rather than from the service on purpose: it is an
+     * activity intent, and background-activity-launch rules make it unreliable
+     * from a service — which is also the only time Headway holds live
+     * credentials, hence the stash this reads from.
+     */
+    private fun setUpCarWifi() {
+        val known = dev.headway.app.service.HeadwayService.lastCarWifi(this)
+        if (known == null) {
+            AlertDialog.Builder(this)
+                .setTitle("No car network yet")
+                .setMessage(
+                    "Headway learns the car's Wi-Fi name and password from the head " +
+                        "unit over Bluetooth. Press Connect once with the car nearby — " +
+                        "even if it fails to finish — and this will be ready.",
+                )
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+        val intent = dev.headway.app.link.CarWifiProvisioning.addNetworksIntent(known)
+        runCatching { addCarNetwork.launch(intent) }.onFailure {
+            // No panel on this build. Say what to do by hand rather than
+            // failing silently -- the passphrase is the part worth not typing,
+            // so offer it explicitly.
+            AlertDialog.Builder(this)
+                .setTitle("This phone has no Wi-Fi setup panel")
+                .setMessage(
+                    "Join \"${known.ssid}\" by hand in Android's Wi-Fi settings, then set " +
+                        "Privacy to \"Use per-network randomized MAC\" and turn \"Send " +
+                        "device name to network\" on.",
+                )
+                .setPositiveButton("Open Wi-Fi settings") { _, _ ->
+                    runCatching {
+                        startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+                    }
+                }
+                .setNegativeButton("Later", null)
+                .show()
         }
     }
 

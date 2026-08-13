@@ -247,6 +247,34 @@ data class HeadUnitQuirks(
      */
     val certificate: String? = null,
 
+    /**
+     * Register the car as a Wi-Fi *suggestion* instead of requesting it.
+     *
+     * **Off by default, and this is the knob for the one thing Headway cannot
+     * otherwise do: get a stable MAC address.**
+     *
+     * A `WifiNetworkSpecifier` connection presents a new MAC on every
+     * association on GrapheneOS and no API changes that — the reasoning and the
+     * source citations are in
+     * [dev.headway.app.link.CarWifiProvisioning]. `WifiNetworkSuggestion` is
+     * the only public API carrying a MAC randomization preference, so turning
+     * this on is the way to test whether MAC churn is what stops this car
+     * issuing an address.
+     *
+     * It is not the default because the trade is genuinely bad if it turns out
+     * not to be the cause: the first suggestion needs the user to accept a
+     * notification and a refusal is sticky, the platform rather than Headway
+     * decides when to associate (so there is no on-demand connect and no bound
+     * on reconnect time), and it hands back no `Network`, which makes
+     * `adoptExistingCarNetwork` load-bearing rather than a fallback.
+     *
+     * When on, Headway registers the suggestion and then waits to adopt the
+     * network the platform joins, rather than also requesting one — running
+     * both would open a second connection to the same access point with a fresh
+     * random MAC on STA+STA hardware, which is the opposite of the point.
+     */
+    val suggestCarNetwork: Boolean = false,
+
     val touch: TouchQuirks = TouchQuirks(),
 ) {
 
@@ -259,6 +287,7 @@ data class HeadUnitQuirks(
         "mediaAudioOverAap=$mediaAudioOverAap keyframe=$keyframeIntervalFrames " +
         "hiddenSsid=$hiddenSsid pinBssid=${pinBssid ?: "auto"} " +
         "announceWifiChannel=$announceWifiChannel certificate=${certificate ?: "auto"} " +
+        "suggestCarNetwork=$suggestCarNetwork " +
         "touch=${if (touch.isIdentity) "identity" else touch.toString()}"
 
     companion object {
@@ -546,6 +575,7 @@ class QuirkStore(
         private const val KEY_ANNOUNCE_WIFI_CHANNEL = "announceWifiChannel"
         private const val KEY_PIN_BSSID = "pinBssid"
         private const val KEY_CERTIFICATE = "certificate"
+        private const val KEY_SUGGEST_CAR_NETWORK = "suggestCarNetwork"
         private const val KEY_TOUCH = "touch"
 
         private const val KEY_INVERT_X = "invertX"
@@ -642,6 +672,7 @@ class QuirkStore(
                     .put(KEY_KEYFRAME_INTERVAL, quirks.keyframeIntervalFrames)
                     .put(KEY_HIDDEN_SSID, quirks.hiddenSsid)
                     .put(KEY_ANNOUNCE_WIFI_CHANNEL, quirks.announceWifiChannel)
+                    .put(KEY_SUGGEST_CAR_NETWORK, quirks.suggestCarNetwork)
                     .apply {
                         // Omitted when automatic: an absent key is what "let
                         // Headway alternate" looks like, and writing `false`
@@ -754,6 +785,9 @@ class QuirkStore(
                     certificate =
                         json.optString(KEY_CERTIFICATE, "").ifBlank { null }
                             ?: defaults.certificate,
+                    suggestCarNetwork = json.optBoolean(
+                        KEY_SUGGEST_CAR_NETWORK, defaults.suggestCarNetwork,
+                    ),
                     touch = touch,
                 ),
             )

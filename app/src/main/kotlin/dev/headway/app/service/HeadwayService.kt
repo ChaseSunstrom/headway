@@ -18,6 +18,7 @@
 package dev.headway.app.service
 
 import aap_protobuf.aaw.StatusOuterClass.Status
+import aap_protobuf.service.wifiprojection.message.AccessPointTypeOuterClass.AccessPointType
 import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
@@ -203,6 +204,17 @@ open class HeadwayService : Service() {
     @Volatile
     private var rejectedCertificates: Int = 0
 
+    /**
+     * Addressing failures this run. See [MAX_ADDRESSING_ATTEMPTS].
+     *
+     * Per run rather than per attempt, and never reset on success: the point is
+     * to bound how many of the head unit's addresses one Connect press can
+     * consume, and a session that came up and then dropped has not earned a
+     * fresh budget.
+     */
+    @Volatile
+    private var addressingFailures: Int = 0
+
     private val notificationManager: NotificationManager?
         get() = getSystemService(NotificationManager::class.java)
 
@@ -227,6 +239,11 @@ open class HeadwayService : Service() {
         // Re-delivered intents and a second tap on "connect" must not start a
         // second supervisor; two of them would fight over the same radio.
         if (linkJob?.isActive != true) {
+            // A fresh press of Connect is a fresh addressing budget. The user
+            // pressing it again after being told what to change in Settings is
+            // the whole point of the instructions, and refusing to try would
+            // make them uncheckable.
+            addressingFailures = 0
             linkJob = scope.launch { supervisor().run() }
         }
         return START_REDELIVER_INTENT
@@ -256,10 +273,36 @@ open class HeadwayService : Service() {
             Log.i(TAG, "link state: $state")
         },
         terminalFailure = { failure ->
-            // Retrying an exhausted DHCP table burns another address on a head
-            // unit that is not releasing them, so the loop stops and the user
-            // gets the two steps that actually fix it. Everything else retries.
-            platformReasonOf(failure) == DHCP_FAILURE
+            // Addressing failures get exactly MAX_ADDRESSING_ATTEMPTS, and the
+            // second one earns its keep as a measurement rather than as
+            // optimism -- see that constant. Past it the loop stops, because
+            // every further attempt is another address consumed on a unit that
+            // is not releasing them. Everything else retries.
+            if (platformReasonOf(failure) != DHCP_FAILURE) {
+                false
+            } else {
+                addressingFailures++
+                if (addressingFailures < MAX_ADDRESSING_ATTEMPTS) {
+                    step(
+                        "addressing failed ($addressingFailures of " +
+                            "$MAX_ADDRESSING_ATTEMPTS). Trying once more, which is a test " +
+                            "rather than a hope: if the head unit's address table was " +
+                            "simply full, a second association can get a slot; if it is " +
+                            "refusing this phone outright, the next failure will look " +
+                            "identical. Either way the answer goes in this log"
+                    )
+                    false
+                } else {
+                    step(
+                        "addressing failed $addressingFailures times, which is the answer " +
+                            "to the question the retry was asking: this head unit is not " +
+                            "going to issue an address to Headway on its own. The two " +
+                            "GrapheneOS toggles above are the fix; a static IP is the " +
+                            "fallback. See BLOCKERS.md B-006"
+                    )
+                    true
+                }
+            }
         },
         delayOverrideFor = { failure ->
             // See CarNetworkJoinException: a fresh request straight after a
@@ -294,6 +337,86 @@ open class HeadwayService : Service() {
     }
 
     private fun portKey(address: String): String = "$KEY_LEARNED_PORT.$address"
+
+    /**
+     * Keeps the car's Wi-Fi credentials for the settings screen to offer.
+     *
+     * The one-tap "Set up this car's Wi-Fi" button
+     * ([dev.headway.app.link.CarWifiProvisioning.addNetworksIntent]) needs an
+     * SSID and a passphrase, and both arrive over Bluetooth in the middle of a
+     * connection attempt — by the time the user is reading the settings screen,
+     * the service may not be running and the car may not be in range. Without
+     * this the button could only work during a live attempt, which is exactly
+     * when the user is not looking at it.
+     *
+     * On storing a passphrase: it goes in the app's private `SharedPreferences`,
+     * the same protection domain as the imported certificate key, and the point
+     * of the button is to hand it straight to Android's own Wi-Fi database
+     * where it will live anyway. `SessionLog` still scrubs it, so it cannot
+     * reach an exported log. It is cleared with [forgetCarWifi].
+     */
+    /**
+     * Registers the car as a Wi-Fi suggestion, when the quirk file asks.
+     *
+     * The only public API that carries a MAC randomization preference, and
+     * therefore the only in-app route to the half of GrapheneOS's Android Auto
+     * fix that is reachable at all. `CarWifiProvisioning.suggest` has the full
+     * account of what it costs.
+     */
+    private fun suggestCarNetwork(
+        credentials: dev.headway.transport.wireless.CarNetworkCredentials,
+        hiddenSsid: Boolean,
+    ) {
+        val problem = dev.headway.app.link.CarWifiProvisioning.suggest(
+            getSystemService(android.net.wifi.WifiManager::class.java),
+            dev.headway.app.link.CarWifiProvisioning.CarCredentials(
+                ssid = credentials.ssid,
+                passphrase = credentials.passphrase,
+                hiddenSsid = hiddenSsid,
+            ),
+        )
+        if (problem == null) {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putBoolean(KEY_SUGGESTED, true).apply()
+            step(
+                "registered ${credentials.ssid} as a Wi-Fi suggestion with a per-network " +
+                    "MAC. Android decides when to join it, so this attempt waits rather " +
+                    "than requesting the network itself. The first time, accept the " +
+                    "notification asking whether Headway may connect to Wi-Fi"
+            )
+        } else {
+            step("could not register the car as a Wi-Fi suggestion: $problem")
+        }
+    }
+
+    /** Undoes [suggestCarNetwork] when the quirk file stops asking for it. */
+    private fun withdrawSuggestionIfAny(
+        credentials: dev.headway.transport.wireless.CarNetworkCredentials,
+        hiddenSsid: Boolean,
+    ) {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        if (!prefs.getBoolean(KEY_SUGGESTED, false)) return
+        dev.headway.app.link.CarWifiProvisioning.withdraw(
+            getSystemService(android.net.wifi.WifiManager::class.java),
+            dev.headway.app.link.CarWifiProvisioning.CarCredentials(
+                ssid = credentials.ssid,
+                passphrase = credentials.passphrase,
+                hiddenSsid = hiddenSsid,
+            ),
+        )
+        prefs.edit().putBoolean(KEY_SUGGESTED, false).apply()
+        step("withdrew the Wi-Fi suggestion for ${credentials.ssid}, as the quirk file " +
+            "no longer asks for it")
+    }
+
+    private fun rememberCarWifi(ssid: String, passphrase: String, hidden: Boolean) {
+        if (ssid.isEmpty()) return
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(KEY_CAR_SSID, ssid)
+            .putString(KEY_CAR_PASSPHRASE, passphrase)
+            .putBoolean(KEY_CAR_HIDDEN, hidden)
+            .apply()
+    }
 
     /**
      * Connects to the head unit, allowing for a listener that is not up yet.
@@ -422,6 +545,9 @@ open class HeadwayService : Service() {
             // other log line before the export is shared for diagnosis.
             SessionLog.shared.protect(credentials.passphrase)
             Log.i(TAG, "head unit offered $credentials")
+            // Kept so the settings screen can offer one-tap Wi-Fi setup when the
+            // car is nowhere near. See rememberCarWifi.
+            rememberCarWifi(credentials.ssid, credentials.passphrase, quirks.hiddenSsid)
 
             // Every capture that reached TCP had the car announce its endpoint;
             // the attempts that timed out joining had not received one. A unit
@@ -436,6 +562,38 @@ open class HeadwayService : Service() {
                 )
             }
 
+            // access_point_type is one field inside the credentials line, and it
+            // is the single most consequential thing the head unit says about
+            // addressing: STATIC means "do not expect me to hand out an
+            // address". If this unit sends STATIC, the DHCP failure is not a
+            // GrapheneOS MAC problem at all, it is the head unit doing exactly
+            // what it announced, and every remedy aimed at the MAC is wasted.
+            // Worth its own line rather than being read out of a toString.
+            if (credentials.accessPointType == AccessPointType.STATIC) {
+                step(
+                    "NOTE: this head unit announced access_point_type=STATIC, which in " +
+                        "the protocol means its access point does not assign addresses " +
+                        "(AccessPointType.proto: STATIC=0, DYNAMIC=1). If the join fails " +
+                        "for want of an address, that is this unit behaving as announced " +
+                        "rather than a phone-side fault, and a static IP on a saved car " +
+                        "network is the answer rather than any MAC setting. Please report " +
+                        "this line -- no reference implementation sends STATIC to a phone"
+                )
+            }
+
+            // The suggestion path, when the quirk file asks for it. Registered
+            // before the join is attempted because the platform, not Headway,
+            // decides when to associate -- a suggestion added after a failed
+            // join would do nothing for this attempt.
+            if (quirks.suggestCarNetwork) {
+                suggestCarNetwork(credentials, quirks.hiddenSsid)
+            } else {
+                // Turning the quirk off has to actually revert. Suggestions
+                // outlive the process, so an in-memory flag would leave one
+                // registered forever after a restart -- hence the stored one.
+                withdrawSuggestionIfAny(credentials, quirks.hiddenSsid)
+            }
+
             run {
                 // Reused across attempts, not scoped to this one. See carWifi.
                 val wifi = carWifi ?: CarWifiNetwork(this, onStep = ::step).also { carWifi = it }
@@ -447,11 +605,21 @@ open class HeadwayService : Service() {
                     // This is the escape hatch for a phone where the sheet keeps
                     // going unanswered, and it costs one cheap lookup.
                     wifi.adoptExistingCarNetwork(credentials)
-                        ?: wifi.join(
-                            credentials,
-                            hiddenSsid = quirks.hiddenSsid,
-                            pinBssid = pinBssid,
-                        )
+                        ?: if (quirks.suggestCarNetwork) {
+                            // Deliberately NOT falling through to join(). With a
+                            // suggestion registered, requesting the same access
+                            // point opens a *second* connection to it on STA+STA
+                            // hardware, with a fresh random MAC -- which is the
+                            // exact thing the suggestion exists to stop. So wait
+                            // for the platform to associate and adopt that.
+                            wifi.awaitSuggestedCarNetwork(credentials)
+                        } else {
+                            wifi.join(
+                                credentials,
+                                hiddenSsid = quirks.hiddenSsid,
+                                pinBssid = pinBssid,
+                            )
+                        }
                 } catch (e: Throwable) {
                     // Tell the head unit before dropping Bluetooth. Otherwise it
                     // is left mid-bootstrap believing the phone is still coming,
@@ -804,14 +972,33 @@ open class HeadwayService : Service() {
         /**
          * The platform's name for "associated, but never got an address".
          *
-         * See `CarWifiNetwork.adviceFor`: on GrapheneOS this is usually its
-         * per-connection MAC randomization meeting a head unit whose DHCP table
-         * is small and does not evict, and Android exposes no way for an app to
-         * influence the MAC of a `WifiNetworkSpecifier` connection — the
-         * builder has no setting for it. So Headway cannot retry its way out of
-         * this one; every retry is another address consumed.
+         * `CarWifiNetwork.adviceFor` carries the full explanation. The short
+         * version: GrapheneOS fixes this for Google's Android Auto by forcing
+         * `RANDOMIZATION_PERSISTENT` and re-enabling the DHCP hostname, keyed on
+         * the Gearhead package, and neither half is reachable from a
+         * `WifiNetworkSpecifier` join. So Headway cannot retry its way out.
          */
         const val DHCP_FAILURE: String = "IP_PROVISIONING"
+
+        /**
+         * How many addressing failures to take before giving up on the run.
+         *
+         * Two, not one, and the second is not hope — it is the measurement.
+         *
+         * The two candidate explanations for a missing lease make *different*
+         * predictions about a second association: if the head unit's address
+         * table is full of MACs this phone burned, a repeat may free a slot or
+         * reuse one; if the unit is refusing this station outright — because it
+         * sees an unfamiliar locally-administered MAC, or because the request
+         * carries no DHCP hostname — the second attempt fails identically. One
+         * attempt cannot tell those apart and both were live hypotheses after
+         * reading GrapheneOS's own fix, so the log now records the answer.
+         *
+         * Three would be worse than two: past the second there is no new
+         * information, only another address consumed on a unit that is not
+         * releasing them.
+         */
+        const val MAX_ADDRESSING_ATTEMPTS: Int = 2
 
         /** Digs the platform's failure code out of a wrapped join failure. */
         internal fun platformReasonOf(failure: Throwable): String? {
@@ -847,6 +1034,38 @@ open class HeadwayService : Service() {
         /** Where the learned head-unit port lives. */
         private const val PREFS: String = "headway_link"
         private const val KEY_LEARNED_PORT: String = "learned_aap_port"
+        private const val KEY_CAR_SSID: String = "car_wifi_ssid"
+        private const val KEY_CAR_PASSPHRASE: String = "car_wifi_passphrase"
+        private const val KEY_CAR_HIDDEN: String = "car_wifi_hidden"
+        private const val KEY_SUGGESTED: String = "car_wifi_suggested"
+
+        /**
+         * The car's Wi-Fi credentials from the last handshake, for the UI.
+         *
+         * Read from the settings screen rather than from the service, because
+         * the button that needs them is useful precisely when no attempt is
+         * running. See `rememberCarWifi`.
+         */
+        fun lastCarWifi(context: android.content.Context):
+            dev.headway.app.link.CarWifiProvisioning.CarCredentials? {
+            val prefs = context.getSharedPreferences(PREFS, MODE_PRIVATE)
+            val ssid = prefs.getString(KEY_CAR_SSID, null)?.takeIf { it.isNotEmpty() }
+                ?: return null
+            return dev.headway.app.link.CarWifiProvisioning.CarCredentials(
+                ssid = ssid,
+                passphrase = prefs.getString(KEY_CAR_PASSPHRASE, "").orEmpty(),
+                hiddenSsid = prefs.getBoolean(KEY_CAR_HIDDEN, false),
+            )
+        }
+
+        /** Drops the stored car credentials. */
+        fun forgetCarWifi(context: android.content.Context) {
+            context.getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .remove(KEY_CAR_SSID)
+                .remove(KEY_CAR_PASSPHRASE)
+                .remove(KEY_CAR_HIDDEN)
+                .apply()
+        }
 
         const val EXTRA_CAR_ADDRESS: String = "dev.headway.app.extra.CAR_ADDRESS"
 

@@ -94,6 +94,12 @@ Stated so the gap between "CI green" and "works in a car" is never implied away.
   exception is the Bluetooth version exchange, which a user has now run against
   a real vehicle and whose bytes are pinned as a fixture — everything after it
   on the real link is still unrun.
+- **GrapheneOS gives every network Headway joins a new MAC every connect**, and
+  fixes that for Google's Android Auto only, via a package-keyed carve-out that
+  also re-enables the DHCP hostname. Neither half is reachable from the network
+  Headway requests, and the hostname half is not reachable at all. This is why
+  the target car issues no address. Mitigated with instructions, a one-tap
+  save-this-network step and an optional suggestion path; see B-006.
 - **The public phone certificate expired in 2022** and cannot be reissued
   without Google's CA key. A real Malibu *does* refuse the session over it —
   confirmed, not predicted. Headway now presents the two unexpired certificates

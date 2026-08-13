@@ -543,9 +543,11 @@ class CarWifiNetwork(
                 onStep(
                     "the phone is on a Wi-Fi network whose router is ${routerOf(properties)} " +
                         "but it has no IPv4 address, so the head unit never gave it one. " +
-                        "Nothing can be sent over it. Either set a static IP on that network " +
-                        "in Android's Wi-Fi settings, or set Privacy to 'Use per-network " +
-                        "randomized MAC' so the car stops seeing a new device every time"
+                        "Nothing can be sent over it. On that saved network in Android's " +
+                        "Wi-Fi settings, set Privacy to 'Use per-network randomized MAC' " +
+                        "and turn 'Send device name to network' on — those are the two " +
+                        "things GrapheneOS enables for Google's Android Auto and cannot " +
+                        "enable for any other app. A static IP is the fallback"
                 )
                 continue
             }
@@ -563,6 +565,59 @@ class CarWifiNetwork(
         }
         return null
     }
+
+    /**
+     * Waits for the platform to join a network Headway suggested.
+     *
+     * The suggestion path hands back no `Network` — `addNetworkSuggestions`
+     * returns a status code and nothing else, and the platform associates on
+     * its own schedule. So this polls [adoptExistingCarNetwork], which already
+     * knows how to recognise the car, until one appears.
+     *
+     * Polling rather than a `NetworkCallback`: the useful callback here would be
+     * `ACTION_WIFI_NETWORK_SUGGESTION_POST_CONNECTION`, which needs
+     * `ACCESS_FINE_LOCATION` — a permission Headway deliberately does not ask
+     * for. A plain `registerNetworkCallback` for Wi-Fi would fire for every
+     * network including home Wi-Fi, so it would end up calling
+     * [adoptExistingCarNetwork] anyway, just on a less predictable clock.
+     *
+     * @throws CarWifiException if nothing turns up inside [timeoutMillis].
+     */
+    suspend fun awaitSuggestedCarNetwork(
+        credentials: CarNetworkCredentials,
+        timeoutMillis: Int = DEFAULT_JOIN_TIMEOUT_MILLIS,
+    ): Network {
+        check(!closed.get()) { "CarWifiNetwork already closed" }
+        onStep(
+            "waiting for Android to join ${credentials.ssid} from the suggestion. It " +
+                "decides when, so this is not instant; the first time it may be waiting " +
+                "on the notification asking whether Headway may connect to Wi-Fi"
+        )
+        val deadline = System.nanoTime() + timeoutMillis.toLong() * 1_000_000
+        var announced = false
+        while (System.nanoTime() < deadline) {
+            adoptExistingCarNetwork(credentials)?.let { return it }
+            if (!announced && !wifiEnabled()) {
+                // Said once rather than every poll: a suggestion cannot be
+                // joined with the radio off, and the wait would otherwise look
+                // identical to a car that is not there.
+                onStep("Wi-Fi is off, so Android cannot act on the suggestion")
+                announced = true
+            }
+            kotlinx.coroutines.delay(SUGGESTION_POLL_MILLIS)
+        }
+        throw CarWifiException(
+            "Android never joined ${credentials.ssid} from the Wi-Fi suggestion within " +
+                "${timeoutMillis / 1000}s. Check for a notification asking whether " +
+                "Headway may connect to Wi-Fi — if it was dismissed or refused once, " +
+                "Android blocks it until you re-allow it in Settings → Apps → Special " +
+                "app access → Wi-Fi control. Turning \"suggestCarNetwork\" off in the " +
+                "quirk file goes back to the normal join"
+        )
+    }
+
+    private fun wifiEnabled(): Boolean =
+        runCatching { wifiManager?.isWifiEnabled == true }.getOrDefault(true)
 
     /**
      * Notices an adopted network going away.
@@ -1087,6 +1142,16 @@ class CarWifiNetwork(
         private const val HEARTBEAT_MILLIS: Long = 5_000
 
         /**
+         * How often to look for a network the platform joined from a suggestion.
+         *
+         * Two seconds: `adoptExistingCarNetwork` is a `getAllNetworks` sweep and
+         * a handful of capability lookups, so the poll is cheap, and the thing
+         * being waited on is a human tapping a notification or the platform's
+         * own scan cadence — neither rewards a tighter loop.
+         */
+        private const val SUGGESTION_POLL_MILLIS: Long = 2_000
+
+        /**
          * A `STATUS_LOCAL_ONLY_CONNECTION_FAILURE_*` code as its name.
          *
          * Written out rather than reflected so the log reads the same on a
@@ -1116,31 +1181,64 @@ class CarWifiNetwork(
                     "Un-pair and re-pair the phone in the car's Bluetooth settings, which " +
                     "makes it issue a fresh key."
             WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_IP_PROVISIONING ->
-                // The one failure that retrying makes worse, which is why the
-                // supervisor treats it as terminal.
-                //
                 // Association and authentication both succeeded -- the car
                 // accepted the passphrase and let the phone onto the radio --
-                // and then no DHCP lease arrived. On GrapheneOS the usual cause
-                // is its default per-connection MAC randomization meeting a head
-                // unit whose DHCP table is small and does not evict: every
-                // attempt looks like a brand new device, the table fills, and
-                // the unit stops issuing leases to anyone. GrapheneOS documents
-                // exactly this failure and its fix
-                // (https://grapheneos.org/usage, Wi-Fi privacy).
+                // and then IP provisioning did not complete. Note the code means
+                // exactly that and *not* "no DHCPOFFER arrived"; a lease that
+                // arrives and fails duplicate-address detection lands here too,
+                // and nothing Headway can see distinguishes them.
                 //
-                // Android gives an app no way to influence the MAC of a
-                // WifiNetworkSpecifier connection -- the builder has no setting
-                // for it -- so Headway cannot fix this from inside the join.
-                "The phone got onto the car's Wi-Fi and the car never gave it an " +
-                    "address. Check the Bluetooth profile line above first: a head unit " +
-                    "that does not consider a phone connected often will not finish " +
-                    "bringing projection up, and that looks exactly like this. If those " +
-                    "are connected, the other cause is the head unit's address table " +
-                    "being full - turn the vehicle's Wi-Fi off and on in the car's " +
-                    "settings, then join the car's network by hand once in Android's " +
-                    "Wi-Fi settings and set Privacy to 'Use per-network randomized MAC' " +
-                    "so it stops refilling. See the README for how to tell the two apart."
+                // WHY THIS HAPPENS TO HEADWAY AND NOT TO ANDROID AUTO, which is
+                // the whole story and was worth getting right:
+                //
+                // GrapheneOS carries a carve-out for Google's Android Auto in
+                // WifiConfiguration.java L3400-L3405 --
+                //
+                //   if (GmsCompat.isAndroidAuto()) {
+                //       // Per-connection MAC randomization doesn't work with
+                //       // some cars, see os-issue-tracker/issues/4139
+                //       macRandomizationSetting = RANDOMIZATION_PERSISTENT;
+                //       mIsSendDhcpHostnameEnabled = true;
+                //   }
+                //
+                // -- so this is a known car bug that GrapheneOS has already
+                // fixed, for one package. Headway is not that package.
+                //
+                // Neither half is reachable from a WifiNetworkSpecifier join:
+                //
+                // 1. The MAC. WifiNetworkFactory builds `new WifiConfiguration(
+                //    specifier.wifiConfiguration)` (WifiNetworkFactory.java
+                //    L1160-L1161), so the config comes from *Headway's* process,
+                //    where GrapheneOS's default is RANDOMIZATION_ALWAYS (= 100,
+                //    a GrapheneOS-only value, WifiConfiguration.java L1913) that
+                //    re-randomizes on every single connect. WifiNetworkFactory
+                //    never touches the field, and the builder has no setter. So
+                //    the car sees a brand new device every attempt.
+                // 2. The DHCP hostname (option 12). GrapheneOS defaults
+                //    mIsSendDhcpHostnameEnabled to false where AOSP defaults it
+                //    true, and setSendDhcpHostnameEnabled is @SystemApi behind
+                //    NETWORK_SETTINGS/NETWORK_SETUP_WIZARD with no equivalent on
+                //    WifiNetworkSuggestion.Builder. No unprivileged lever at all.
+                //
+                // GrapheneOS shipped both together, so both are suspects, and
+                // the user's own Settings screen is the only place that reaches
+                // both. Hence the instructions below rather than a code fix.
+                // BLOCKERS.md B-006 has the detail.
+                "The phone got onto the car's Wi-Fi and never got an address from it.\n\n" +
+                    "Check the Bluetooth profile line above first: a head unit that does " +
+                    "not consider the phone connected often will not finish bringing " +
+                    "projection up, and that looks exactly like this.\n\n" +
+                    "If those are connected, this is the GrapheneOS car bug. Join the " +
+                    "car's network once by hand in Android's Wi-Fi settings (or use " +
+                    "'Set up this car's Wi-Fi' in Headway, which fills it in for you), " +
+                    "then on that saved network set:\n" +
+                    "  1. Privacy -> 'Use per-network randomized MAC'\n" +
+                    "  2. 'Send device name to network' -> on\n" +
+                    "Those are the two things GrapheneOS turns on for Google's Android " +
+                    "Auto and cannot turn on for anything else. Set the first, retry; if " +
+                    "it still fails, set the second and retry. Whichever one fixes it is " +
+                    "worth telling the project, because it settles which cause this is.\n\n" +
+                    "A static IP on that saved network is the fallback if neither works."
             WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_ASSOCIATION,
             WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NO_RESPONSE ->
                 "The access point was seen but would not complete the association. If it " +

@@ -84,6 +84,15 @@ class HeadUnitQuirksTest {
                 announcedVersionMinor = 1,
                 mediaAudioOverAap = true,
                 keyframeIntervalFrames = 30,
+                // The Wi-Fi and certificate knobs were added later and were not
+                // in this list, so "every knob" had quietly stopped being true.
+                // They are the ones a real car actually needs adjusting, which
+                // makes them the worst ones to let drift.
+                hiddenSsid = true,
+                announceWifiChannel = true,
+                pinBssid = true,
+                certificate = "internal",
+                suggestCarNetwork = true,
                 touch = TouchQuirks(
                     invertY = true,
                     swapAxes = true,
