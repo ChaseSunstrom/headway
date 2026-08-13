@@ -8,12 +8,16 @@ by fully on-device speech recognition.
 
 No Google services. No network. No root. No system privileges.
 
-> **Status: in development. Only the Bluetooth handshake has ever reached a
-> real car.** The protocol stack, the test harness and the voice pipeline are
-> built and exercised in CI; the Android adapters that touch real radios and
-> real hardware encoders are written but, past the Bluetooth exchange, never
-> executed. [`PROGRESS.md`](PROGRESS.md) records the tier of evidence behind
-> every phase — read it before believing anything here works.
+> **Status: in development. A real car now reaches service discovery.** On
+> 2026-08-13 a 2021 Chevrolet Infotainment 3 unit completed the Bluetooth
+> handshake, the Wi-Fi join, TCP, the AAP version exchange, TLS, authentication
+> and service discovery, and listed all 13 of its channels. Nothing past channel
+> open has run on real hardware: no video has been sent, no touch received, no
+> audio played. The protocol stack, the test harness and the voice pipeline are
+> exercised in CI; the Android adapters for the encoder, input and audio are
+> written but never executed against a car. [`PROGRESS.md`](PROGRESS.md) records
+> the tier of evidence behind every phase — read it before believing anything
+> here works.
 
 ## Why
 
@@ -263,7 +267,13 @@ on the car screen. Disabling Android Auto in the *car* is not the same as not
 using the Android Auto *app*; Headway takes the place of the app and still
 needs the car's permission.
 
-**Or — most likely — it is the GrapheneOS car bug, which GrapheneOS has already
+**First: does your log say `access_point_type=STATIC`?** If it does, the head
+unit is telling you it assigns no addresses at all, and no amount of MAC or DHCP
+tuning will get you one — a static IP is simply the correct configuration for
+that vehicle. The 2021 Malibu does exactly this. Everything below applies to a
+unit that advertises `DYNAMIC` and still withholds a lease.
+
+**Otherwise it is likely the GrapheneOS car bug, which GrapheneOS has already
 fixed for Google's Android Auto and cannot fix for anything else.**
 
 GrapheneOS gives every network an app joins a **brand new MAC address on every
@@ -372,6 +382,14 @@ outside Google, and a self-signed replacement only helps if the head unit checks
 dates without checking the chain. This unit returned
 `STATUS_AUTHENTICATION_FAILURE` rather than `STATUS_CERTIFICATE_ERROR`, which
 reads as "the chain was fine, the dates were not".
+
+> **Answered on a real car (2026-08-13): the `internal` certificate works.** A
+> 2021 Chevrolet Infotainment 3 unit refused the expired phone-role certificate
+> and accepted `Android-Auto-Internal` on the next attempt — TLS established,
+> authentication complete, service discovery done. Headway gets there on its own
+> in two attempts; putting `"certificate": "internal"` in the quirk file skips
+> the wasted first one. **You do not need to move the car's clock**, so Google's
+> Android Auto keeps working too.
 
 **Headway tries three certificates before you have to do anything.** The
 expired phone-role certificate is not the only material signed by that same

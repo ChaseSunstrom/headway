@@ -271,6 +271,17 @@ open class HeadwayService : Service() {
             publish(state)
             updateNotification(describe(state))
             Log.i(TAG, "link state: $state")
+            // Into the *exportable* log too, not only logcat. This was logcat
+            // only, and it hid the one line that mattered: a real car log showed
+            // the session authenticate, complete discovery, begin opening
+            // channels -- and then simply start over, with nothing anywhere
+            // saying why. WaitingToRetry carries the cause, and the whole point
+            // of the export is that a drive can be diagnosed without adb.
+            when (state) {
+                is LinkState.WaitingToRetry -> step("the session ended: ${state.cause}")
+                is LinkState.GaveUp -> step("giving up: ${state.cause}")
+                else -> Unit
+            }
         },
         terminalFailure = { failure ->
             // Addressing failures get exactly MAX_ADDRESSING_ATTEMPTS, and the

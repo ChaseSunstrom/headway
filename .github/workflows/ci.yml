@@ -249,19 +249,25 @@ jobs:
 
           ## Before you install this
 
-          **A real car gets all the way to authentication, and is refused
-          there.** On a 2021 Chevrolet Infotainment 3 unit the Bluetooth
-          handshake completes every time; the phone associates with the head
-          unit's access point; and once it has an address, the AAP version
-          handshake and TLS run and the unit answers `AUTH_COMPLETE` with
-          `STATUS_AUTHENTICATION_FAILURE`. That is the expired certificate
-          below, and it is the last thing in the way.
+          **A real car now reaches service discovery.** On 2026-08-13 a 2021
+          Chevrolet Infotainment 3 unit completed the Bluetooth handshake, the
+          Wi-Fi join, TCP, the AAP version exchange, TLS, authentication and
+          service discovery, and advertised all 13 of its channels. **Nothing
+          past channel open has run on real hardware** — no video sent, no touch
+          received, no audio played.
 
-          Getting an address is still not automatic. Requesting the network
-          from inside the app usually ends in `IP_PROVISIONING` — the head unit
-          issues no lease — and the way past it is a manual Wi-Fi join with a
-          static IP, which Headway then adopts. The README's "why the same car
-          behaves differently" section explains which setting moves which part.
+          Two things that car settled, both now fixed in the app:
+
+          - **The certificate question is answered.** It refuses the expired
+            phone-role certificate and accepts `Android-Auto-Internal`, which is
+            valid to 2048 and signed by the same CA. Headway rotates to it on
+            its own in two attempts. **You no longer need to move the car's
+            clock**, so Google's Android Auto keeps working.
+          - **That unit announces `access_point_type=STATIC`** — it assigns no
+            addresses, so a static IP on a saved car network is simply the
+            correct configuration for it, not a workaround. If your log says
+            STATIC, stop chasing DHCP.
+
           See `PROGRESS.md` for the evidence behind each phase.
 
           **Video, input, audio and voice are not wired into the app.** Those
@@ -269,15 +275,12 @@ jobs:
           frames and discards them, so a phone that reaches a session captures
           and sends nothing. `PROGRESS.md` says which phases this covers.
 
-          **The bundled phone certificate expired on 2022-08-24** and cannot be
-          reissued without Google's CA key. The target car does check validity
-          dates and does reject it — on screen as "the phone and vehicle
-          calendars are set to different dates and times". Two one-time
-          workarounds exist: import your own certificate from Diagnostics, or
-          set the car's clock into 2014-08..2022-08. **The clock workaround
-          breaks Google's Android Auto** while it is in place, because Google's
-          certificate is current and a car in 2016 sees it as not yet valid.
-          See `BLOCKERS.md` B-003 and the README.
+          **The bundled phone-role certificate expired on 2022-08-24** and
+          cannot be reissued without Google's CA key — but it is no longer the
+          wall. Headway carries two unexpired certificates signed by the same
+          Google Automotive Link CA and presents them in turn when one is
+          refused; a real head unit accepted the second. If yours refuses all
+          three, import your own from Diagnostics. See `BLOCKERS.md` B-003.
 
           ## If it fails in the car
 

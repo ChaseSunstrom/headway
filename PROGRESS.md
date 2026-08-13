@@ -94,6 +94,18 @@ Stated so the gap between "CI green" and "works in a car" is never implied away.
   exception is the Bluetooth version exchange, which a user has now run against
   a real vehicle and whose bytes are pinned as a fixture — everything after it
   on the real link is still unrun.
+- **A real car now reaches service discovery.** On 2026-08-13 a 2021 Chevrolet
+  Infotainment 3 unit accepted the `internal` certificate, completed TLS,
+  authenticated, and advertised all 13 of its services — the first real-vehicle
+  service discovery, and confirmation of the head-unit-advertises polarity
+  against hardware rather than only against the references. The session then
+  ended while opening SENSOR, on an unanswered keepalive; that is fixed and
+  covered by a Phase 1 acceptance test. Nothing past channel open has run on
+  real hardware.
+- **The target car announces `access_point_type=STATIC`** — it assigns no
+  addresses, so its `IP_PROVISIONING` failures were it behaving as advertised. A
+  static IP is the correct configuration for this vehicle. See the B-006
+  correction.
 - **GrapheneOS gives every network Headway joins a new MAC every connect**, and
   fixes that for Google's Android Auto only, via a package-keyed carve-out that
   also re-enables the DHCP hostname. Neither half is reachable from the network
@@ -170,8 +182,6 @@ remaining hypotheses can be tested with a text edit instead of a rebuild.
    the only thing between this and a working car link.
 2. **Release signing and F-Droid metadata.** The build is reproducible in shape;
    it has no signing key, which is the user's to hold.
-3. **A car log saying which certificate the Malibu accepts**, if any. The
-   rotation through the two unexpired candidates is a well-founded guess with a
-   cheap test attached; one drive settles it. If all three are refused, a
-   replacement pair is the user's to obtain — nothing in this project can
-   produce one. See B-003.
+3. ~~A car log saying which certificate the Malibu accepts~~ — **answered
+   2026-08-13: `internal`**, the Android-Auto-Internal certificate valid to
+   2048. The unit checks the chain and the dates and not the role. See B-003.

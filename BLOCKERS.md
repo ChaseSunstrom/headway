@@ -47,8 +47,11 @@ from the message definition rather than observed.
 
 ## B-003 — The public phone-side TLS certificate expired on 2022-08-24
 
-**Status:** Open — **confirmed against the target car**, mitigated as far as is
-possible client-side. This is the reason the 2021 Malibu refuses to connect.
+**Status:** **RESOLVED against the target car (2026-08-13).** The
+`Android-Auto-Internal` certificate is accepted; workaround 0 below is the fix
+and it is now the answer, not a guess. Kept open only because it is one vehicle:
+a unit that checks the certificate's *role* would still refuse, and no such unit
+has been seen either way.
 
 **Blocked:** Authenticating to a head unit that validates the phone's
 certificate.
@@ -106,9 +109,26 @@ consistent with the protocol having distinct
    quirk file's `"certificate"` key moves a known-good id to the front once a
    log names it.
 
-   **This is untested against a real head unit.** It is a well-founded guess
-   with a cheap test attached, not a fix, and it stays in this file until a car
-   log says which way it went.
+   **Confirmed on a real head unit, 2026-08-13.** A 2021 Chevrolet
+   Infotainment 3 unit refused `phone` (no `TLS established` line — it stopped
+   while looking at the certificate) and then, on the next attempt, accepted
+   `internal`:
+
+   ```
+   14:59:31.964  presenting the Android-Auto-Internal certificate (2 of 3),
+                 OU=01,O=Android-Auto-Internal,... valid until Sat Aug 01 2048
+   14:59:32.060  TLS established
+   14:59:32.070  rx control AUTH_COMPLETE
+   14:59:32.072  authentication complete
+   ```
+
+   So this unit verifies the chain to the Google Automotive Link CA and the
+   validity dates, and does **not** check which role the certificate was issued
+   for. The rotation reaches it on attempt 2 with no user action; putting
+   `"certificate": "internal"` in the quirk file skips the wasted first attempt.
+
+   This also means the certificate no longer needs the car's clock moved, and
+   the clock trade-off with Google's Android Auto no longer has to be taken.
 
 1. *Import a certificate.* The certificate is not baked in.
    `AapTls.phoneEngine` takes `KeyMaterial`, and the bundled pair is only the
@@ -228,8 +248,20 @@ that is the path.
 
 ## B-006 — GrapheneOS gives every network Headway joins a new MAC, and fixes that for Android Auto only
 
-**Status:** Open — half mitigated in code, half not mitigable at all. **This is
-why the target car never issues an address.**
+**Status:** Open, but **not the cause on the target car** — see the correction
+below. Kept because the platform behaviour is real and will bite a head unit
+that *does* run DHCP.
+
+**Correction (2026-08-13, from a real car log):** the 2021 Malibu announces
+`access_point_type = STATIC` in every `WifiInfoResponse`. That is the protocol's
+way of saying its access point does not assign addresses at all, so no MAC
+setting and no DHCP hostname was ever going to produce a lease from it. The
+`IP_PROVISIONING` failures were the head unit behaving exactly as announced. A
+static IP on a saved car network is the correct configuration for this vehicle,
+not a workaround — and with one set, the session reaches authentication and
+service discovery. Everything below still stands as platform fact and still
+applies to a head unit that advertises `DYNAMIC`; it simply is not this car's
+problem.
 
 **Blocked:** Getting a DHCP lease from the head unit without the user editing
 Wi-Fi settings by hand.

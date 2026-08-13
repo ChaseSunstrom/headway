@@ -23,6 +23,7 @@ import aap_protobuf.service.control.message.ChannelOpenResponseOuterClass.Channe
 import aap_protobuf.service.control.message.ServiceDiscoveryRequestOuterClass.ServiceDiscoveryRequest
 import aap_protobuf.service.control.message.ServiceDiscoveryResponseOuterClass.ServiceDiscoveryResponse
 import aap_protobuf.shared.MessageStatusOuterClass.MessageStatus
+import dev.headway.protocol.control.ControlKeepalive
 import dev.headway.protocol.control.ControlMessageType
 import dev.headway.protocol.control.VersionHandshake
 import dev.headway.protocol.framing.AapMessage
@@ -433,6 +434,25 @@ class AapSession(
                         "no CHANNEL_OPEN_RESPONSE for ${ChannelId.describe(channelId)} after " +
                             "$skipped interleaved messages"
                     )
+                }
+                // A ping is the one interleaved message that must be *answered*
+                // rather than merely tolerated, and skipping it cost a real
+                // session. A 2021 Chevrolet Infotainment 3 log shows discovery
+                // completing, SENSOR opening, a PING_REQUEST arriving on CONTROL
+                // and being ignored -- and the head unit dropping the link 9 ms
+                // later. From its point of view a phone that does not answer a
+                // keepalive during bring-up has gone away, and it is right.
+                //
+                // Keepalives were already answered in the *running* session; the
+                // gap was this window, between discovery and the last channel
+                // opening, which is exactly when a unit checks whether the phone
+                // it just authenticated is really there.
+                if (ControlKeepalive.isPing(message)) {
+                    ControlKeepalive.answer(connection, message)
+                    onStep(
+                        "answered a keepalive while opening ${ChannelId.describe(channelId)}"
+                    )
+                    continue
                 }
                 onStep(
                     "ignoring ${ControlMessageType.describe(message.messageId)} on " +

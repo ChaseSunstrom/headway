@@ -257,6 +257,71 @@ class Phase1HandshakeAcceptanceTest {
         }
     }
 
+    /**
+     * Tolerating the ping is not enough — it has to be **answered**.
+     *
+     * A real 2021 Chevrolet Infotainment 3 log shows the session authenticate,
+     * complete service discovery, begin opening SENSOR, receive a
+     * `PING_REQUEST` on CONTROL — which the phone logged as "ignoring" — and the
+     * head unit drop the link 9 ms later. Keepalives were answered in the
+     * running session, but not in this window, which is exactly when a unit
+     * checks whether the phone it just authenticated is really there.
+     *
+     * The test above proves the open survives an interleaved ping. This one
+     * proves the car hears back, which is the part that mattered.
+     */
+    @Test
+    fun `a keepalive during a channel open is answered, not just tolerated`() = runBlocking {
+        LoopbackTransport.pair().use { pair ->
+            val car = FramedConnection(pair.headUnit)
+            val session = AapSession(
+                connection = FramedConnection(pair.phone),
+                tls = TlsSession(AapTls.phoneEngine()),
+                identity = PhoneIdentity(deviceName = "Headway Test"),
+            )
+
+            val opening = async(Dispatchers.IO) {
+                runCatching { session.openChannel(ChannelId.SENSOR.id) }
+            }
+
+            val request = withTimeout(10_000) { car.receive() }
+            assertEquals(ControlMessageType.CHANNEL_OPEN_REQUEST.id, request.messageId)
+
+            car.send(
+                AapMessage(
+                    channelId = ChannelId.CONTROL.id,
+                    control = false,
+                    encrypted = false,
+                    messageId = ControlMessageType.PING_REQUEST.id,
+                    payload = ByteArray(0),
+                )
+            )
+
+            val answer = withTimeout(10_000) { car.receive() }
+            assertEquals(
+                ControlMessageType.PING_RESPONSE.id,
+                answer.messageId,
+                "the phone must answer a keepalive received while opening a channel; " +
+                    "a head unit that does not hear back drops the session",
+            )
+            assertEquals(ChannelId.CONTROL.id, answer.channelId)
+
+            car.send(
+                AapMessage(
+                    channelId = ChannelId.SENSOR.id,
+                    control = false,
+                    encrypted = false,
+                    messageId = ControlMessageType.CHANNEL_OPEN_RESPONSE.id,
+                    payload = channelOpenSuccess(),
+                )
+            )
+            assertTrue(
+                withTimeout(10_000) { opening.await() }.isSuccess,
+                "the channel open must still complete after the keepalive",
+            )
+        }
+    }
+
     @Test
     fun `full handshake through to open channels over the fake transport`() {
         LoopbackTransport.pair().use { pair ->
