@@ -20,7 +20,20 @@ package dev.headway.protocol.framing
 /**
  * Channel identifiers carried in byte 0 of every AAP frame header.
  *
- * Source: `aasdk/include/aasdk/Messenger/ChannelId.hpp` L30-L51.
+ * ## Where these numbers come from, precisely
+ *
+ * **Only `CONTROL = 0` is cited.** This list used to name
+ * `aasdk/include/aasdk/Messenger/ChannelId.hpp` L30-L51 as its source, and that
+ * header does not contain it: aasdk declares a shorter, differently ordered
+ * enum — `CONTROL, INPUT, SENSOR, VIDEO, MEDIA_AUDIO, SPEECH_AUDIO,
+ * SYSTEM_AUDIO, AV_INPUT, BLUETOOTH, NAVIGATION, MEDIA_STATUS, NONE = 255` —
+ * in which INPUT is 1 and SENSOR is 2, where this list has SENSOR at 1 and
+ * INPUT_SOURCE at 8. Citing a file that says something else is worse than
+ * citing nothing, because it survives review.
+ *
+ * The values below are **Headway's own assignment**, and nothing is broken by
+ * that, for the reason in the next section: the numbers that actually travel on
+ * the wire come from the head unit at runtime, not from here.
  *
  * ## These numbers are a convention, not a protocol mandate
  *

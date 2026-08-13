@@ -15,15 +15,38 @@ Each phase carries the **tier of evidence** behind it, defined in
 |-------|-------|--------|----------|
 | 0 | Test harness | **Done** | A — the emulator drives every acceptance test in CI |
 | 1 | Handshake | **Done (CI half)** | A — full bring-up 20/20 over the fake transport *and* over real TCP; the Bluetooth version exchange is now pinned to bytes captured from a real Chevrolet head unit; D for the rest of the real BT/Wi-Fi half |
-| 2 | Video out | **Done** | A — 10 min of 30 fps stream in order, byte-identical, real NAL parsing; B — device encodes real H.264 with SPS/PPS; C for `MediaProjection` capture |
-| 3 | Input | **Done** | A — event decode and letterbox transform; B — gesture building on-device; C for gesture *dispatch* (needs an enabled service) |
-| 4 | Audio + focus | **Done** | A — three sinks, focus duck/resume asserted on the wire; B — resampling and AudioManager focus on-device; D for real A2DP |
-| 5 | Voice | **Done** | A — real Vosk on real speech, "open calculator" resolved in ~720 ms; C for `startActivity` |
+| 2 | Video out | **Module done, not wired** | A — 10 min of 30 fps stream in order, byte-identical, real NAL parsing; B — device encodes real H.264 with SPS/PPS; C for `MediaProjection` capture |
+| 3 | Input | **Module done, not wired** | A — event decode and letterbox transform; B — gesture building on-device; C for gesture *dispatch* (needs an enabled service) |
+| 4 | Audio + focus | **Module done, not wired** | A — three sinks, focus duck/resume asserted on the wire; B — resampling and AudioManager focus on-device; D for real A2DP |
+| 5 | Voice | **Module done, not wired** | A — real Vosk on real speech, "open calculator" resolved in ~720 ms; C for `startActivity` |
 | 6 | Reconnection, polish, packaging | **Done (except release signing)** | A — supervisor, quirks, log redaction; B — APK installs and 29 app tests pass on a real device |
+
+## The gap between "module done" and "the app does it"
+
+Phases 2 to 5 build and test real code, and none of it runs in the shipped app.
+`HeadwayService.runChannels` — the loop that owns a live session — receives
+frames, answers control keepalives, and logs everything else as unhandled.
+There is no subclass and no override. So on a phone that reaches a session
+today: no screen is captured, no video is encoded, no touch arrives, no audio
+is sent, and no voice is recognised.
+
+The modules themselves are real and tested, so this is integration rather than
+implementation: obtain a `MediaProjection` from `MainActivity`, feed
+`ScreenEncoder` into `VideoChannel`, route `InputChannel` events into
+`CarGestureDispatcher`, and drive `MicrophoneChannel` into the voice pipeline.
+Two things have to land with it: `core-voice` declares Vosk `compileOnly` and
+the app adds no `vosk-android` runtime, so speech recognition would throw
+`NoClassDefFoundError` on device; and the ~41 MB model is not shipped as an
+asset.
+
+This is stated here because the phase table above says "Done" for those phases
+and would otherwise be read as "the app does this". It does not, yet — and
+until the Wi-Fi join succeeds on a real car, none of it can be exercised
+against one anyway.
 
 ## What is genuinely verified
 
-**222 JVM tests green** on a bare JDK, plus **69 instrumentation tests green on a
+**248 JVM tests green** on a bare JDK, plus **69 instrumentation tests green on a
 real Android 15 (API 35) AOSP device** — app 29, core-audio 13, core-input 12,
 core-video 15.
 
