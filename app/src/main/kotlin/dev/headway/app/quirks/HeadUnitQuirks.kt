@@ -170,6 +170,39 @@ data class HeadUnitQuirks(
      */
     val keyframeIntervalFrames: Int = DEFAULT_KEYFRAME_INTERVAL_FRAMES,
 
+    /**
+     * Probe for the head unit's SSID instead of waiting to see it beaconed.
+     *
+     * Off by default because every access point in the references broadcasts
+     * (`WirelessAndroidAutoDongle/.../hostapd.conf.in`, and aa-proxy-rs writes
+     * `ignore_broadcast_ssid=0` explicitly at `src/bluetooth.rs` L3374). But
+     * aa-proxy-rs is also the only reference that *joins* a real car's access
+     * point from credentials received over Bluetooth, and both branches of its
+     * `wpa_supplicant_config` set `scan_ssid=1` unconditionally (L2851, L2863)
+     * — which exists for exactly one purpose, finding an AP that does not
+     * beacon.
+     *
+     * A hidden head-unit SSID fails indistinguishably from a car that is not
+     * there: Android's scan behind the approval prompt never matches, nothing
+     * is tappable, and the request runs to its deadline with no association
+     * error. If that is the shape of the failure, turn this on. It costs a
+     * directed probe request and nothing else — a broadcasting AP still
+     * associates normally with it set.
+     */
+    val hiddenSsid: Boolean = false,
+
+    /**
+     * Require the exact BSSID the head unit named over Bluetooth.
+     *
+     * Off, and it should stay off for the target vehicle: it announces
+     * `ce:44:26:bf:18:ec` while the platform's own scan sees two BSSIDs for
+     * that one SSID, which is what a dual-radio access point looks like.
+     * Pinning the wrong radio does not fail loudly — the request simply never
+     * matches. Exposed because a driveway with two identical cars in it is the
+     * one case where SSID-only matching is genuinely ambiguous.
+     */
+    val pinBssid: Boolean = false,
+
     val touch: TouchQuirks = TouchQuirks(),
 ) {
 
@@ -180,6 +213,7 @@ data class HeadUnitQuirks(
     /** Human-readable one-liner for the log export and the settings screen. */
     fun describe(): String = "fragment=$maxFragmentSize version=$announcedVersion " +
         "mediaAudioOverAap=$mediaAudioOverAap keyframe=$keyframeIntervalFrames " +
+        "hiddenSsid=$hiddenSsid pinBssid=$pinBssid " +
         "touch=${if (touch.isIdentity) "identity" else touch.toString()}"
 
     companion object {
@@ -436,6 +470,8 @@ class QuirkStore(
         private const val KEY_ANNOUNCED_VERSION = "announcedVersion"
         private const val KEY_MEDIA_AUDIO_OVER_AAP = "mediaAudioOverAap"
         private const val KEY_KEYFRAME_INTERVAL = "keyframeIntervalFrames"
+        private const val KEY_HIDDEN_SSID = "hiddenSsid"
+        private const val KEY_PIN_BSSID = "pinBssid"
         private const val KEY_TOUCH = "touch"
 
         private const val KEY_INVERT_X = "invertX"
@@ -450,6 +486,7 @@ class QuirkStore(
         private val PROFILE_KEYS = setOf(
             KEY_MAKE, KEY_MODEL, KEY_MAX_FRAGMENT_SIZE, KEY_ANNOUNCED_VERSION,
             KEY_MEDIA_AUDIO_OVER_AAP, KEY_KEYFRAME_INTERVAL, KEY_TOUCH,
+            KEY_HIDDEN_SSID, KEY_PIN_BSSID,
         )
 
         private val TOUCH_KEYS = setOf(
@@ -529,6 +566,8 @@ class QuirkStore(
                     )
                     .put(KEY_MEDIA_AUDIO_OVER_AAP, quirks.mediaAudioOverAap)
                     .put(KEY_KEYFRAME_INTERVAL, quirks.keyframeIntervalFrames)
+                    .put(KEY_HIDDEN_SSID, quirks.hiddenSsid)
+                    .put(KEY_PIN_BSSID, quirks.pinBssid)
                     .put(
                         KEY_TOUCH,
                         JSONObject()
@@ -622,6 +661,8 @@ class QuirkStore(
                         KEY_MEDIA_AUDIO_OVER_AAP, defaults.mediaAudioOverAap,
                     ),
                     keyframeIntervalFrames = keyframe,
+                    hiddenSsid = json.optBoolean(KEY_HIDDEN_SSID, defaults.hiddenSsid),
+                    pinBssid = json.optBoolean(KEY_PIN_BSSID, defaults.pinBssid),
                     touch = touch,
                 ),
             )

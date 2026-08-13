@@ -90,6 +90,20 @@ class CarWifiNetwork(
 
     private val closed = AtomicBoolean(false)
 
+    /**
+     * Guards the registration lifecycle: [callback], [wifiWatch],
+     * [adoptedWatch] and [failureListener].
+     *
+     * These are written by the supervisor coroutine and read by [close], which
+     * runs on whatever thread destroyed the service — a different one. Without
+     * the lock, a `close()` landing between `callback = cb` and
+     * `requestNetwork` sees no callback to unregister, and the request that is
+     * registered a microsecond later is never released at all. The phone then
+     * keeps trying to join, or stays joined to, an access point belonging to an
+     * app that has been destroyed.
+     */
+    private val registrationLock = Any()
+
     private var callback: ConnectivityManager.NetworkCallback? = null
 
     /**
@@ -135,6 +149,15 @@ class CarWifiNetwork(
     @Volatile
     private var adopted: Boolean = false
 
+    /**
+     * True when the current network was adopted rather than requested.
+     *
+     * The caller needs this because an adoption is a strong guess, not a proof:
+     * it is confirmed only when something on the network answers as the head
+     * unit. See `HeadwayService`'s handling of a failed AAP connect.
+     */
+    val isAdopted: Boolean get() = adopted && network != null
+
     /** Reports the loss of an adopted network, which has no request behind it. */
     private var adoptedWatch: ConnectivityManager.NetworkCallback? = null
 
@@ -176,6 +199,7 @@ class CarWifiNetwork(
         credentials: CarNetworkCredentials,
         timeoutMillis: Int = DEFAULT_JOIN_TIMEOUT_MILLIS,
         hiddenSsid: Boolean = false,
+        pinBssid: Boolean = false,
     ): Network = coroutineScope {
         check(!closed.get()) { "CarWifiNetwork already closed" }
         val manager = connectivityManager
@@ -190,6 +214,13 @@ class CarWifiNetwork(
         // the second, which would send the AAP session to the wrong vehicle.
         network?.let { joined ->
             if (joinedSsid == credentials.ssid) {
+                // A completed `lost` here is not stale bookkeeping, it is a
+                // tripwire: the session watchdog awaits it, so handing back a
+                // network alongside a deferred that some earlier disconnection
+                // already completed tears the new session down the instant it
+                // comes up. Reachable because onLost and a later onAvailable can
+                // both fire on one still-registered callback.
+                if (lost.isCompleted) lost = CompletableDeferred()
                 onStep("already joined ${credentials.ssid}; reusing the existing network")
                 return@coroutineScope joined
             }
@@ -213,11 +244,16 @@ class CarWifiNetwork(
         // Wi-Fi on and a user who is told to tap a sheet that will never appear.
         requireWifiEnabled()
 
-        val spec = specFor(credentials, hiddenSsid)
+        val spec = specFor(credentials, hiddenSsid, pinBssid)
         val request = buildRequest(spec)
 
         available = CompletableDeferred()
         lost = CompletableDeferred()
+
+        // Stamped just before requestNetwork, and read by onUnavailable, which
+        // cannot fire before then. Declared here only because the callback
+        // closes over it.
+        var requestedAt = System.nanoTime()
 
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(joined: Network) {
@@ -246,7 +282,15 @@ class CarWifiNetwork(
             }
 
             override fun onUnavailable() {
-                available.completeExceptionally(CarWifiException(unavailableMessage(spec, timeoutMillis)))
+                // Elapsed, not the budget. There is no platform timeout on this
+                // request any more, so onUnavailable means the platform refused
+                // or abandoned it — and an arrival two seconds in tells a very
+                // different story from one five minutes in. Reporting the
+                // budget made a refusal read as a patient wait that ran out.
+                val elapsed = ((System.nanoTime() - requestedAt) / 1_000_000).toInt()
+                available.completeExceptionally(
+                    CarWifiException(unavailableMessage(spec, elapsed))
+                )
             }
 
             override fun onLost(gone: Network) {
@@ -265,9 +309,16 @@ class CarWifiNetwork(
             }
         }
 
-        callback = cb
-        startWifiWatch(manager)
-        startFailureListener(spec)
+        synchronized(registrationLock) {
+            // Re-checked under the lock: close() may have run since the check at
+            // the top of join(), and registering after that is the leak this
+            // lock exists to prevent.
+            check(!closed.get()) { "CarWifiNetwork already closed" }
+            callback = cb
+            startWifiWatch(manager)
+            startFailureListener(spec)
+        }
+        requestedAt = System.nanoTime()
         try {
             // No platform timeout, deliberately. `requestNetwork`'s timeout
             // variant does not just stop waiting — expiring it releases the
@@ -284,9 +335,7 @@ class CarWifiNetwork(
             // outside any legitimate attempt.
             manager.requestNetwork(request, cb)
         } catch (e: SecurityException) {
-            callback = null
-            stopWifiWatch()
-            stopFailureListener()
+            releaseRequest()
             // Name the one that is actually missing. The old message listed both
             // candidates, and the two have completely different fixes: one is
             // granted in Settings, the other can only be declared in the
@@ -294,10 +343,16 @@ class CarWifiNetwork(
             // them sent a real user to grant a permission they already had.
             throw CarWifiException("requestNetwork denied; ${missingJoinPermission()}", e)
         } catch (e: RuntimeException) {
-            callback = null
-            stopWifiWatch()
-            stopFailureListener()
+            releaseRequest()
             throw CarWifiException("requestNetwork rejected: ${e.message}", e)
+        }
+
+        // close() can have run while requestNetwork was in flight. It found no
+        // registered callback to unregister, because the registration had not
+        // completed yet, so releasing it is this coroutine's job.
+        if (closed.get()) {
+            releaseRequest()
+            throw CarWifiException("car network released while the request was being made")
         }
 
         onStep(
@@ -735,25 +790,28 @@ class CarWifiNetwork(
      * down just because Bluetooth or TCP had a bad attempt.
      */
     private fun releaseRequest() {
-        stopWifiWatch()
-        stopFailureListener()
-        adoptedWatch?.let { watch ->
-            adoptedWatch = null
-            // A listen, so unregistering it disconnects nothing — the user's own
-            // Wi-Fi connection is left exactly as it was.
-            runCatching { connectivityManager?.unregisterNetworkCallback(watch) }
+        val released = synchronized(registrationLock) {
+            stopWifiWatch()
+            stopFailureListener()
+            adoptedWatch?.let { watch ->
+                adoptedWatch = null
+                // A listen, so unregistering it disconnects nothing — the user's
+                // own Wi-Fi connection is left exactly as it was.
+                runCatching { connectivityManager?.unregisterNetworkCallback(watch) }
+            }
+            val cb = callback
+            callback = null
+            network = null
+            joinedSsid = null
+            adopted = false
+            if (cb != null) {
+                // Throws IllegalArgumentException if the callback was never
+                // registered, which can happen when requestNetwork itself failed.
+                runCatching { connectivityManager?.unregisterNetworkCallback(cb) }
+            }
+            cb != null
         }
-        val cb = callback
-        callback = null
-        network = null
-        joinedSsid = null
-        adopted = false
-        if (cb != null) {
-            // Throws IllegalArgumentException if the callback was never
-            // registered, which can happen when requestNetwork itself failed.
-            runCatching { connectivityManager?.unregisterNetworkCallback(cb) }
-            onStep("released the car network request")
-        }
+        if (released) onStep("released the car network request")
     }
 
     /** Releases the request. Idempotent; safe from any thread and any path. */

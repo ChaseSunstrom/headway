@@ -613,6 +613,10 @@ class MainActivity : AppCompatActivity() {
                     append("\n\nEdit it to change fragment size, the announced AAP ")
                     append("version, keyframe interval, media audio routing or touch ")
                     append("corrections for your head unit.")
+                    append("\n\nIf the car's Wi-Fi never gets joined, the two to try are ")
+                    append("\"hiddenSsid\": true, for a head unit that does not ")
+                    append("broadcast its network name, and \"pinBssid\": true, if ")
+                    append("another car with the same network name is in range.")
                     if (load.hasWarnings) {
                         append("\n\nProblems found:\n")
                         load.warnings.forEach { append("- ").append(it).append('\n') }

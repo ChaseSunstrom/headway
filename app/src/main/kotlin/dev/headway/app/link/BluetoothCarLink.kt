@@ -216,10 +216,6 @@ class BluetoothCarLink(
                     onStep("$label handshake failed after ${elapsedMillis}ms: ${e.message}")
                 }
 
-                // Any failure past connect leaves a half-open socket that would
-                // block the next attempt's SDP lookup on some stacks.
-                close()
-
                 // A link dropped this fast was refused, not broken, and the
                 // remaining mode is worth a try: aa-proxy-rs and aawgd both
                 // register this service without authentication, and a unit that
@@ -228,10 +224,28 @@ class BluetoothCarLink(
                 val refusedImmediately =
                     e is EOFException && elapsedMillis < IMMEDIATE_DROP_MILLIS
                 if (refusedImmediately && useSecure && modes.size > 1) {
+                    // Retire this attempt's socket, not the whole link.
+                    //
+                    // This used to call close() and then closed.set(false) to
+                    // un-retire the object. That resurrection is worse than it
+                    // looks: close() is idempotent by flag, so with `closed`
+                    // forced back to false a *later* real close() would run
+                    // again -- but if the second mode then failed before
+                    // assigning `socket`, the flag was left true with a socket
+                    // still open and no way to reach it. Scoping the cleanup to
+                    // the socket keeps `closed` meaning exactly one thing.
+                    runCatching { wrapped.close() }
+                    runCatching { opened.close() }
+                    socket = null
+                    transport = null
+                    handshake = null
                     lastFailure = e
-                    closed.set(false) // close() retired the link; the loop reuses it
                     continue
                 }
+
+                // Any failure past connect leaves a half-open socket that would
+                // block the next attempt's SDP lookup on some stacks.
+                close()
                 throw e
             }
         }

@@ -248,6 +248,12 @@ open class HeadwayService : Service() {
             attempt++
             try {
                 return wifi.openSocket(endpoint.ipAddress, endpoint.port)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // The user pressed Disconnect, or the service is going away.
+                // CancellationException is an Exception, so the catch below
+                // would rewrap it as "the head unit never accepted an AAP
+                // connection" -- blaming the car for the user's own action.
+                throw e
             } catch (e: Exception) {
                 if (System.nanoTime() >= deadline) {
                     throw IllegalStateException(
@@ -304,6 +310,16 @@ open class HeadwayService : Service() {
             // entire Wi-Fi join, which is the longest part of the bring-up.
             val rfcommService = scope.launch { link.serviceLink() }
             try {
+            // Resolved before the join, not after, because two of these knobs
+            // decide how the access point is matched. Identity is unknown until
+            // service discovery, so this yields the catch-all profile plus any
+            // user entry that matches every unit -- which is exactly where a
+            // "my head unit hides its SSID" override has to live, since the
+            // user cannot get far enough to learn the unit's identity.
+            val quirks = QuirkStore.inAppStorage(this).quirksFor(HeadUnitIdentity())
+            if (quirks != HeadUnitQuirks.DEFAULT) {
+                step("applying head unit quirks: ${quirks.describe()}")
+            }
             // CarNetworkCredentials.toString already redacts the passphrase, but
             // register it with the scrubber too, so it cannot leak through some
             // other log line before the export is shared for diagnosis.
@@ -331,7 +347,8 @@ open class HeadwayService : Service() {
                     // themselves, use that and skip the approval sheet entirely.
                     // This is the escape hatch for a phone where the sheet keeps
                     // going unanswered, and it costs one cheap lookup.
-                    wifi.adoptExistingCarNetwork(credentials) ?: wifi.join(credentials)
+                    wifi.adoptExistingCarNetwork(credentials)
+                        ?: wifi.join(credentials, hiddenSsid = quirks.hiddenSsid, pinBssid = quirks.pinBssid)
                 } catch (e: Throwable) {
                     // join() closes itself on failure, and a closed
                     // CarWifiNetwork cannot be joined again, so it must not be
@@ -377,21 +394,33 @@ open class HeadwayService : Service() {
 
                 // Sockets come from the network, never from `new Socket()`:
                 // the car AP has no internet and is not the default route.
-                val socket = connectWithRetry(wifi, endpoint)
-
-                // Apply the head-unit quirk file's pre-session knobs. Resolved
-                // against an unknown identity here because the head unit's make
-                // and model are not known until service discovery, which is
-                // itself part of the session these knobs configure; the resolve
-                // therefore yields the catch-all profile plus any user entry that
-                // matches every unit. Identity-specific touch corrections are
-                // applied later, once discovery has run. Without this the file
-                // the settings screen tells users to edit did nothing at all.
-                val quirks = QuirkStore.inAppStorage(this).quirksFor(HeadUnitIdentity())
-                if (quirks != HeadUnitQuirks.DEFAULT) {
-                    step("applying head unit quirks: ${quirks.describe()}")
+                //
+                // An adopted network is identified only by its gateway matching
+                // the address the head unit named, which is strong evidence but
+                // not proof — a home router on the same private address would
+                // also match. The AAP connect is the proof. If it fails on an
+                // adopted network, stop trusting the adoption and let the next
+                // attempt request the car's access point properly, rather than
+                // re-adopting the same wrong network forever.
+                val socket = try {
+                    connectWithRetry(wifi, endpoint)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (wifi.isAdopted) {
+                        step(
+                            "nothing answered on the Wi-Fi network Headway adopted, so it " +
+                                "was probably not the car; asking Android to join the car's " +
+                                "access point on the next attempt"
+                        )
+                        releaseCarWifi()
+                    }
+                    throw e
                 }
 
+                // `quirks` was resolved before the join, because two of its
+                // knobs decide how the access point is matched. Identity-specific
+                // touch corrections are applied later, once discovery has run.
                 TcpTransport.wrap(socket).use { transport ->
                     val connection = FramedConnection(
                         transport,
