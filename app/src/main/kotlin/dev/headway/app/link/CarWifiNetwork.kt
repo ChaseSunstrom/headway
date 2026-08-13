@@ -106,7 +106,12 @@ class CarWifiNetwork(
      */
     suspend fun join(
         credentials: CarNetworkCredentials,
-        timeoutMillis: Int = 30_000,
+        // Long, because this window contains a human. The platform shows its
+        // approval sheet, runs a scan to populate it (up to ~10s on its own),
+        // and then waits for a tap; 30s was tight enough that a user still
+        // reading the sheet lost it -- and every retry dismissed and reshowed
+        // it, so what they saw was a dialog that flickered away mid-tap.
+        timeoutMillis: Int = 75_000,
         hiddenSsid: Boolean = false,
     ): Network {
         check(!closed.get()) { "CarWifiNetwork already closed" }
@@ -128,34 +133,22 @@ class CarWifiNetwork(
             }
 
             override fun onUnavailable() {
-                // "Could not join" has three completely different causes and the
-                // platform reports all three identically, so say which one it
-                // was. Scanning is cheap and NEARBY_WIFI_DEVICES already covers
-                // it -- and a car that is not broadcasting at all is a different
-                // problem from one the phone could not associate with.
-                val visible = isCarApVisible(spec)
                 // Reached on timeout, and immediately when the platform refuses
-                // the request -- notably when Headway is not the foreground app
-                // or foreground service, which WifiNetworkSpecifier requires.
+                // the request. Headway cannot check whether the network was even
+                // on the air -- NEARBY_WIFI_DEVICES with neverForLocation makes
+                // getScanResults return an empty list *by design*, because scan
+                // results reveal location -- so instead of pretending, describe
+                // the two situations the user can actually tell apart on the
+                // system sheet they were just looking at.
                 available.completeExceptionally(
                     CarWifiException(
-                        "could not join ${spec.ssid} within $timeoutMillis ms; " +
-                            when (visible) {
-                                false ->
-                                    "the network is not being broadcast, so the head unit " +
-                                        "has not started its access point -- it usually only " +
-                                        "does so while it wants to project"
-                                true ->
-                                    "the network is being broadcast, so this is an " +
-                                        "association failure: a wrong passphrase, or Android " +
-                                        "waiting on a join prompt that was never tapped"
-                                null ->
-                                    "and whether it is being broadcast could not be checked, " +
-                                        "so the likeliest cause is the approval prompt: " +
-                                        "Android asks before letting an app join a network it " +
-                                        "chose, and that prompt has to be tapped while Headway " +
-                                        "is on screen"
-                            }
+                        "could not join ${spec.ssid} within $timeoutMillis ms. " +
+                            "If Android's sheet listed the car and nothing was tapped, " +
+                            "tap it next time and keep Headway on screen. If the sheet " +
+                            "said 'searching' with nothing to tap, the car's access " +
+                            "point was not on the air: on the car screen, open the " +
+                            "Android Auto / projection settings so the head unit brings " +
+                            "its Wi-Fi up, then press Connect again"
                     )
                 )
             }
@@ -213,28 +206,6 @@ class CarWifiNetwork(
      */
     suspend fun awaitLost() {
         lost.await()
-    }
-
-    /**
-     * Whether the car's access point is on the air at all.
-     *
-     * Null when it cannot be determined — no `WifiManager`, no permission, or an
-     * empty result, which the platform also returns when scan results are simply
-     * stale. Null is reported as "could not check" rather than "not there": a
-     * scan that failed is not evidence about the car.
-     *
-     * Uses cached scan results rather than starting a scan. `startScan` is
-     * throttled to a handful of calls per app per two minutes on modern Android
-     * and would usually be refused here anyway; the cache is what the platform
-     * intends callers to read.
-     */
-    @Suppress("DEPRECATION")
-    private fun isCarApVisible(spec: Spec): Boolean? {
-        val wifi = appContext.getSystemService(android.net.wifi.WifiManager::class.java)
-            ?: return null
-        val results = runCatching { wifi.scanResults }.getOrNull() ?: return null
-        if (results.isEmpty()) return null
-        return results.any { it.SSID == spec.ssid }
     }
 
     /**

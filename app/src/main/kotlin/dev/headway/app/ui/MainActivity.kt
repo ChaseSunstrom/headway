@@ -385,6 +385,13 @@ class MainActivity : AppCompatActivity() {
             return
         }
         HeadwayService.start(this)
+        // The one moment where the user has a job: Android shows an approval
+        // sheet for the car's network, and it has to be tapped. Say so now,
+        // while they are looking at the screen the sheet will appear over.
+        toast(
+            "When Android asks to connect to the car's Wi-Fi, tap the car in " +
+                "the list. Keep this screen open until then."
+        )
     }
 
     private fun requestMissingPermissions() {

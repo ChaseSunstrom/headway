@@ -247,6 +247,19 @@ open class HeadwayService : Service() {
             val credentials = link.fetchCredentials()
             Log.i(TAG, "head unit offered $credentials")
 
+            // Every capture that reached TCP had the car announce its endpoint;
+            // the attempts that timed out joining had not received one. A unit
+            // that names where to connect is a unit that is ready to project,
+            // which is also when its access point is on the air -- so the
+            // absence is worth flagging before spending the join timeout.
+            if (credentials.endpoint == null) {
+                step(
+                    "the car sent credentials but no endpoint this time, which has " +
+                        "so far correlated with its access point not being up yet; " +
+                        "if the join stalls, open Android Auto on the car screen"
+                )
+            }
+
             CarWifiNetwork(this, onStep = ::step).use { wifi ->
                 val network = wifi.join(credentials)
                 Log.i(TAG, "bound to car network $network")
