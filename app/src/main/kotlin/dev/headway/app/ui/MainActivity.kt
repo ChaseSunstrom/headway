@@ -159,6 +159,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        note("onStart")
         val scope = CoroutineScope(Dispatchers.Main.immediate)
         uiScope = scope
         scope.launch {
@@ -173,18 +174,37 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        note("onResume")
         // Permissions and the accessibility setting can both change while this
         // activity is stopped, because changing them means leaving it.
         refresh()
     }
 
+    override fun onPause() {
+        // Logged because a pause landing within a moment of the connect press
+        // is Android's Wi-Fi approval prompt appearing over this activity --
+        // and that, plus the stop/restart pattern around it, was the only
+        // evidence available for diagnosing a real car's failed join. It came
+        // from logcat, which a user cannot capture without adb; the in-app
+        // export, which is the whole point of SessionLog, had none of it.
+        note("onPause")
+        super.onPause()
+    }
+
     override fun onStop() {
+        note("onStop — something opaque covered this activity, or the screen went off")
         uiScope?.cancel()
         uiScope = null
         super.onStop()
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        note("window focus ${if (hasFocus) "gained" else "lost"}")
+    }
+
     override fun onDestroy() {
+        note("onDestroy")
         updateScope?.cancel()
         updateScope = null
         super.onDestroy()
@@ -735,6 +755,11 @@ class MainActivity : AppCompatActivity() {
         gravity = Gravity.CENTER
         setOnClickListener { onClick() }
         layoutParams = marginParams()
+    }
+
+    /** One activity-lifecycle line into the exportable log. */
+    private fun note(what: String) {
+        SessionLog.shared.info(TAG, "MainActivity $what")
     }
 
     private fun toast(text: String) {

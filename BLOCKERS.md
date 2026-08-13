@@ -107,3 +107,45 @@ its provenance and flags inferred polarity explicitly, so a real-car log can be
 diffed against the assumptions. Discrepancies between references are recorded
 rather than silently resolved, per `CLAUDE.md` ("Where references disagree,
 prefer aasdk's protobufs and note the discrepancy").
+
+---
+
+## B-005 — Joining the car's Wi-Fi needs a human tap that no unprivileged app can avoid
+
+**Status:** Open — mitigated.
+
+**Blocked:** `CLAUDE.md`'s "reconnecting automatically within 15 seconds of the
+car being available, without user interaction", for the *first* connection to a
+given car, and for any connection after Android has forgotten the approval.
+
+**Why:** `WifiNetworkSpecifier` is the only unprivileged way to join a chosen
+network, and AOSP shows a system approval prompt before honouring the request
+(`WifiNetworkFactory.startUi`, which launches Settings'
+`NetworkRequestDialogActivity` in its own task). That prompt has to be tapped by
+a person. Real Android Auto does not hit this because Play Services holds
+privileged Wi-Fi APIs and never goes through the specifier flow at all.
+
+AOSP does bank the approval per app and access point
+(`mUserApprovedAccessPointMap`) and skips the prompt on later requests, so in
+principle it is once per car. Two things weaken that: the approval is only
+stored once a connection *succeeds*, and on devices with STA+STA local-only
+concurrency the bypass is revoked when a secondary interface cannot be created
+(`revokeNormalBypass`), which puts the prompt back. Reinstalling the app clears
+it too.
+
+**Workarounds shipped:**
+
+- The network request is held across reconnect attempts rather than rebuilt per
+  attempt, so a successful join is never thrown away by an unrelated failure and
+  the approval actually gets banked (`HeadwayService.carWifi`).
+- `CarWifiNetwork.adoptExistingCarNetwork` uses a Wi-Fi network the phone is
+  already on when it can be identified as the car's — by the gateway matching
+  the address the head unit gave over Bluetooth, or by the shape of the network
+  when it gave none. A user who joins the car's Wi-Fi once from Settings
+  therefore never sees the prompt again, and the README says so.
+- A failed join backs off for 30 s rather than 500 ms, because re-requesting
+  immediately lands on Android's stale prompt instead of raising a new one.
+
+**What would remove it:** nothing available to an unprivileged app. If a future
+Android exposes a companion-device Wi-Fi association that does not re-prompt,
+that is the path.

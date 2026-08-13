@@ -175,6 +175,22 @@ class CarWifiNetwork(
     @Volatile
     private var platformFailure: String? = null
 
+    /**
+     * How many Wi-Fi scans the platform has completed since the join started.
+     *
+     * The single most discriminating number in the whole join, and it was
+     * missing. `WifiNetworkFactory` scans every 10 s while a request is pending
+     * and reports nothing to the app either way, so "no scans at all" and "many
+     * scans and no match" — a phone that cannot use the band versus a car that
+     * is not on the air — were the same silence. `registerScanResultsCallback`
+     * needs only `ACCESS_WIFI_STATE`; it delivers no scan *results* without
+     * location permission, which is fine, because it is the count that matters.
+     */
+    @Volatile
+    private var scansSeen: Int = 0
+
+    private var scanCallback: WifiManager.ScanResultsCallback? = null
+
     /** True while a network request is registered. Drives the leak assertions. */
     val isRequestActive: Boolean get() = callback != null
 
@@ -326,6 +342,7 @@ class CarWifiNetwork(
             callback = cb
             startWifiWatch(manager)
             startFailureListener(spec)
+            startScanWatch()
         }
         requestedAt = System.nanoTime()
         try {
@@ -406,6 +423,7 @@ class CarWifiNetwork(
             heartbeat.cancel()
             stopWifiWatch()
             stopFailureListener()
+            stopScanWatch()
         }
     }
 
@@ -569,7 +587,18 @@ class CarWifiNetwork(
         // is indistinguishable in every other signal from a car that is not
         // broadcasting.
         val fiveGhz = runCatching { wifiManager?.is5GHzBandSupported }.getOrNull()
+        // Screen and keyguard, because both are causal here and neither was
+        // recorded. A join started or continued with the display off behaves
+        // differently -- scans are throttled and the approval prompt cannot be
+        // tapped -- and in the capture that prompted all this, 1.7 s of
+        // otherwise unexplained activity lifecycle was very likely the screen.
+        val power = appContext.getSystemService(android.os.PowerManager::class.java)
+        val keyguard = appContext.getSystemService(android.app.KeyguardManager::class.java)
+        val interactive = runCatching { power?.isInteractive }.getOrNull()
+        val locked = runCatching { keyguard?.isKeyguardLocked }.getOrNull()
         return "wifi enabled=$wifiOn, 5GHz supported=$fiveGhz, " +
+            "platform scans completed=$scansSeen, " +
+            "screen on=$interactive, locked=$locked, " +
             "process importance=${importanceName(state.importance)}, " +
             "associated=${associatedWifi ?: "nothing"}"
     }
@@ -626,9 +655,18 @@ class CarWifiNetwork(
      * so every failure message Headway has ever written about a join has been a
      * guess between "the sheet was not tapped" and "the car was not there".
      * `WifiManager.addLocalOnlyConnectionFailureListener` answers it directly
-     * — ASSOCIATION, AUTHENTICATION, IP_PROVISIONING, NOT_FOUND, NO_RESPONSE or
-     * USER_REJECT — and needs only `ACCESS_WIFI_STATE`, which the manifest
-     * already declares.
+     * — ASSOCIATION, AUTHENTICATION, IP_PROVISIONING, NOT_FOUND or NO_RESPONSE
+     * — and needs only `ACCESS_WIFI_STATE`, which the manifest already
+     * declares.
+     *
+     * **Silence from it is not evidence.** `WifiNetworkFactory` emits these
+     * from two places only: a rejected user selection, and a connection that
+     * failed after its retries were exhausted. A request whose SSID was never
+     * matched in any scan, or whose prompt was simply never answered, produces
+     * no code at all — and that is the shape of the failure this was added to
+     * diagnose. The scan-results counter and the passive association listen are
+     * what cover that case; this covers the cases where the platform got as far
+     * as trying.
      *
      * API 34; `minSdk` is 33, so a Pixel on Android 13 simply gets the old
      * guesswork rather than a crash.
@@ -658,6 +696,27 @@ class CarWifiNetwork(
             )
         }.isSuccess
         if (registered) failureListener = listener
+    }
+
+    private fun startScanWatch() {
+        if (scanCallback != null) return
+        val manager = wifiManager ?: return
+        scansSeen = 0
+        val callback = object : WifiManager.ScanResultsCallback() {
+            override fun onScanResultsAvailable() {
+                scansSeen++
+            }
+        }
+        val registered = runCatching {
+            manager.registerScanResultsCallback({ it.run() }, callback)
+        }.isSuccess
+        if (registered) scanCallback = callback
+    }
+
+    private fun stopScanWatch() {
+        val callback = scanCallback ?: return
+        scanCallback = null
+        runCatching { wifiManager?.unregisterScanResultsCallback(callback) }
     }
 
     private fun stopFailureListener() {
@@ -701,16 +760,23 @@ class CarWifiNetwork(
                             "request was never satisfied. Please report this log with the " +
                             "capabilities and link-property lines above it."
                     )
+                scansSeen == 0 ->
+                    append(
+                        "The platform completed no Wi-Fi scans at all in that time, which is " +
+                            "not the car's doing. Either the request was never activated, or " +
+                            "scanning is blocked — check that Wi-Fi is on and that battery " +
+                            "saver is not restricting it."
+                    )
                 else ->
                     append(
-                        "The phone never associated with any Wi-Fi network in that time, so " +
-                            "either Android's approval prompt was not tapped, or the car's " +
-                            "access point was not on the air. If a prompt appeared naming the " +
-                            "car, tap Connect on it and leave it on screen — switching back " +
-                            "to Headway covers it and it cannot be recovered. If it said " +
-                            "'searching' with nothing to tap, open the Android Auto / " +
-                            "projection settings on the car screen so the head unit brings " +
-                            "its Wi-Fi up, then press Connect again."
+                        "The platform scanned $scansSeen time(s) and the phone never " +
+                            "associated with any Wi-Fi network, so either Android's approval " +
+                            "prompt was not tapped, or the car's access point was not on the " +
+                            "air. If a prompt appeared naming the car, tap Connect on it and " +
+                            "leave it on screen — switching back to Headway covers it and it " +
+                            "cannot be recovered. If it said 'searching' with nothing to tap, " +
+                            "open the Android Auto / projection settings on the car screen so " +
+                            "the head unit brings its Wi-Fi up, then press Connect again."
                     )
             }
         }
@@ -826,6 +892,7 @@ class CarWifiNetwork(
         val released = synchronized(registrationLock) {
             stopWifiWatch()
             stopFailureListener()
+            stopScanWatch()
             adoptedWatch?.let { watch ->
                 adoptedWatch = null
                 // A listen, so unregistering it disconnects nothing — the user's
@@ -904,11 +971,23 @@ class CarWifiNetwork(
          * that was about to succeed.
          *
          * Headway therefore requests with no platform timeout and lets the
-         * verdict come from `LocalOnlyConnectionFailureListener`. This value is
-         * only the backstop for a request that produces no callback at all, and
-         * is set where expiring it can never plausibly interrupt real progress.
+         * verdict come from `LocalOnlyConnectionFailureListener` where that
+         * listener can speak at all. This value is the backstop for everything
+         * else — and, importantly, most of the interesting failures are
+         * "everything else": the listener covers a rejected prompt and an
+         * exhausted connect, but says nothing at all about a request whose SSID
+         * was never matched or never selected, which is the shape of the
+         * observed failure.
+         *
+         * 150 s, not longer. It has to clear AOSP's 120 s post-tap budget, but
+         * every second past that is a second in which a car that has become
+         * available cannot be reconnected to — and CLAUDE.md asks for 15. A
+         * user who takes a very long time to notice the prompt can still lose
+         * an attempt; they get a fresh one 30 s later
+         * (`HeadwayService.JOIN_RETRY_DELAY_MILLIS`) rather than being stuck
+         * behind a five-minute wait.
          */
-        const val DEFAULT_JOIN_TIMEOUT_MILLIS: Int = 300_000
+        const val DEFAULT_JOIN_TIMEOUT_MILLIS: Int = 150_000
 
         /** How often the join says what it is doing. */
         private const val HEARTBEAT_MILLIS: Long = 5_000
