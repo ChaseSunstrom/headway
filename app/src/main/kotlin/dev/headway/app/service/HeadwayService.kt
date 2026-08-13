@@ -81,12 +81,19 @@ import kotlinx.coroutines.launch
  *    connection failure must produce a notification saying so, not a dead
  *    process.
  * 2. **`WifiNetworkSpecifier` requests are only honoured for a foreground app
- *    or a foreground service.** AOSP's `WifiNetworkFactory` gates them on
- *    `isRequestFromForegroundAppOrService`, so when the user locks the phone and
- *    the activity goes away, the foreground service is the only thing keeping
- *    the platform from tearing down the car's network under us. This is read
- *    from AOSP rather than measured on a phone, so treat it as the reason the
- *    design is shaped this way, not as a verified fact (BLOCKERS.md B-001).
+ *    or a foreground service.** AOSP's `WifiNetworkFactory.acceptRequest` gates
+ *    them on `isRequestFromForegroundAppOrService`, which passes at importance
+ *    `<= IMPORTANCE_FOREGROUND_SERVICE` (125) — exactly what a running
+ *    `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` service supplies. Without the
+ *    foreground service, an activity that goes away drops the process to
+ *    `IMPORTANCE_VISIBLE` (200) or worse and the request is refused outright.
+ *
+ *    Note the check is made **once**, when the request arrives
+ *    (`WifiNetworkFactory.java` L813-L818). There is no UID-importance listener
+ *    and no re-check, so the platform does not tear an established car network
+ *    down when Headway is backgrounded — an earlier version of this comment
+ *    claimed it did. Past the moment of the request, the foreground service
+ *    earns its keep through point 3 rather than point 2.
  * 3. **Process state.** A foreground service keeps the process out of the cached
  *    and frozen states and exempt from Doze's network restrictions, so the
  *    socket keeps being read while the screen is off.
@@ -113,6 +120,28 @@ open class HeadwayService : Service() {
     /** Remembered across a `START_REDELIVER_INTENT` restart. */
     @Volatile
     private var carAddress: String? = null
+
+    /**
+     * The car's Wi-Fi network, held across reconnect attempts rather than per
+     * attempt.
+     *
+     * This is deliberate and it is the difference between a car that connects
+     * once and a car that never connects. `WifiNetworkSpecifier` requests are
+     * approved by the user through a system sheet, and AOSP banks that approval
+     * per app *and access point* — `mUserApprovedAccessPointMap` in
+     * `WifiNetworkFactory` — so the second request for the same SSID connects
+     * with no sheet at all. But the approval is only stored once a connection
+     * *succeeds*, and the request is torn down the moment its callback is
+     * unregistered.
+     *
+     * Scoping the network to one attempt therefore meant every retry cycle threw
+     * away an association that was working, put the sheet back in front of the
+     * user, and never banked anything. Holding it here means the sheet is tapped
+     * once, ever, and a failure further up the stack — Bluetooth, TCP, TLS —
+     * retries against a phone that is still on the car's access point.
+     */
+    @Volatile
+    private var carWifi: CarWifiNetwork? = null
 
     private val notificationManager: NotificationManager?
         get() = getSystemService(NotificationManager::class.java)
@@ -146,8 +175,17 @@ open class HeadwayService : Service() {
     override fun onDestroy() {
         scope.cancel()
         linkJob = null
+        // The one place the car network is released. Everywhere else keeps it,
+        // because everywhere else is a retry that wants it.
+        releaseCarWifi()
         publish(LinkState.Idle)
         super.onDestroy()
+    }
+
+    private fun releaseCarWifi() {
+        val wifi = carWifi
+        carWifi = null
+        runCatching { wifi?.close() }
     }
 
     private fun supervisor() = SessionSupervisor(
@@ -258,6 +296,14 @@ open class HeadwayService : Service() {
 
         BluetoothCarLink(car, adapter, onStep = ::step).use { link ->
             val credentials = link.fetchCredentials()
+            // From here to the end of the attempt, something has to keep
+            // reading Bluetooth. The head unit does not go quiet once it has
+            // handed over the credentials -- it pings, and it re-announces --
+            // and a peer whose keepalives are never answered has every reason
+            // to decide the phone gave up. This used to be dead air for the
+            // entire Wi-Fi join, which is the longest part of the bring-up.
+            val rfcommService = scope.launch { link.serviceLink() }
+            try {
             // CarNetworkCredentials.toString already redacts the passphrase, but
             // register it with the scrubber too, so it cannot leak through some
             // other log line before the export is shared for diagnosis.
@@ -277,8 +323,22 @@ open class HeadwayService : Service() {
                 )
             }
 
-            CarWifiNetwork(this, onStep = ::step).use { wifi ->
-                val network = wifi.join(credentials)
+            run {
+                // Reused across attempts, not scoped to this one. See carWifi.
+                val wifi = carWifi ?: CarWifiNetwork(this, onStep = ::step).also { carWifi = it }
+                val network = try {
+                    // If the user has already put the phone on the car's Wi-Fi
+                    // themselves, use that and skip the approval sheet entirely.
+                    // This is the escape hatch for a phone where the sheet keeps
+                    // going unanswered, and it costs one cheap lookup.
+                    wifi.adoptExistingCarNetwork(credentials) ?: wifi.join(credentials)
+                } catch (e: Throwable) {
+                    // join() closes itself on failure, and a closed
+                    // CarWifiNetwork cannot be joined again, so it must not be
+                    // the one the next attempt picks up.
+                    releaseCarWifi()
+                    throw e
+                }
                 Log.i(TAG, "bound to car network $network")
 
                 // Say so immediately, not after working out where to connect.
@@ -375,6 +435,9 @@ open class HeadwayService : Service() {
                     }
                 }
             }
+            } finally {
+                rfcommService.cancel()
+            }
         }
     }
 
@@ -394,6 +457,12 @@ open class HeadwayService : Service() {
         }
     }
 
+    // Same reasoning as runSession: BLUETOOTH_CONNECT is granted in the UI
+    // before the service starts, and a SecurityException from here unwinds into
+    // the supervisor's failure path with a readable message. Annotated on this
+    // function too because lint checks the call site, so the annotation on the
+    // caller does not reach the calls inside it.
+    @SuppressLint("MissingPermission")
     private fun resolveCar(adapter: BluetoothAdapter): BluetoothDevice {
         // Logged on every attempt, not just failures. A head unit that stops
         // advertising the service between attempts is a real and confusing

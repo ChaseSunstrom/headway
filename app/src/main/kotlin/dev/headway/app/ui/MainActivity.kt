@@ -385,13 +385,52 @@ class MainActivity : AppCompatActivity() {
             requestMissingPermissions()
             return
         }
+        // Wi-Fi being off is worth catching here rather than 90 seconds into the
+        // attempt. The platform refuses a WifiNetworkSpecifier request outright
+        // when the radio is off and gives the app nothing but an anonymous
+        // "unavailable", so without this the user is told to tap an approval
+        // sheet that is never going to appear.
+        val wifi = getSystemService(android.net.wifi.WifiManager::class.java)
+        if (wifi != null && !wifi.isWifiEnabled) {
+            AlertDialog.Builder(this)
+                .setTitle("Turn Wi-Fi on first")
+                .setMessage(
+                    "The car link runs over the head unit's own Wi-Fi, so the radio " +
+                        "has to be switched on. It does not need to be connected to " +
+                        "anything — Headway joins the car's network itself, and that " +
+                        "network has no internet.",
+                )
+                .setPositiveButton("Open Wi-Fi settings") { _, _ ->
+                    runCatching {
+                        startActivity(Intent(Settings.Panel.ACTION_WIFI))
+                    }.onFailure { toast("Turn Wi-Fi on in Settings, then press Connect") }
+                }
+                // Still offered, because this reads the radio's state and the
+                // user knows their phone better than this check does.
+                .setNegativeButton("Try anyway") { _, _ -> startLink() }
+                .show()
+            return
+        }
+
+        startLink()
+    }
+
+    private fun startLink() {
         HeadwayService.start(this)
         // The one moment where the user has a job: Android shows an approval
-        // sheet for the car's network, and it has to be tapped. Say so now,
-        // while they are looking at the screen the sheet will appear over.
+        // prompt for the car's network, and it has to be tapped.
+        //
+        // The advice used to end "keep this screen open", which was actively
+        // harmful. Android's prompt is an activity in its own task
+        // (taskAffinity .wifi.NetworkRequestDialogActivity, excludeFromRecents),
+        // and its onPause unregisters the scan callback that populates it.
+        // Returning to Headway to see how it is going covers the prompt, and it
+        // does not reliably come back. Headway does not need to be visible at
+        // all: the foreground service is what satisfies the platform's
+        // requirement, and that check runs once, when the request is made.
         toast(
-            "When Android asks to connect to the car's Wi-Fi, tap the car in " +
-                "the list. Keep this screen open until then."
+            "Android will ask to connect to the car's Wi-Fi. Tap the car on that " +
+                "prompt and leave it on screen — don't switch back here to check."
         )
     }
 

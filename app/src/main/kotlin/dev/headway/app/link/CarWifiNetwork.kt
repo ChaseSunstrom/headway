@@ -17,17 +17,24 @@
 
 package dev.headway.app.link
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.MacAddress
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
+import dev.headway.transport.wireless.CarEndpoint
 import dev.headway.transport.wireless.CarNetworkCredentials
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -78,9 +85,32 @@ class CarWifiNetwork(
     private val connectivityManager: ConnectivityManager? =
         appContext.getSystemService(ConnectivityManager::class.java)
 
+    private val wifiManager: WifiManager? =
+        appContext.getSystemService(WifiManager::class.java)
+
     private val closed = AtomicBoolean(false)
 
     private var callback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * A plain listen on every Wi-Fi network, registered only while a join is in
+     * flight.
+     *
+     * It requests nothing and joins nothing — `registerNetworkCallback` with no
+     * specifier is a passive listen and needs only `ACCESS_NETWORK_STATE`. It
+     * exists because the specifier request cannot tell these two apart, and they
+     * have opposite fixes:
+     *
+     * - the phone never associated with anything (the car's AP was not on the
+     *   air, or the approval sheet was never tapped), versus
+     * - the phone *did* associate but the request was never satisfied, which
+     *   would be a fault in how Headway shaped the request.
+     *
+     * A real capture spent 75 s in the first state and the second, and the log
+     * could not say which. Now it can.
+     */
+    private var wifiWatch: ConnectivityManager.NetworkCallback? = null
+
     private var available = CompletableDeferred<Network>()
     private var lost = CompletableDeferred<Unit>()
 
@@ -89,6 +119,39 @@ class CarWifiNetwork(
     var network: Network? = null
         private set
 
+    /** Which SSID [network] belongs to, so a second car cannot inherit it. */
+    @Volatile
+    private var joinedSsid: String? = null
+
+    /**
+     * True when [network] came from [adoptExistingCarNetwork] rather than from a
+     * request Headway made.
+     *
+     * It decides one thing, and getting it wrong would be rude: Headway must not
+     * disconnect the phone from a network the *user* joined. There is no
+     * callback to unregister for an adopted network, and dropping the reference
+     * is the whole of the cleanup.
+     */
+    @Volatile
+    private var adopted: Boolean = false
+
+    /** Reports the loss of an adopted network, which has no request behind it. */
+    private var adoptedWatch: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * The registered [WifiManager.LocalOnlyConnectionFailureListener].
+     *
+     * Held as `Any?` rather than the interface type: the interface is API 34 and
+     * `minSdk` is 33, and a field whose declared type does not exist on the
+     * running device is the kind of thing that fails at class-verification time
+     * rather than at the call.
+     */
+    private var failureListener: Any? = null
+
+    /** The platform's own reason for the last failed join, when it gave one. */
+    @Volatile
+    private var platformFailure: String? = null
+
     /** True while a network request is registered. Drives the leak assertions. */
     val isRequestActive: Boolean get() = callback != null
 
@@ -96,28 +159,59 @@ class CarWifiNetwork(
      * Requests the car's AP and suspends until the platform reports it
      * available.
      *
+     * Calling this again while already joined to the same SSID returns the
+     * existing network rather than re-requesting it — see [DEFAULT_JOIN_TIMEOUT_MILLIS]
+     * and `HeadwayService.carWifi` for why that matters more than it looks.
+     *
      * @param timeoutMillis handed to the platform, which answers with
      *   `onUnavailable` rather than leaving the request pending forever. This is
      *   the only reliable way to bound the wait: an association that never
-     *   completes produces no callback at all otherwise.
+     *   completes produces no callback at all otherwise. It must stay longer
+     *   than AOSP's own retry budget; [DEFAULT_JOIN_TIMEOUT_MILLIS] explains.
      *
-     * @throws CarWifiException on timeout, on a rejected request, or when the
-     *   caller lacks the permissions the request needs.
+     * @throws CarWifiException on timeout, on a rejected request, when Wi-Fi is
+     *   switched off, or when the caller lacks the permissions the request needs.
      */
     suspend fun join(
         credentials: CarNetworkCredentials,
-        // Long, because this window contains a human. The platform shows its
-        // approval sheet, runs a scan to populate it (up to ~10s on its own),
-        // and then waits for a tap; 30s was tight enough that a user still
-        // reading the sheet lost it -- and every retry dismissed and reshowed
-        // it, so what they saw was a dialog that flickered away mid-tap.
-        timeoutMillis: Int = 75_000,
+        timeoutMillis: Int = DEFAULT_JOIN_TIMEOUT_MILLIS,
         hiddenSsid: Boolean = false,
-    ): Network {
+    ): Network = coroutineScope {
         check(!closed.get()) { "CarWifiNetwork already closed" }
-        check(callback == null) { "a network request is already active" }
         val manager = connectivityManager
             ?: throw CarWifiException("no ConnectivityManager on this device")
+
+        // Already on the car's network from an earlier attempt. Re-requesting
+        // would tear the association down and put the approval sheet back in
+        // front of the user for a network the phone is *currently joined to*.
+        //
+        // Guarded on the SSID as well as on there being a network: a phone
+        // paired with two cars must never reuse the first car's association for
+        // the second, which would send the AAP session to the wrong vehicle.
+        network?.let { joined ->
+            if (joinedSsid == credentials.ssid) {
+                onStep("already joined ${credentials.ssid}; reusing the existing network")
+                return@coroutineScope joined
+            }
+            onStep("joined ${joinedSsid} but this car wants ${credentials.ssid}; re-requesting")
+            releaseRequest()
+        }
+
+        // A request left over from an association that has since gone away.
+        // Leaving it registered would fail the next requestNetwork, and it is
+        // doing nothing useful: the network it was satisfied by is gone.
+        if (callback != null) {
+            onStep("clearing the previous car network request before re-requesting")
+            releaseRequest()
+        }
+
+        // The platform's own answer to a request made with Wi-Fi off is to
+        // reject it outright -- AOSP WifiNetworkFactory.needNetworkFor:
+        // "Request with wifi network specifier when wifi is off. Rejecting" --
+        // which arrives as a bare onUnavailable indistinguishable from a
+        // timeout. Saying it here is the difference between a user who turns
+        // Wi-Fi on and a user who is told to tap a sheet that will never appear.
+        requireWifiEnabled()
 
         val spec = specFor(credentials, hiddenSsid)
         val request = buildRequest(spec)
@@ -128,34 +222,37 @@ class CarWifiNetwork(
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(joined: Network) {
                 network = joined
+                joinedSsid = spec.ssid
                 onStep("joined ${spec.ssid}")
                 available.complete(joined)
             }
 
+            override fun onCapabilitiesChanged(
+                changed: Network,
+                capabilities: NetworkCapabilities,
+            ) {
+                // Only interesting before the join completes, where it is the
+                // one signal that the platform got as far as building a network
+                // for us at all.
+                if (!available.isCompleted) {
+                    onStep("car network capabilities settling: $capabilities")
+                }
+            }
+
+            override fun onLinkPropertiesChanged(changed: Network, properties: LinkProperties) {
+                if (!available.isCompleted) {
+                    onStep("car network link properties: $properties")
+                }
+            }
+
             override fun onUnavailable() {
-                // Reached on timeout, and immediately when the platform refuses
-                // the request. Headway cannot check whether the network was even
-                // on the air -- NEARBY_WIFI_DEVICES with neverForLocation makes
-                // getScanResults return an empty list *by design*, because scan
-                // results reveal location -- so instead of pretending, describe
-                // the two situations the user can actually tell apart on the
-                // system sheet they were just looking at.
-                available.completeExceptionally(
-                    CarWifiException(
-                        "could not join ${spec.ssid} within $timeoutMillis ms. " +
-                            "If Android's sheet listed the car and nothing was tapped, " +
-                            "tap it next time and keep Headway on screen. If the sheet " +
-                            "said 'searching' with nothing to tap, the car's access " +
-                            "point was not on the air: on the car screen, open the " +
-                            "Android Auto / projection settings so the head unit brings " +
-                            "its Wi-Fi up, then press Connect again"
-                    )
-                )
+                available.completeExceptionally(CarWifiException(unavailableMessage(spec, timeoutMillis)))
             }
 
             override fun onLost(gone: Network) {
                 if (gone == network) {
                     network = null
+                    joinedSsid = null
                     onStep("lost ${spec.ssid}")
                     lost.complete(Unit)
                 }
@@ -169,10 +266,27 @@ class CarWifiNetwork(
         }
 
         callback = cb
+        startWifiWatch(manager)
+        startFailureListener(spec)
         try {
-            manager.requestNetwork(request, cb, timeoutMillis)
+            // No platform timeout, deliberately. `requestNetwork`'s timeout
+            // variant does not just stop waiting — expiring it releases the
+            // request, and releasing it mid-association *disconnects* the
+            // attempt the platform is making. AOSP's own budget (4 x 30 s) is
+            // measured from the moment the human taps Connect, not from here, so
+            // no fixed value set at request time can be guaranteed to sit
+            // outside it: a user who takes twenty seconds to notice the sheet
+            // moves the whole budget twenty seconds later.
+            //
+            // The give-up decision is driven instead by things that mean
+            // something: the platform's own failure verdict via
+            // LocalOnlyConnectionFailureListener, and a backstop deadline far
+            // outside any legitimate attempt.
+            manager.requestNetwork(request, cb)
         } catch (e: SecurityException) {
             callback = null
+            stopWifiWatch()
+            stopFailureListener()
             // Name the one that is actually missing. The old message listed both
             // candidates, and the two have completely different fixes: one is
             // granted in Settings, the other can only be declared in the
@@ -181,19 +295,336 @@ class CarWifiNetwork(
             throw CarWifiException("requestNetwork denied; ${missingJoinPermission()}", e)
         } catch (e: RuntimeException) {
             callback = null
+            stopWifiWatch()
+            stopFailureListener()
             throw CarWifiException("requestNetwork rejected: ${e.message}", e)
         }
 
         onStep(
             "requesting ${spec.ssid}${if (spec.bssid != null) " (${spec.bssid})" else " (any BSSID)"}" +
-                "; Android may show a prompt to approve joining it, and the join " +
-                "fails after ${timeoutMillis}ms if nothing taps it"
+                ". Android may show a prompt to approve joining it: tap the car on that " +
+                "prompt and leave it on screen. Do not switch back to Headway to check — " +
+                "covering Android's prompt with this app is what makes it unrecoverable"
         )
-        return try {
+
+        // A join is the one step in the whole bring-up that can take minutes and
+        // produce no log line at all: the platform's approval sheet, scan and
+        // connection retries are entirely internal. A real capture spent 75
+        // seconds in exactly that silence, and there was no way afterwards to
+        // tell whether the phone had been trying, waiting for a tap, or idle.
+        val heartbeat = launch {
+            val startedAt = System.nanoTime()
+            while (true) {
+                delay(HEARTBEAT_MILLIS)
+                val elapsed = (System.nanoTime() - startedAt) / 1_000_000
+                onStep("still waiting to join ${spec.ssid} after ${elapsed}ms — ${radioState()}")
+                if (elapsed >= timeoutMillis) {
+                    // The backstop, not a timeout in the platform's sense. It
+                    // exists so a request that produces no callback at all --
+                    // which is a state the platform can genuinely reach -- does
+                    // not hang the service forever, and it is set far outside
+                    // any legitimate attempt so that expiring it never cuts a
+                    // real association short.
+                    available.completeExceptionally(
+                        CarWifiException(unavailableMessage(spec, elapsed.toInt()))
+                    )
+                    return@launch
+                }
+            }
+        }
+
+        try {
             available.await()
         } catch (e: Throwable) {
             close()
             throw e
+        } finally {
+            heartbeat.cancel()
+            stopWifiWatch()
+            stopFailureListener()
+        }
+    }
+
+    /**
+     * Uses a Wi-Fi network the phone is *already* on, when that network is
+     * demonstrably the car's.
+     *
+     * ## Why this exists
+     *
+     * `WifiNetworkSpecifier` is the only unprivileged way to *join* a network,
+     * and it costs a system approval sheet that a human has to tap. That is
+     * survivable once. It is not survivable as the thing standing between the
+     * user and every single connection attempt, and a real capture showed
+     * exactly that: the sheet appeared, the 75 s expired, and the cycle repeated
+     * with no way for the user to get past it.
+     *
+     * But nothing requires Headway to be the one that joins. If the user
+     * connects to the car's Wi-Fi themselves in Settings — which they can always
+     * do, and which is the obvious thing to try when an app cannot — the phone
+     * is on the car's network already and the whole approval dance is
+     * unnecessary. All Headway needs is the [Network] object, and
+     * `ACCESS_NETWORK_STATE` is enough to enumerate those.
+     *
+     * ## Why the match is on the gateway and not the SSID
+     *
+     * The SSID is not readable. `WifiManager.getConnectionInfo().getSSID()`
+     * returns `<unknown ssid>` without location permission, which Headway will
+     * not request. But the head unit has just told us its own IP over Bluetooth,
+     * and a head unit hosting an access point is the DHCP server and gateway on
+     * it. So "a connected Wi-Fi network whose DHCP server is the address the car
+     * just named" identifies the car's network exactly, with no permission and
+     * no guessing — and, importantly, with no probe traffic sent to a head unit
+     * that may only tolerate one connection.
+     *
+     * Returns null when there is no such network, which is the normal case and
+     * not an error: the caller then goes on to [join].
+     */
+    fun adoptExistingCarNetwork(
+        credentials: CarNetworkCredentials,
+        expected: CarEndpoint? = credentials.endpoint,
+    ): Network? {
+        if (closed.get() || network != null) return null
+        if (expected == null) return null
+        val manager = connectivityManager ?: return null
+
+        // getAllNetworks() is deprecated in favour of a registered callback, and
+        // a callback is the wrong shape here: this is a one-shot question asked
+        // before the join, not an ongoing subscription. It still works and needs
+        // nothing beyond ACCESS_NETWORK_STATE.
+        @Suppress("DEPRECATION")
+        val candidates = runCatching { manager.allNetworks.toList() }.getOrDefault(emptyList())
+
+        for (candidate in candidates) {
+            val capabilities = manager.getNetworkCapabilities(candidate) ?: continue
+            if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+            val properties = manager.getLinkProperties(candidate) ?: continue
+            if (!hostsGateway(properties, expected.ipAddress)) continue
+
+            onStep(
+                "the phone is already on a Wi-Fi network whose gateway is " +
+                    "${expected.ipAddress} — that is this car, so no approval sheet is " +
+                    "needed"
+            )
+            network = candidate
+            joinedSsid = credentials.ssid
+            adopted = true
+            // Fresh, because the session watchdog races awaitLost() and a
+            // deferred left completed by an earlier attempt would fire the
+            // watchdog immediately on a network that is perfectly healthy.
+            lost = CompletableDeferred()
+            watchAdopted(manager, candidate)
+            return candidate
+        }
+        return null
+    }
+
+    /**
+     * Notices an adopted network going away.
+     *
+     * A requested network reports its own loss through the request's callback.
+     * An adopted one has no request behind it, so without this the session
+     * watchdog would never fire and a phone driven out of range would sit on a
+     * dead socket until a write timed out.
+     */
+    private fun watchAdopted(manager: ConnectivityManager, adoptedNetwork: Network) {
+        val watch = object : ConnectivityManager.NetworkCallback() {
+            override fun onLost(gone: Network) {
+                if (gone != adoptedNetwork) return
+                network = null
+                joinedSsid = null
+                onStep("the car's Wi-Fi network went away")
+                lost.complete(Unit)
+            }
+        }
+        val registered = runCatching {
+            manager.registerNetworkCallback(
+                NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build(),
+                watch,
+            )
+        }.isSuccess
+        if (registered) adoptedWatch = watch
+    }
+
+    /** True if [address] is the DHCP server or the default gateway on [properties]. */
+    private fun hostsGateway(properties: LinkProperties, address: String): Boolean {
+        if (properties.dhcpServerAddress?.hostAddress == address) return true
+        return properties.routes.any {
+            it.isDefaultRoute && it.hasGateway() && it.gateway?.hostAddress == address
+        }
+    }
+
+    /** @throws CarWifiException when the user's Wi-Fi radio is switched off. */
+    private fun requireWifiEnabled() {
+        val manager = wifiManager ?: return
+        if (runCatching { manager.isWifiEnabled }.getOrDefault(true)) return
+        throw CarWifiException(
+            "Wi-Fi is switched off on this phone, so the car's network cannot be " +
+                "joined. Android rejects the request outright rather than offering " +
+                "to turn Wi-Fi on. Switch Wi-Fi on and press Connect again — it does " +
+                "not need to be connected to anything, it just has to be on."
+        )
+    }
+
+    /**
+     * What the radios are doing right now, for the heartbeat and the give-up
+     * message.
+     *
+     * Process importance is in here because `WifiNetworkFactory` silently drops
+     * a specifier request from an app that is neither foreground nor running a
+     * foreground service, and from the app's side that is indistinguishable from
+     * every other failure. `getMyMemoryState` is a static call with no
+     * permission attached, so this costs nothing.
+     */
+    private fun radioState(): String {
+        val wifiOn = runCatching { wifiManager?.isWifiEnabled }.getOrNull()
+        val state = ActivityManager.RunningAppProcessInfo()
+        runCatching { ActivityManager.getMyMemoryState(state) }
+        return "wifi enabled=$wifiOn, process importance=${importanceName(state.importance)}, " +
+            "associated=${associatedWifi ?: "nothing"}"
+    }
+
+    /**
+     * The Wi-Fi network the phone is associated with, as seen by the passive
+     * listen, or null.
+     *
+     * Deliberately not `WifiManager.getConnectionInfo().getSSID()`: on Android 10+
+     * that returns `<unknown ssid>` to an app without location permission, which
+     * Headway will not ask for.
+     */
+    @Volatile
+    private var associatedWifi: String? = null
+
+    private fun startWifiWatch(manager: ConnectivityManager) {
+        if (wifiWatch != null) return
+        val watch = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(joined: Network) {
+                associatedWifi = joined.toString()
+                onStep("the phone is now associated with a Wi-Fi network ($joined)")
+            }
+
+            override fun onLost(gone: Network) {
+                if (associatedWifi == gone.toString()) associatedWifi = null
+                onStep("a Wi-Fi network went away ($gone)")
+            }
+        }
+        // A listen, not a request: it never causes the platform to join
+        // anything, and needs no permission beyond ACCESS_NETWORK_STATE.
+        val listened = runCatching {
+            manager.registerNetworkCallback(
+                NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build(),
+                watch,
+            )
+        }.isSuccess
+        if (listened) wifiWatch = watch
+    }
+
+    private fun stopWifiWatch() {
+        val watch = wifiWatch ?: return
+        wifiWatch = null
+        runCatching { connectivityManager?.unregisterNetworkCallback(watch) }
+    }
+
+    /**
+     * Registers for the platform's own verdict on why a local-only join failed.
+     *
+     * This is the single most valuable thing in the class for diagnosis, and it
+     * was missing. `NetworkCallback.onUnavailable()` carries no reason at all,
+     * so every failure message Headway has ever written about a join has been a
+     * guess between "the sheet was not tapped" and "the car was not there".
+     * `WifiManager.addLocalOnlyConnectionFailureListener` answers it directly
+     * — ASSOCIATION, AUTHENTICATION, IP_PROVISIONING, NOT_FOUND, NO_RESPONSE or
+     * USER_REJECT — and needs only `ACCESS_WIFI_STATE`, which the manifest
+     * already declares.
+     *
+     * API 34; `minSdk` is 33, so a Pixel on Android 13 simply gets the old
+     * guesswork rather than a crash.
+     */
+    private fun startFailureListener(spec: Spec) {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            return
+        }
+        val manager = wifiManager ?: return
+        val listener = WifiManager.LocalOnlyConnectionFailureListener { _, reason ->
+            val name = localOnlyFailureName(reason)
+            platformFailure = name
+            onStep("the platform reports the join failed: $name")
+            // The authoritative early-out. Without it the caller waits out the
+            // backstop deadline for an attempt the platform has already
+            // abandoned.
+            available.completeExceptionally(
+                CarWifiException(
+                    "Android could not join ${spec.ssid}: $name. " + adviceFor(reason)
+                )
+            )
+        }
+        val registered = runCatching {
+            manager.addLocalOnlyConnectionFailureListener(
+                { it.run() },
+                listener,
+            )
+        }.isSuccess
+        if (registered) failureListener = listener
+    }
+
+    private fun stopFailureListener() {
+        val listener = failureListener ?: return
+        failureListener = null
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            return
+        }
+        runCatching {
+            wifiManager?.removeLocalOnlyConnectionFailureListener(
+                listener as WifiManager.LocalOnlyConnectionFailureListener
+            )
+        }
+    }
+
+    /**
+     * What to say when the join is given up on, using what was actually
+     * observed rather than listing every possibility.
+     *
+     * Three sources, in decreasing order of authority: the platform's own
+     * failure code, whether the phone associated with any Wi-Fi network at all,
+     * and the radio state. Nothing here asserts a cause it cannot support —
+     * "associated but not handed over" in particular has several possible
+     * explanations on the platform side, so it reports the observation and asks
+     * for the log rather than blaming the car or the app.
+     */
+    private fun unavailableMessage(spec: Spec, elapsedMillis: Int): String {
+        val associated = associatedWifi
+        val wifiOn = runCatching { wifiManager?.isWifiEnabled }.getOrDefault(true)
+        return buildString {
+            append("gave up joining ${spec.ssid} after $elapsedMillis ms. ")
+            platformFailure?.let {
+                append("Android's own reason was $it. ")
+            }
+            when {
+                wifiOn == false ->
+                    append("Wi-Fi was switched off during the attempt; switch it back on.")
+                associated != null ->
+                    append(
+                        "The phone did associate with a Wi-Fi network ($associated) but the " +
+                            "request was never satisfied. Please report this log with the " +
+                            "capabilities and link-property lines above it."
+                    )
+                else ->
+                    append(
+                        "The phone never associated with any Wi-Fi network in that time, so " +
+                            "either Android's approval prompt was not tapped, or the car's " +
+                            "access point was not on the air. If a prompt appeared naming the " +
+                            "car, tap Connect on it and leave it on screen — switching back " +
+                            "to Headway covers it and it cannot be recovered. If it said " +
+                            "'searching' with nothing to tap, open the Android Auto / " +
+                            "projection settings on the car screen so the head unit brings " +
+                            "its Wi-Fi up, then press Connect again."
+                    )
+            }
         }
     }
 
@@ -294,18 +725,41 @@ class CarWifiNetwork(
         }
     }
 
-    /** Releases the request. Idempotent; safe from any thread and any path. */
-    override fun close() {
-        if (!closed.compareAndSet(false, true)) return
+    /**
+     * Unregisters the network request without retiring this object.
+     *
+     * Split out of [close] because the two are wanted at different times. The
+     * request has to go when the association is gone — a stale callback blocks
+     * the next `requestNetwork` — but the object itself is reused across
+     * reconnect attempts so that a car network which is *still up* is never torn
+     * down just because Bluetooth or TCP had a bad attempt.
+     */
+    private fun releaseRequest() {
+        stopWifiWatch()
+        stopFailureListener()
+        adoptedWatch?.let { watch ->
+            adoptedWatch = null
+            // A listen, so unregistering it disconnects nothing — the user's own
+            // Wi-Fi connection is left exactly as it was.
+            runCatching { connectivityManager?.unregisterNetworkCallback(watch) }
+        }
         val cb = callback
         callback = null
         network = null
+        joinedSsid = null
+        adopted = false
         if (cb != null) {
             // Throws IllegalArgumentException if the callback was never
             // registered, which can happen when requestNetwork itself failed.
             runCatching { connectivityManager?.unregisterNetworkCallback(cb) }
             onStep("released the car network request")
         }
+    }
+
+    /** Releases the request. Idempotent; safe from any thread and any path. */
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        releaseRequest()
         available.completeExceptionally(CarWifiException("car network released"))
         lost.complete(Unit)
     }
@@ -331,6 +785,94 @@ class CarWifiNetwork(
     companion object {
 
         /**
+         * The backstop deadline for a join. Not a timeout in the platform's
+         * sense, and deliberately far longer than one.
+         *
+         * The join used to pass 75 s to `requestNetwork`'s timeout variant. Two
+         * things were wrong with that, and the second is the serious one.
+         *
+         * First, it is inside AOSP's own budget: after the user taps Connect,
+         * `WifiNetworkFactory` allows `NETWORK_CONNECTION_TIMEOUT_MS` (30 s) per
+         * attempt and `USER_SELECTED_NETWORK_CONNECT_RETRY_MAX` (3) retries —
+         * up to 120 s — and that clock starts at the *tap*, not at the request
+         * (`packages/modules/Wifi/.../WifiNetworkFactory.java` L110-L116,
+         * L1213, L1315-L1325). A user who takes twenty seconds to notice the
+         * prompt moves the whole budget twenty seconds later, so no fixed value
+         * chosen here can be guaranteed to sit outside it.
+         *
+         * Second, expiring that timeout does not merely stop waiting: it
+         * releases the request, which tears down the association the platform
+         * is in the middle of making and broadcasts `onAbort` to Settings'
+         * approval dialog. So the old timeout was capable of cancelling a join
+         * that was about to succeed.
+         *
+         * Headway therefore requests with no platform timeout and lets the
+         * verdict come from `LocalOnlyConnectionFailureListener`. This value is
+         * only the backstop for a request that produces no callback at all, and
+         * is set where expiring it can never plausibly interrupt real progress.
+         */
+        const val DEFAULT_JOIN_TIMEOUT_MILLIS: Int = 300_000
+
+        /** How often the join says what it is doing. */
+        private const val HEARTBEAT_MILLIS: Long = 5_000
+
+        /**
+         * A `STATUS_LOCAL_ONLY_CONNECTION_FAILURE_*` code as its name.
+         *
+         * Written out rather than reflected so the log reads the same on a
+         * device whose platform predates a code Headway knows about.
+         */
+        internal fun localOnlyFailureName(reason: Int): String = when (reason) {
+            WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_UNKNOWN -> "UNKNOWN"
+            WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_ASSOCIATION -> "ASSOCIATION"
+            WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_AUTHENTICATION -> "AUTHENTICATION"
+            WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_IP_PROVISIONING -> "IP_PROVISIONING"
+            WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NOT_FOUND -> "NOT_FOUND"
+            WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NO_RESPONSE -> "NO_RESPONSE"
+            // Deliberately printed rather than mapped to "unknown": a code this
+            // build has no name for is a code from a newer platform, and the
+            // number is what makes it lookup-able.
+            else -> "reason=$reason"
+        }
+
+        /** What the user can actually do about each platform failure code. */
+        internal fun adviceFor(reason: Int): String = when (reason) {
+            WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NOT_FOUND ->
+                "The car's access point was not on the air. On the car screen, open the " +
+                    "Android Auto or projection settings so the head unit brings its Wi-Fi " +
+                    "up, then press Connect again."
+            WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_AUTHENTICATION ->
+                "The passphrase the head unit sent was rejected by its own access point. " +
+                    "Un-pair and re-pair the phone in the car's Bluetooth settings, which " +
+                    "makes it issue a fresh key."
+            WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_IP_PROVISIONING ->
+                "The phone associated but the head unit never gave it an address. The car " +
+                    "is usually still starting up; try again in a moment."
+            WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_ASSOCIATION,
+            WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NO_RESPONSE ->
+                "The access point was seen but would not complete the association. If it " +
+                    "keeps happening, capture this log — it is a head unit quirk worth " +
+                    "recording."
+            else -> "Please report this log."
+        }
+
+        /** `RunningAppProcessInfo.importance` as the name from the constant. */
+        internal fun importanceName(importance: Int): String = when (importance) {
+            ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND -> "FOREGROUND"
+            ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE ->
+                "FOREGROUND_SERVICE"
+            ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE -> "VISIBLE"
+            ActivityManager.RunningAppProcessInfo.IMPORTANCE_PERCEPTIBLE -> "PERCEPTIBLE"
+            ActivityManager.RunningAppProcessInfo.IMPORTANCE_SERVICE -> "SERVICE"
+            ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED -> "CACHED"
+            ActivityManager.RunningAppProcessInfo.IMPORTANCE_GONE -> "GONE"
+            // Anything above FOREGROUND_SERVICE is refused by
+            // WifiNetworkFactory.acceptRequest, so the number matters even when
+            // there is no name for it.
+            else -> "importance=$importance"
+        }
+
+        /**
          * Everything `ConnectivityManager.requestNetwork` needs to join the car.
          *
          * Asserted against the merged manifest in `CarWifiNetworkTest`, because
@@ -348,18 +890,19 @@ class CarWifiNetwork(
          *
          * ## Why `security_mode` is ignored
          *
-         * It is not trustworthy. The wire value 8 is `WPA2_PERSONAL` in the
-         * enum aa-proxy-rs and aawgd compile against
-         * (`aa-proxy-rs/src/protos/WifiInfoResponse.proto` L9-L20) and
-         * `WPA2_ENTERPRISE` in the enum aasdk's `aaw/WifiInfoResponse.proto`
-         * imports (`aap_protobuf/service/wifiprojection/message/WifiSecurityMode.proto`
-         * L7-L18) — the two numberings disagree, and openauto sends the symbol
-         * `WPA2_ENTERPRISE` while running a WPA2-PSK access point, with an
-         * in-source comment acknowledging the mismatch itself
-         * (`openauto/src/btservice/AndroidBluetoothServer.cpp` L165-L176).
-         * Headway parses with the aasdk enum, so a real head unit's WPA2-PSK
-         * network decodes here as "enterprise". Both details are recorded in
-         * `docs/protocol-notes.md` §3.2.
+         * Not because it is ambiguous — that was Headway's own bug, now fixed.
+         * `WifiSecurityMode.proto` was numbered sequentially while every
+         * reference numbers it as a bitfield (4 = WPA, 8 = WPA2, 16 =
+         * enterprise), so the target vehicle's wire value 8 decoded as
+         * `WPA2_ENTERPRISE` when it means `WPA2_PERSONAL`. The enum now matches
+         * `aa-proxy-rs/src/protos/WifiInfoResponse.proto` L9-L20, and the real
+         * captured bytes are pinned in `WirelessHandshakeTest`.
+         *
+         * It is still ignored, for a different and better reason: openauto
+         * genuinely does send the *symbol* `WPA2_ENTERPRISE` while running a
+         * WPA2-PSK access point, and says so in its own source
+         * (`openauto/src/btservice/AndroidBluetoothServer.cpp` L165-L176). So a
+         * correctly decoded value can still be the wrong value.
          *
          * The presence of a passphrase is unambiguous where the enum is not, so
          * that is what selects the security type: a PSK means WPA2-PSK, no PSK
@@ -435,11 +978,24 @@ class CarWifiNetwork(
         /**
          * The request for the car's AP.
          *
-         * `NET_CAPABILITY_INTERNET` is removed deliberately, and not as a
-         * formality: [NetworkRequest.Builder] adds it by default, and a request
-         * that demands internet will never be satisfied by an access point that
-         * has none — which is every head unit. The phone would associate,
-         * validation would fail, and the request would time out.
+         * `NET_CAPABILITY_INTERNET` is removed to document intent rather than
+         * because the builder adds it: `NetworkCapabilities.DEFAULT_CAPABILITIES`
+         * is `NOT_RESTRICTED | TRUSTED | NOT_VPN` (plus `NOT_BANDWIDTH_CONSTRAINED`
+         * on V+) and does not include it (`NetworkCapabilities.java` L798-L809),
+         * so the call is a no-op today. Keeping it is still right: a request
+         * that *did* carry `INTERNET` alongside a Wi-Fi specifier is rejected
+         * outright by `WifiNetworkFactory.acceptRequest`
+         * (`WifiNetworkFactory.java` L727-L733) — an immediate `onUnavailable`,
+         * not the validation timeout an earlier version of this comment
+         * described.
+         *
+         * Nothing else should be removed. The local-only agent keeps `TRUSTED`
+         * and `NOT_RESTRICTED` (`ClientModeImpl.getCapabilities` L5225-L5231),
+         * `NOT_VCN_MANAGED` is deduced onto the request automatically
+         * (`NetworkRequest.Builder.deduceNotVcnManagedCapability` L622-L628),
+         * and `NET_CAPABILITY_LOCAL_NETWORK` means "this device advertises
+         * addresses rather than obtaining them" — the car DHCPs the phone, so it
+         * does not apply.
          */
         fun buildRequest(spec: Spec): NetworkRequest = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)

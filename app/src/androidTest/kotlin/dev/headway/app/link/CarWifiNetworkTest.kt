@@ -198,6 +198,52 @@ class CarWifiNetworkTest {
     }
 
     @Test
+    fun theJoinOutlastsThePlatformsOwnRetryBudget() {
+        // Not a round number picked for comfort. Once the user approves the
+        // request, AOSP's WifiNetworkFactory gives each association attempt
+        // NETWORK_CONNECTION_TIMEOUT_MS (30 s) and retries it up to
+        // USER_SELECTED_NETWORK_CONNECT_RETRY_MAX (3) times, so the platform can
+        // legitimately still be working 120 s in.
+        //
+        // The previous value was 75 s. It expired mid-retry against a real
+        // Chevrolet: Headway tore the request down -- which cancels the
+        // platform's remaining attempts -- and logged a timeout of its own
+        // making, so the log recorded Headway giving up rather than the car
+        // failing. Anything at or under 120 s reintroduces exactly that.
+        assertTrue(
+            "the join must outlast AOSP's 4 x 30 s connect-retry budget, or Headway " +
+                "cancels the platform mid-retry and reports its own timeout instead " +
+                "of the platform's verdict",
+            CarWifiNetwork.DEFAULT_JOIN_TIMEOUT_MILLIS > 120_000,
+        )
+    }
+
+    @Test
+    fun processImportanceIsNamedInTheLog() {
+        // WifiNetworkFactory.acceptRequest silently refuses a specifier request
+        // from anything less important than a foreground service, and the app
+        // cannot see that refusal -- it arrives as a bare onUnavailable. Logging
+        // the importance by name is the only way a captured log can rule it in
+        // or out, so the two values that decide it must never print as bare
+        // integers.
+        assertEquals(
+            "FOREGROUND",
+            CarWifiNetwork.importanceName(
+                android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+            ),
+        )
+        assertEquals(
+            "FOREGROUND_SERVICE",
+            CarWifiNetwork.importanceName(
+                android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE
+            ),
+        )
+        // An unmapped value still has to carry the number, because the number is
+        // what decides whether the platform accepted the request.
+        assertTrue(CarWifiNetwork.importanceName(12345).contains("12345"))
+    }
+
+    @Test
     fun connectivityManagerIsReachable() {
         val manager = context.getSystemService(ConnectivityManager::class.java)
         assertNotNull("ConnectivityManager is required to request the car network", manager)
