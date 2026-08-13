@@ -74,6 +74,9 @@ class AppUpdater(private val context: Context) {
      * The cache directory rather than Downloads: it needs no storage permission,
      * it is private to Headway so nothing can swap the file between download and
      * install, and the system reclaims it if the install never happens.
+     *
+     * @param onProgress whole percentages, delivered on the main thread and only
+     *   when the number changes, so a caller may touch views directly.
      */
     suspend fun download(
         release: AvailableRelease,
@@ -91,13 +94,24 @@ class AppUpdater(private val context: Context) {
             connection.inputStream.use { source ->
                 target.outputStream().use { sink ->
                     val buffer = ByteArray(64 * 1024)
+                    var reported = -1
                     while (true) {
                         val read = source.read(buffer)
                         if (read < 0) break
                         sink.write(buffer, 0, read)
                         written += read
-                        if (total != null) {
-                            onProgress(((written * 100) / total).toInt().coerceIn(0, 100))
+                        if (total == null) continue
+                        val percent = ((written * 100) / total).toInt().coerceIn(0, 100)
+                        // Only on a change, and only on the main thread. This
+                        // ran per 64 KiB chunk on the IO thread, so a caller
+                        // that updated a TextView -- the obvious thing to do
+                        // with a progress callback, and what Headway's own UI
+                        // does -- touched a view from the wrong thread a couple
+                        // of hundred times per download. Android logs that today
+                        // and has said it will throw in future versions.
+                        if (percent != reported) {
+                            reported = percent
+                            withContext(Dispatchers.Main) { onProgress(percent) }
                         }
                     }
                 }
@@ -114,7 +128,7 @@ class AppUpdater(private val context: Context) {
         } finally {
             connection.disconnect()
         }
-        onProgress(100)
+        withContext(Dispatchers.Main) { onProgress(100) }
         target
     }
 

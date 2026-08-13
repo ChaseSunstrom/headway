@@ -128,6 +128,17 @@ class MainActivity : AppCompatActivity() {
 
     private var uiScope: CoroutineScope? = null
 
+    /**
+     * For the update download, which must outlive the activity being stopped.
+     *
+     * [uiScope] is cancelled in `onStop`, which is right for the state
+     * collectors and wrong for a download: switching away for a moment — to
+     * check the log viewer, say — killed a half-finished APK transfer. This one
+     * lives until the activity is destroyed, which is also when its views stop
+     * being safe to touch.
+     */
+    private var updateScope: CoroutineScope? = null
+
     private val permissionRequest =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
             granted.filterValues { !it }.keys.forEach {
@@ -139,6 +150,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(buildContent())
+        updateScope = CoroutineScope(Dispatchers.Main.immediate)
         if (!HeadwaySettings.of(this).getBoolean(HeadwaySettings.KEY_SAFETY_NOTICE_ACCEPTED, false)) {
             showSafetyNotice(firstRun = true)
         }
@@ -169,6 +181,12 @@ class MainActivity : AppCompatActivity() {
         uiScope?.cancel()
         uiScope = null
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        updateScope?.cancel()
+        updateScope = null
+        super.onDestroy()
     }
 
     // --- layout -------------------------------------------------------------
@@ -436,7 +454,7 @@ class MainActivity : AppCompatActivity() {
      * property CLAUDE.md requires — see [ReleaseCatalog]'s note.
      */
     private fun checkForUpdate() {
-        val scope = uiScope ?: return
+        val scope = updateScope ?: return
         val updater = AppUpdater(this)
 
         updateButton.isEnabled = false
@@ -473,7 +491,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startUpdate(release: AvailableRelease) {
-        val scope = uiScope ?: return
+        val scope = updateScope ?: return
         val updater = AppUpdater(this)
 
         // Asked for before the download rather than after, so a refusal costs
