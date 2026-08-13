@@ -249,13 +249,20 @@ jobs:
 
           ## Before you install this
 
-          **A real car gets as far as Wi-Fi association.** On a 2021 Chevrolet
-          Infotainment 3 unit the Bluetooth handshake completes every time, and
-          the phone now authenticates and associates with the head unit's access
-          point. It then fails to get an IP address — the platform reports
-          `IP_PROVISIONING`. Nothing past that point has ever run against a real
-          head unit. See `PROGRESS.md` for the evidence behind each phase and
-          the README for what to try.
+          **A real car gets all the way to authentication, and is refused
+          there.** On a 2021 Chevrolet Infotainment 3 unit the Bluetooth
+          handshake completes every time; the phone associates with the head
+          unit's access point; and once it has an address, the AAP version
+          handshake and TLS run and the unit answers `AUTH_COMPLETE` with
+          `STATUS_AUTHENTICATION_FAILURE`. That is the expired certificate
+          below, and it is the last thing in the way.
+
+          Getting an address is still not automatic. Requesting the network
+          from inside the app usually ends in `IP_PROVISIONING` — the head unit
+          issues no lease — and the way past it is a manual Wi-Fi join with a
+          static IP, which Headway then adopts. The README's "why the same car
+          behaves differently" section explains which setting moves which part.
+          See `PROGRESS.md` for the evidence behind each phase.
 
           **Video, input, audio and voice are not wired into the app.** Those
           modules are built and tested, but the service's session loop receives
@@ -263,9 +270,14 @@ jobs:
           and sends nothing. `PROGRESS.md` says which phases this covers.
 
           **The bundled phone certificate expired on 2022-08-24** and cannot be
-          reissued without Google's CA key. If your head unit checks validity
-          dates, it will reject the session and nothing in the app can fix that.
-          See `BLOCKERS.md` B-003. It is reached only after the Wi-Fi link works.
+          reissued without Google's CA key. The target car does check validity
+          dates and does reject it — on screen as "the phone and vehicle
+          calendars are set to different dates and times". Two one-time
+          workarounds exist: import your own certificate from Diagnostics, or
+          set the car's clock into 2014-08..2022-08. **The clock workaround
+          breaks Google's Android Auto** while it is in place, because Google's
+          certificate is current and a car in 2016 sees it as not yet valid.
+          See `BLOCKERS.md` B-003 and the README.
 
           ## If it fails in the car
 
