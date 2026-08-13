@@ -251,6 +251,14 @@ open class HeadwayService : Service() {
                 val network = wifi.join(credentials)
                 Log.i(TAG, "bound to car network $network")
 
+                // Say so immediately, not after working out where to connect.
+                // This is the announcement that the association happened, and a
+                // head unit waiting for it has no reason to be accepting AAP
+                // connections yet -- which is why a reachable one refused
+                // outright. Sending it first also gives a unit that answers with
+                // WifiStartRequest the longest possible head start.
+                link.reportWifiConnected()
+
                 // The head unit may never say where to connect. The observed
                 // Chevrolet sends WifiStartRequest on some attempts and not
                 // others, which made the whole link look flaky: the runs where
@@ -274,12 +282,6 @@ open class HeadwayService : Service() {
                     CarEndpoint(host, port)
                 }
                 credentials.endpoint?.let { rememberPort(it.port) }
-                // Tell the head unit the phone is on its network before trying
-                // to reach it. A real phone sends this and a head unit waits for
-                // it (see WirelessHandshake.reportWifiConnected); skipping it is
-                // why a reachable head unit refused the connection outright.
-                link.reportWifiConnected()
-
                 Log.i(TAG, "opening the AAP session to $endpoint")
 
                 // Sockets come from the network, never from `new Socket()`:
