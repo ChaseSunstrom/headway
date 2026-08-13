@@ -25,7 +25,21 @@ import dev.headway.protocol.io.FramedConnection
 import dev.headway.protocol.io.MessageChannel
 
 /** Raised when the peer violates the session's expected message sequence. */
-class SessionException(message: String) : RuntimeException(message)
+open class SessionException(message: String) : RuntimeException(message)
+
+/**
+ * The head unit refused the phone's certificate.
+ *
+ * Separated from a plain [SessionException] because it is the one session
+ * failure with an automatic remedy: Headway carries several certificates and a
+ * caller that can tell this failure apart can present a different one on the
+ * next attempt. String-matching the message would work today and break the
+ * first time the wording improved.
+ *
+ * @param status the `MessageStatus` number the head unit sent.
+ */
+class AuthenticationRejectedException(val status: Int, message: String) :
+    SessionException(message)
 
 /**
  * The phone side of an AAP session — the role Headway plays, and the role almost

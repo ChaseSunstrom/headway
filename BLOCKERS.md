@@ -77,7 +77,38 @@ consistent with the protocol having distinct
 `AUTHENTICATION_FAILURE` and not `STATUS_CERTIFICATE_ERROR` (-2), which reads as
 "the chain was acceptable, the dates were not".
 
-**Workaround shipped:** Two, both one-time.
+**Workaround shipped:** Three, tried in that order.
+
+0. *Present a different certificate that has not expired.* The expired
+   phone-role certificate is not the only material signed by the **same**
+   "Google Automotive Link" CA that the references carry:
+
+   | id | subject | source | expires |
+   |----|---------|--------|---------|
+   | `phone` | `O=CarService, OU=53` | `AACS/AAServer/ssl/android_auto.crt` | 2022-08-24 |
+   | `internal` | `O=Android-Auto-Internal, OU=01` | `AACS/AAClient/ssl/headunit.crt` | **2048-08-01** |
+   | `headunit` | `O=JVC Kenwood, OU=01` | `aasdk/src/Messenger/Cryptor.cpp` L275 | **2045-04-29** |
+
+   The last two were issued for the *head unit* role, which is why no phone
+   implementation has ever presented one — including this one, until the role
+   was noticed to be the only thing separating them from a working certificate.
+   Whether a car accepts one from the phone side depends on what it checks. If
+   it verifies the chain to the Google Automotive Link CA and the validity
+   dates, an unexpired sibling satisfies it and the subject never comes up. If
+   it pins the subject or checks a role attribute, it does not.
+
+   Nothing in the references settles that, and it costs one reconnect to find
+   out, so `AapTls.bundledPhoneCredentials` lists all three and
+   `HeadwayService` advances one place on each `AuthenticationRejectedException`
+   — and only on that, since a Wi-Fi or TCP failure says nothing about the
+   certificate. `TlsSessionTest` asserts the premise: at least two candidates,
+   one CA, at least one unexpired, and every key matching its certificate. The
+   quirk file's `"certificate"` key moves a known-good id to the front once a
+   log names it.
+
+   **This is untested against a real head unit.** It is a well-founded guess
+   with a cheap test attached, not a fix, and it stays in this file until a car
+   log says which way it went.
 
 1. *Import a certificate.* The certificate is not baked in.
    `AapTls.phoneEngine` takes `KeyMaterial`, and the bundled pair is only the
@@ -109,8 +140,19 @@ therefore a diagnostic and a stopgap, not a configuration to leave in place;
 importing current material (workaround 1) is the only route that leaves both
 working, and restoring the car's clock is the only route back to Android Auto.
 
-**What would actually fix it:** Nothing available to this project. Issuing a
-valid certificate needs the Google Automotive Link CA private key.
+**What would actually fix it:** Issuing a *new* certificate needs the Google
+Automotive Link CA private key, which is not available to this project.
+Workaround 0 is the only route that does not need one, and whether it works is
+a property of the car rather than of anything Headway can change.
+
+Extracting current material from a licensed Android Auto installation is the
+other obvious idea, and it is a worse one than it looks. The certificate lives
+inside a Google-signed APK whose distribution terms do not contemplate that; the
+current phone-side material may be device-bound or attested rather than a static
+pair; and either way the result is one user's certificate, not something this
+project can carry. That is the shape of the problem `PhoneCertificateStore`
+already fits — an import path for material a user obtained themselves — and it
+is why aa-proxy-rs bundles nothing and takes a path instead.
 
 ---
 

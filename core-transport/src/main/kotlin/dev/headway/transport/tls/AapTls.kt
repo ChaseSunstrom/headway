@@ -150,6 +150,91 @@ object AapTls {
      */
     fun headUnitKeyMaterial(): KeyMaterial = loadResourceKeyMaterial("headunit")
 
+    /**
+     * A certificate Headway can present to the head unit, and why it might work.
+     *
+     * @param id stable identifier, used in the quirk file and the log.
+     * @param label one line for a person reading the log or the settings screen.
+     * @param rationale why this candidate is worth an attempt.
+     */
+    class PhoneCredential(
+        val id: String,
+        val label: String,
+        val rationale: String,
+        val material: KeyMaterial,
+    ) {
+        /** True when this device's clock puts the certificate inside its window. */
+        val currentlyValid: Boolean get() = validityProblem(material) == null
+
+        override fun toString(): String =
+            "$label (${material.certificate.subjectX500Principal.name}, " +
+                "expires ${material.certificate.notAfter})"
+    }
+
+    /**
+     * Every bundled pair Headway can try, in the order worth trying them.
+     *
+     * ## Why there is more than one
+     *
+     * The phone-role certificate expired on 2022-08-24 and cannot be reissued
+     * (BLOCKERS.md B-003). But it is not the only material signed by the *same*
+     * "Google Automotive Link" CA that the references carry, and the others have
+     * not expired:
+     *
+     * | id | subject | expires |
+     * |----|---------|---------|
+     * | `phone` | `O=CarService, OU=53` | 2022-08-24 |
+     * | `internal` | `O=Android-Auto-Internal, OU=01` | 2048-08-01 |
+     * | `headunit` | `O=JVC Kenwood, OU=01` | 2045-04-29 |
+     *
+     * The last two were issued for the *head unit* role, which is why no phone
+     * implementation has ever presented one. Whether a car accepts one from the
+     * phone side depends entirely on what it checks. If it verifies the chain up
+     * to the Google Automotive Link CA and the validity dates — which is what a
+     * garden-variety TLS peer verification does, and what the target car's
+     * `STATUS_AUTHENTICATION_FAILURE`-rather-than-`STATUS_CERTIFICATE_ERROR`
+     * points at — then an unexpired sibling certificate satisfies it and the
+     * role in the subject never comes up. If it additionally pins the subject or
+     * checks a role attribute, it will not.
+     *
+     * That is not knowable from the references, and it costs one reconnect to
+     * find out, so Headway tries them rather than assuming. Ordering puts the
+     * correct-role certificate first, because it is what every reference sends
+     * and what a lenient unit expects; the unexpired ones follow.
+     *
+     * Sources: `AACS/AAServer/ssl/android_auto.crt`,
+     * `AACS/AAClient/ssl/headunit.crt`, and `aasdk/src/Messenger/Cryptor.cpp`
+     * L275 (`Cryptor::cCertificate`). All three keys were converted from PKCS#1
+     * to PKCS#8 when vendored so the JDK can load them without a third-party PEM
+     * parser; the keys themselves are unchanged, and each was checked to match
+     * its certificate on the RSA modulus.
+     */
+    fun bundledPhoneCredentials(): List<PhoneCredential> = listOf(
+        PhoneCredential(
+            id = "phone",
+            label = "the phone-role certificate",
+            rationale = "the role every reference implementation sends, but it expired " +
+                "on 2022-08-24 — this is the one that works if the car's clock has been " +
+                "set back, or if the car does not check dates",
+            material = phoneKeyMaterial(),
+        ),
+        PhoneCredential(
+            id = "internal",
+            label = "the Android-Auto-Internal certificate",
+            rationale = "signed by the same Google Automotive Link CA and valid until " +
+                "2048 — this works if the car checks the chain and the dates but not " +
+                "which role the certificate was issued for",
+            material = loadResourceKeyMaterial("internal"),
+        ),
+        PhoneCredential(
+            id = "headunit",
+            label = "the JVC Kenwood certificate",
+            rationale = "the same idea as Android-Auto-Internal with a different subject, " +
+                "valid until 2045, in case the car objects to that one by name",
+            material = headUnitKeyMaterial(),
+        ),
+    )
+
     /** Builds an [SSLEngine] in server mode — the phone's role. */
     fun phoneEngine(material: KeyMaterial = phoneKeyMaterial()): SSLEngine =
         engine(material, clientMode = false)

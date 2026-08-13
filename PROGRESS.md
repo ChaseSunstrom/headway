@@ -95,8 +95,11 @@ Stated so the gap between "CI green" and "works in a car" is never implied away.
   a real vehicle and whose bytes are pinned as a fixture — everything after it
   on the real link is still unrun.
 - **The public phone certificate expired in 2022** and cannot be reissued
-  without Google's CA key. This is the single most likely reason a real Malibu
-  refuses the session. See B-003.
+  without Google's CA key. A real Malibu *does* refuse the session over it —
+  confirmed, not predicted. Headway now presents the two unexpired certificates
+  signed by the same CA in turn before giving up, but they were issued for the
+  head-unit role and whether a car accepts one from the phone side has not been
+  tried in a car. See B-003.
 - **A green emulator run proves self-consistency, not car compatibility.** The
   emulator shares `core-protocol` with the phone, so a wrong-but-symmetric
   constant round-trips cleanly. The byte fixtures — and later Google's DHU —
@@ -161,5 +164,8 @@ remaining hypotheses can be tested with a text edit instead of a rebuild.
    the only thing between this and a working car link.
 2. **Release signing and F-Droid metadata.** The build is reproducible in shape;
    it has no signing key, which is the user's to hold.
-3. **A replacement phone certificate**, if a real head unit rejects the expired
-   one. Nothing in this project can produce it — see B-003.
+3. **A car log saying which certificate the Malibu accepts**, if any. The
+   rotation through the two unexpired candidates is a well-founded guess with a
+   cheap test attached; one drive settles it. If all three are refused, a
+   replacement pair is the user's to obtain — nothing in this project can
+   produce one. See B-003.

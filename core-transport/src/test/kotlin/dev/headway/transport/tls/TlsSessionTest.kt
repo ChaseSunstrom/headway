@@ -137,6 +137,66 @@ class TlsSessionTest {
         assertTrue(phoneSession.handshakeComplete)
     }
 
+    /**
+     * The premise of certificate rotation, asserted rather than assumed.
+     *
+     * `AapTls.bundledPhoneCredentials` exists because two of the three vendored
+     * certificates have *not* expired and are signed by the *same* CA as the one
+     * that has. If either half of that stopped being true — a re-vendoring that
+     * dropped the unexpired pairs, or one of them quietly passing its own
+     * notAfter as the years go by — the rotation would be busywork that costs a
+     * user two failed sessions per connect, and nothing else in the codebase
+     * would notice.
+     */
+    @Test
+    fun `rotation has unexpired candidates from the same CA`() {
+        val candidates = AapTls.bundledPhoneCredentials()
+        assertTrue(candidates.size >= 2, "rotation needs something to rotate to")
+        assertEquals(
+            candidates.map { it.id }.distinct().size,
+            candidates.size,
+            "candidate ids are used in the quirk file and must be unique",
+        )
+
+        val issuers = candidates.map { it.material.certificate.issuerX500Principal.name }.distinct()
+        assertEquals(
+            1, issuers.size,
+            "every candidate must be signed by the same CA, or presenting one instead of " +
+                "another changes the chain as well as the dates: $issuers",
+        )
+        assertTrue(issuers.single().contains("Google Automotive Link"), issuers.single())
+
+        val unexpired = candidates.filter { it.currentlyValid }
+        assertTrue(
+            unexpired.isNotEmpty(),
+            "no unexpired candidate is left, so rotation cannot help any more and " +
+                "BLOCKERS.md B-003 needs revisiting: " +
+                candidates.joinToString { "${it.id} expires ${it.material.certificate.notAfter}" },
+        )
+
+        // Each key must belong to its certificate. A mismatched pair fails at
+        // the head unit with nothing useful on the wire, and the rotation would
+        // read as "the car refused that certificate too".
+        candidates.forEach { candidate ->
+            val public = candidate.material.certificate.publicKey
+                as java.security.interfaces.RSAPublicKey
+            val private = candidate.material.privateKey
+                as java.security.interfaces.RSAPrivateKey
+            assertEquals(
+                public.modulus, private.modulus,
+                "the ${candidate.id} key does not belong to the ${candidate.id} certificate",
+            )
+        }
+    }
+
+    /** The phone-role certificate stays first: it is what a lenient unit expects. */
+    @Test
+    fun `rotation starts with the phone-role certificate`() {
+        val first = AapTls.bundledPhoneCredentials().first()
+        assertEquals("phone", first.id)
+        assertTrue(first.material.certificate.subjectX500Principal.name.contains("CarService"))
+    }
+
     private fun assertThrowsIllegalState(block: () -> Unit): IllegalStateException =
         try {
             block()

@@ -82,6 +82,41 @@ class PhoneCertificateStore(private val directory: File) {
     )
 
     /**
+     * The credential for attempt number [attempt], counting rejections.
+     *
+     * An imported pair is the whole list: the user picked it deliberately and
+     * rotating away from it would silently undo that. Otherwise this walks
+     * [AapTls.bundledPhoneCredentials], so a car that refuses the expired
+     * phone-role certificate gets offered the unexpired siblings on the
+     * attempts that follow without anybody having to know they exist. Past the
+     * end of the list it stays on the last one rather than cycling — a car that
+     * has refused all three is not going to change its mind on the fourth pass,
+     * and a log that keeps rotating hides that.
+     */
+    fun credentialFor(attempt: Int, preferredId: String? = null): AapTls.PhoneCredential {
+        if (hasUserMaterial) {
+            return AapTls.PhoneCredential(
+                id = "imported",
+                label = "your imported certificate",
+                rationale = "you supplied this one, so Headway will not try anything else",
+                material = keyMaterial(),
+            )
+        }
+        val candidates = AapTls.bundledPhoneCredentials()
+        // A quirk-file id rotates that candidate to the front rather than
+        // pinning it. Pinning would make a stale entry — the id that worked
+        // before a head unit software update, say — permanently unrecoverable
+        // without editing the file, and the whole point of rotating is that
+        // nobody should have to know these certificates exist.
+        val ordered = candidates.sortedByDescending { it.id == preferredId }
+        return ordered[attempt.coerceIn(0, ordered.size - 1)]
+    }
+
+    /** How many distinct credentials [credentialFor] can return. */
+    fun candidateCount(): Int =
+        if (hasUserMaterial) 1 else AapTls.bundledPhoneCredentials().size
+
+    /**
      * Stores a pair after checking it parses and the two halves match.
      *
      * The match check is the point: a certificate and a key from different
@@ -117,13 +152,31 @@ class PhoneCertificateStore(private val directory: File) {
         runCatching { keyFile.delete() }
     }
 
-    /** One line for the settings screen and the session log. */
+    /**
+     * One line for the settings screen.
+     *
+     * Says what will happen, not just what is loaded. Showing "the phone-role
+     * certificate, expired 2022" and stopping there reads as a dead end, which
+     * is exactly what it stopped being once there were others to fall back to.
+     */
     fun describe(): String {
-        val material = keyMaterial()
-        val source = if (hasUserMaterial) "your imported certificate" else "the bundled certificate"
+        val head = describe(0, null)
+        val others = candidateCount() - 1
+        return if (others <= 0) head
+        else "$head. If the car refuses it, Headway tries $others other " +
+            "certificate(s) before asking you for one"
+    }
+
+    /** The same line for a particular attempt, naming which candidate is up. */
+    fun describe(attempt: Int, preferredId: String? = null): String {
+        val credential = credentialFor(attempt, preferredId)
+        val material = credential.material
+        val total = candidateCount()
+        val which = if (total > 1) " (${attempt.coerceAtMost(total - 1) + 1} of $total)" else ""
         val problem = AapTls.validityProblem(material)
-        return "$source, ${material.certificate.subjectX500Principal.name}, valid until " +
-            "${material.certificate.notAfter}" + if (problem == null) "" else " — $problem"
+        return "${credential.label}$which, ${material.certificate.subjectX500Principal.name}, " +
+            "valid until ${material.certificate.notAfter}" +
+            if (problem == null) "" else " — $problem"
     }
 
     private fun readOrNull(file: File): String? =

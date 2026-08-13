@@ -46,6 +46,7 @@ import dev.headway.protocol.control.ControlKeepalive
 import dev.headway.protocol.framing.MessageFragmenter
 import dev.headway.protocol.io.FramedConnection
 import dev.headway.protocol.session.AapSession
+import dev.headway.protocol.session.AuthenticationRejectedException
 import dev.headway.protocol.session.HeadUnitProfile
 import dev.headway.protocol.session.PhoneIdentity
 import dev.headway.transport.LinkState
@@ -183,6 +184,24 @@ open class HeadwayService : Service() {
      */
     @Volatile
     private var failedJoins: Int = 0
+
+    /**
+     * How many times a head unit has rejected authentication this run.
+     *
+     * Doubles as the index into [AapTls.bundledPhoneCredentials]. The phone-role
+     * certificate expired in 2022 and cannot be reissued, but two *unexpired*
+     * certificates signed by the same Google Automotive Link CA ship with the
+     * references, issued for the head-unit role. Whether a car accepts one from
+     * the phone depends on whether it checks the chain and dates only, or the
+     * subject as well — unknowable from the references and cheap to find out.
+     *
+     * So each authentication rejection advances to the next candidate and the
+     * supervisor reconnects. Only rejections advance it: a Wi-Fi or TCP failure
+     * says nothing about the certificate, and burning candidates on those would
+     * mean the car never gets offered the same one twice in a row.
+     */
+    @Volatile
+    private var rejectedCertificates: Int = 0
 
     private val notificationManager: NotificationManager?
         get() = getSystemService(NotificationManager::class.java)
@@ -549,8 +568,11 @@ open class HeadwayService : Service() {
                         fragmenter = MessageFragmenter(quirks.maxFragmentSize),
                     )
                     val certificates = PhoneCertificateStore.inAppStorage(this)
-                    val keyMaterial = certificates.keyMaterial()
-                    step("presenting ${certificates.describe()}")
+                    val attempt = rejectedCertificates
+                    val credential = certificates.credentialFor(attempt, quirks.certificate)
+                    val keyMaterial = credential.material
+                    step("presenting ${certificates.describe(attempt, quirks.certificate)}")
+                    step("why this one: ${credential.rationale}")
                     AapTls.validityProblem(keyMaterial)?.let {
                         // Said before the session rather than after it fails. A
                         // head unit reports this as a bare status code once TCP,
@@ -558,10 +580,17 @@ open class HeadwayService : Service() {
                         // real Chevrolet renders it on screen as the phone and
                         // vehicle calendars disagreeing -- which sends the reader
                         // to the clock rather than to the certificate.
+                        val more = certificates.candidateCount() - attempt - 1
                         step(
                             "WARNING: $it. A head unit that checks this will refuse the " +
-                                "session with an authentication failure. Import a valid " +
-                                "certificate from Diagnostics; see BLOCKERS.md B-003"
+                                "session with an authentication failure." +
+                                if (more > 0) {
+                                    " If it does, Headway will try $more other certificate(s) " +
+                                        "on the attempts that follow before giving up."
+                                } else {
+                                    " Import a valid certificate from Diagnostics; " +
+                                        "see BLOCKERS.md B-003"
+                                }
                         )
                     }
                     val session = AapSession(
@@ -571,7 +600,39 @@ open class HeadwayService : Service() {
                         announcedVersion = quirks.announcedVersion,
                         onStep = ::step,
                     )
-                    val profile = session.connect()
+                    val profile = try {
+                        session.connect()
+                    } catch (e: AuthenticationRejectedException) {
+                        // Advance to the next certificate, if there is one, and
+                        // let the supervisor reconnect. Only this failure moves
+                        // the counter -- see rejectedCertificates.
+                        val remaining = certificates.candidateCount() - attempt - 1
+                        if (remaining > 0) {
+                            rejectedCertificates = attempt + 1
+                            step(
+                                "the head unit refused ${credential.label}; the next attempt " +
+                                    "will present " +
+                                    certificates.credentialFor(attempt + 1, quirks.certificate).label
+                            )
+                        } else {
+                            step(
+                                "the head unit refused every certificate Headway carries. " +
+                                    "Import one from Diagnostics, or set the car's clock into " +
+                                    "2014-08..2022-08 to satisfy the phone-role certificate " +
+                                    "(which stops Google's Android Auto working meanwhile). " +
+                                    "See BLOCKERS.md B-003"
+                            )
+                        }
+                        throw e
+                    }
+
+                    // Whatever got us here is the one that works. Say so: it is
+                    // the answer to a question the references cannot settle.
+                    if (certificates.candidateCount() > 1 && attempt > 0) {
+                        step("the head unit accepted ${credential.label} — " +
+                            "put \"certificate\": \"${credential.id}\" in the quirk file " +
+                            "to start with it next time")
+                    }
 
                     // The link is genuinely up now: version, TLS-or-auth,
                     // service discovery and channel open all completed. Signal it

@@ -327,10 +327,34 @@ dates without checking the chain. This unit returned
 `STATUS_AUTHENTICATION_FAILURE` rather than `STATUS_CERTIFICATE_ERROR`, which
 reads as "the chain was fine, the dates were not".
 
-**There is no automatic fix, and no reference implementation has one.**
-aa-proxy-rs, which is actively maintained and works with real head units, does
-not bundle a certificate at all — it loads the pair from a path the operator
-provides. Headway does the same, with a one-time import:
+**Headway tries three certificates before you have to do anything.** The
+expired phone-role certificate is not the only material signed by that same
+Google Automotive Link CA sitting in the reference implementations — two others
+are, and neither has expired:
+
+| id | issued for | expires |
+|----|-----------|---------|
+| `phone` | the phone role, which is correct | 2022-08-24 |
+| `internal` | a head unit (`Android-Auto-Internal`) | **2048** |
+| `headunit` | a head unit (`JVC Kenwood`) | **2045** |
+
+No phone implementation has ever presented a head-unit certificate, because the
+role is wrong. But "wrong role" only matters if the car looks at the role. If it
+checks the chain and the dates — which is what its
+`STATUS_AUTHENTICATION_FAILURE` rather than `STATUS_CERTIFICATE_ERROR` points at
+— then an unexpired sibling passes and the subject never comes up.
+
+Nobody knows which, so Headway finds out: each authentication rejection advances
+to the next certificate and reconnects. Two failed sessions, then either it is
+connected or all three are refused. The log names the one in use and says why
+it is worth a try, and if one is accepted it tells you the `"certificate"` value
+to put in the quirk file so future connects start there.
+
+**If all three are refused, there is no automatic fix, and no reference
+implementation has one.** aa-proxy-rs, which is actively maintained and works
+with real head units, does not bundle a certificate at all — it loads the pair
+from a path the operator provides. Headway does the same, with a one-time
+import:
 
 **Diagnostics → Import a certificate and key.** Pick the PEM certificate, then
 its PKCS#8 private key. Every session from then on uses them; there is nothing
@@ -399,6 +423,11 @@ edit. If the join never succeeds:
 - `"pinBssid": true` or `false` — whether to require the exact BSSID the head
   unit named. Left out, Headway alternates between the two on successive
   attempts, because both have been necessary on real hardware.
+- `"certificate": "phone"`, `"internal"` or `"headunit"` — which of the bundled
+  certificates to offer first. Left out, Headway starts at `phone` and advances
+  on each rejection. Set it once the log has told you which one the car takes,
+  to skip the failed sessions. It moves that one to the front rather than
+  pinning it, so a stale value costs an attempt, not the connection.
 
 ## Installing and updating
 

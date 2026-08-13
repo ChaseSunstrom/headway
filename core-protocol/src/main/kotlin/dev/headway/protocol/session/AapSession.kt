@@ -271,10 +271,11 @@ class AapSession(
                             "the TLS handshake had NOT completed, so the head unit stopped " +
                                 "while looking at the certificate"
                         }
-                        throw SessionException(
+                        throw AuthenticationRejectedException(
+                            status,
                             "head unit rejected authentication: " +
                                 "${MessageStatus.forNumber(status)?.name ?: "status $status"} " +
-                                "($tlsState)" + authFailureAdvice(status)
+                                "($tlsState)" + authFailureAdvice(status),
                         )
                     }
                     if (!tls.handshakeComplete) {

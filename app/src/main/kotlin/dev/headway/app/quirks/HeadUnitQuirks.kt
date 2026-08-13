@@ -225,6 +225,28 @@ data class HeadUnitQuirks(
      */
     val pinBssid: Boolean? = null,
 
+    /**
+     * Which bundled certificate to present first.
+     *
+     * **Null means start at the beginning and rotate**, which is the default:
+     * each authentication rejection advances to the next candidate, so a car
+     * that refuses the expired phone-role certificate is offered the unexpired
+     * siblings without anybody having to know they exist. See
+     * [dev.headway.transport.tls.AapTls.bundledPhoneCredentials] for what they
+     * are and why an unexpired head-unit certificate is worth trying from the
+     * phone side at all.
+     *
+     * Set it to an id — `phone`, `internal` or `headunit` — once a log says
+     * which one this car accepts, and the rotation starts there instead of
+     * spending two failed sessions rediscovering it. An unknown id is ignored
+     * rather than fatal: a typo in a hand-edited file should cost the default
+     * behaviour, not the connection.
+     *
+     * Ignored entirely when a certificate has been imported from Diagnostics —
+     * that was a deliberate choice and rotating away from it would undo it.
+     */
+    val certificate: String? = null,
+
     val touch: TouchQuirks = TouchQuirks(),
 ) {
 
@@ -236,7 +258,7 @@ data class HeadUnitQuirks(
     fun describe(): String = "fragment=$maxFragmentSize version=$announcedVersion " +
         "mediaAudioOverAap=$mediaAudioOverAap keyframe=$keyframeIntervalFrames " +
         "hiddenSsid=$hiddenSsid pinBssid=${pinBssid ?: "auto"} " +
-        "announceWifiChannel=$announceWifiChannel " +
+        "announceWifiChannel=$announceWifiChannel certificate=${certificate ?: "auto"} " +
         "touch=${if (touch.isIdentity) "identity" else touch.toString()}"
 
     companion object {
@@ -523,6 +545,7 @@ class QuirkStore(
         private const val KEY_HIDDEN_SSID = "hiddenSsid"
         private const val KEY_ANNOUNCE_WIFI_CHANNEL = "announceWifiChannel"
         private const val KEY_PIN_BSSID = "pinBssid"
+        private const val KEY_CERTIFICATE = "certificate"
         private const val KEY_TOUCH = "touch"
 
         private const val KEY_INVERT_X = "invertX"
@@ -624,6 +647,9 @@ class QuirkStore(
                         // Headway alternate" looks like, and writing `false`
                         // would silently pin the template to SSID-only matching.
                         quirks.pinBssid?.let { put(KEY_PIN_BSSID, it) }
+                        // Same reasoning: absent means "start at the first
+                        // candidate and rotate on rejection".
+                        quirks.certificate?.let { put(KEY_CERTIFICATE, it) }
                     }
                     .put(
                         KEY_TOUCH,
@@ -725,6 +751,9 @@ class QuirkStore(
                     pinBssid =
                         if (json.has(KEY_PIN_BSSID)) json.optBoolean(KEY_PIN_BSSID, false)
                         else defaults.pinBssid,
+                    certificate =
+                        json.optString(KEY_CERTIFICATE, "").ifBlank { null }
+                            ?: defaults.certificate,
                     touch = touch,
                 ),
             )
