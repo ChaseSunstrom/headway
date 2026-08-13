@@ -305,6 +305,18 @@ class BluetoothCarLink(
             ?: onStep("no Bluetooth exchange to report the Wi-Fi join on")
     }
 
+    /**
+     * Keeps answering the head unit on RFCOMM after the credentials exchange.
+     *
+     * Meant to be launched into a coroutine that lives as long as the session
+     * and cancelled with it. Returns immediately if there is no exchange to
+     * service. See [WirelessHandshake.serviceLink] for why leaving the link
+     * unread is not an option.
+     */
+    suspend fun serviceLink() {
+        handshake?.serviceLink()
+    }
+
     /** Idempotent; safe to call from the reconnect path and from teardown. */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return

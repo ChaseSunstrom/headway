@@ -10,4 +10,25 @@ enum MessageId {
   WIFI_VERSION_RESPONSE = 5;
   WIFI_CONNECTION_STATUS = 6;
   WIFI_START_RESPONSE = 7;
+
+  // The keepalive pair. Headway stopped at 7 for a long time, so an inbound
+  // ping decoded as "unknown RFCOMM message id 8" and went unanswered, which
+  // is not a cosmetic gap: aa-proxy-rs, which both drives genuine Android Auto
+  // phones and talks to real head units, answers these in every direction it
+  // can observe them -- from the phone (src/bluetooth.rs L1041-L1065), from the
+  // head unit during pre-bootstrap (L1838-L1860), and from the head unit before
+  // the phone has even arrived (L6080-L6090) -- and sends its own on a timer
+  // (L985-L1005). A peer that pings and is never answered has every reason to
+  // conclude the bootstrap was abandoned.
+  //
+  // Body: `PingRequest`/`PingResponse` from the control service, whose
+  // `timestamp` is field 1, varint int64 -- the same layout aa-proxy-rs encodes
+  // by hand in `wifi_ping_request_payload` (src/bluetooth.rs L930-L936).
+  WIFI_PING_REQUEST = 8;
+  WIFI_PING_RESPONSE = 9;
+
+  // Observed and named by aa-proxy-rs (src/bluetooth.rs L416) but never
+  // decoded there, so Headway logs it and moves on rather than guessing at a
+  // body. Declared so the log says what it is.
+  WIFI_SETUP_INFO = 11;
 }

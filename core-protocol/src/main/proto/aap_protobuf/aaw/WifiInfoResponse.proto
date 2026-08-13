@@ -5,10 +5,33 @@ import "aap_protobuf/service/wifiprojection/message/WifiSecurityMode.proto";
 
 package aap_protobuf.aaw;
 
+// Every field is optional, including the three the references mark required.
+//
+// This message only ever arrives *from* a head unit, and proto2's `required` on
+// a received message is a parse-time abort, not a validation: a missing field
+// or an enum value outside the declared set makes parseFrom throw
+// InvalidProtocolBufferException, and protobuf-lite's message for that names no
+// field. Headway would report "Message missing required fields" to a user
+// sitting in a car and there would be nothing in the log to say which one.
+//
+// Two real cases make that reachable rather than theoretical. An open head-unit
+// access point sends no `password`. A head unit whose security mode is a value
+// this enum does not name -- and it did not name 12, 20, 24 or 28 until the
+// numbering was corrected -- puts the value in the unknown-field set and leaves
+// `security_mode` unset, which under `required` fails the parse.
+//
+// So the leniency is deliberate: accept whatever the unit sends and let
+// WirelessHandshake say precisely what was missing, in words. Sender-side
+// messages keep their required fields, where the abort is a build-time bug in
+// Headway rather than a car being unusual.
+//
+// Field numbers and types: references/aa-proxy-rs/src/protos/WifiInfoResponse.proto
+// L22-L28 (which names field 2 `key` where aasdk names it `password`; the
+// number and type are what matter). See docs/protocol-notes.md §3.2.
 message WifiInfoResponse {
-  required string ssid = 1;
-  required string password = 2;
-  required string bssid = 3;
-  required service.wifiprojection.message.WifiSecurityMode security_mode = 4;
+  optional string ssid = 1;
+  optional string password = 2;
+  optional string bssid = 3;
+  optional service.wifiprojection.message.WifiSecurityMode security_mode = 4;
   optional service.wifiprojection.message.AccessPointType access_point_type = 5;
 }

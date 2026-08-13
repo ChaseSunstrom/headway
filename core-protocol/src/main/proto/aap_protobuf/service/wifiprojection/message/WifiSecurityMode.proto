@@ -4,15 +4,35 @@ option optimize_for=SPEED;
 
 package aap_protobuf.service.wifiprojection.message;
 
+// The numbering is a bitfield, not a sequence: 4 = WPA, 8 = WPA2, 16 =
+// enterprise, and the named constants are combinations of those. That is why
+// there are gaps, and it is why sequential numbering is not a harmless
+// simplification -- it silently renames every value above WPA_PERSONAL and
+// leaves four legal wire values with no symbol at all.
+//
+// Headway carried the sequential version until a real 2021 Chevrolet
+// Infotainment 3 unit sent wire value 8. Under these numbers that is
+// WPA2_PERSONAL, which is what the access point actually was; under the
+// sequential ones it decoded as WPA2_ENTERPRISE, which is what the log said and
+// which sent two separate readers hunting a security-type mismatch that did not
+// exist. Worse, the values this enum did not have -- 12, 20, 24, 28 -- would
+// have failed the parse outright (see WifiInfoResponse.proto), so a head unit
+// running a mixed WPA/WPA2 access point could not have connected at all.
+//
+// Sources, in exact agreement with each other:
+//   references/aa-proxy-rs/src/protos/WifiInfoResponse.proto L9-L20
+//   references/WirelessAndroidAutoDongle/aa_wireless_dongle/package/aawg/src/proto/WifiInfoResponse.proto
+//   references/openauto/btservice_proto/NetworkInfo.proto L5-L16
+// See docs/protocol-notes.md §3.2.
 enum WifiSecurityMode {
   UNKNOWN_SECURITY_MODE = 0;
   OPEN = 1;
   WEP_64 = 2;
   WEP_128 = 3;
   WPA_PERSONAL = 4;
-  WPA2_PERSONAL = 5;
-  WPA_WPA2_PERSONAL = 6;
-  WPA_ENTERPRISE = 7;
-  WPA2_ENTERPRISE = 8;
-  WPA_WPA2_ENTERPRISE = 9;
+  WPA2_PERSONAL = 8;
+  WPA_WPA2_PERSONAL = 12;
+  WPA_ENTERPRISE = 20;
+  WPA2_ENTERPRISE = 24;
+  WPA_WPA2_ENTERPRISE = 28;
 }

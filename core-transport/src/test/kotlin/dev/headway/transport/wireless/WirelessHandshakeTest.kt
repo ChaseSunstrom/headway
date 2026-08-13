@@ -289,6 +289,81 @@ class WirelessHandshakeTest {
         assertTrue(!request.hasProjection())
     }
 
+    /**
+     * The exact `WifiInfoResponse` the same vehicle sent, captured over RFCOMM.
+     *
+     * ```text
+     * 0a 0f "myChevrolet1189"    field 1 string  ssid
+     * 12 0c "<12-char key>"      field 2 string  password
+     * 1a 11 "ce:44:26:bf:18:ec"  field 3 string  bssid
+     * 20 08                      field 4 varint  security_mode = 8
+     * ```
+     *
+     * The passphrase bytes are replaced with a placeholder of the same length;
+     * nothing here depends on its value and a real key does not belong in a
+     * repository.
+     */
+    private val malibuInfoResponse: ByteArray = buildString {
+        append("myChevrolet1189")
+    }.let { ssid ->
+        val key = "XXXXXXXXXXXX"
+        val bssid = "ce:44:26:bf:18:ec"
+        byteArrayOf(0x0a, ssid.length.toByte()) + ssid.toByteArray() +
+            byteArrayOf(0x12, key.length.toByte()) + key.toByteArray() +
+            byteArrayOf(0x1a, bssid.length.toByte()) + bssid.toByteArray() +
+            byteArrayOf(0x20, 0x08)
+    }
+
+    @Test
+    fun `wire value 8 is WPA2-PSK, which is what the car actually runs`() {
+        // This is the regression the enum numbering cost us. Headway numbered
+        // WifiSecurityMode sequentially, so the car's 8 decoded as
+        // WPA2_ENTERPRISE and every log line and every reader was told the
+        // Chevrolet ran an enterprise network. It runs WPA2-PSK. All three
+        // references number this enum as a bitfield -- 4 = WPA, 8 = WPA2,
+        // 16 = enterprise -- so 8 is WPA2_PERSONAL.
+        val info = WifiInfoResponse.parseFrom(malibuInfoResponse)
+
+        assertEquals("myChevrolet1189", info.ssid)
+        assertEquals("ce:44:26:bf:18:ec", info.bssid)
+        assertEquals(WifiSecurityMode.WPA2_PERSONAL, info.securityMode)
+    }
+
+    @Test
+    fun `a mixed-mode access point does not fail the parse`() {
+        // Wire value 12 is WPA_WPA2_PERSONAL, which is what a head unit running
+        // a mixed WPA/WPA2 access point sends, and 24 is what openauto sends.
+        // Neither existed in the sequential enum, and because security_mode was
+        // `required`, an unknown value left it unset and made parseFrom throw
+        // "Message missing required fields" -- naming no field, in a car, with
+        // the credentials already on the wire.
+        for (wire in listOf(12, 20, 24, 28)) {
+            val bytes = malibuInfoResponse.copyOf().also { it[it.size - 1] = wire.toByte() }
+            val info = WifiInfoResponse.parseFrom(bytes)
+            assertEquals("myChevrolet1189", info.ssid, "security_mode=$wire broke the parse")
+        }
+
+        // And a value no reference declares must degrade rather than throw,
+        // because the security type is decided by the presence of a passphrase.
+        val unknown = malibuInfoResponse.copyOf().also { it[it.size - 1] = 0x63 }
+        val info = WifiInfoResponse.parseFrom(unknown)
+        assertEquals("myChevrolet1189", info.ssid)
+        assertTrue(!info.hasSecurityMode(), "an unmodelled value must read as absent, not throw")
+    }
+
+    @Test
+    fun `an open head unit network parses without a passphrase`() {
+        // `required string password` would abort the parse for an access point
+        // with no key at all -- and CarWifiNetwork already has a code path for
+        // exactly that case, which was unreachable.
+        val ssid = "OpenCar"
+        val bytes = byteArrayOf(0x0a, ssid.length.toByte()) + ssid.toByteArray()
+
+        val info = WifiInfoResponse.parseFrom(bytes)
+        assertEquals(ssid, info.ssid)
+        assertTrue(info.password.isEmpty())
+    }
+
     @Test
     fun `the version response carries a success status`() = runBlocking {
         // The bug this exists for. Headway used to answer the car's version

@@ -30,6 +30,7 @@ import headway.aaw.AawVersion.AawWifiVersionResponse
 import headway.aaw.AawVersion.WifiProjectionProtocolInfo
 import com.google.protobuf.MessageLite
 import dev.headway.protocol.io.Transport
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -316,8 +317,31 @@ class WirelessHandshake(
                 }
 
                 MessageId.WIFI_INFO_RESPONSE -> {
-                    info = WifiInfoResponse.parseFrom(message.payload)
-                    onStep("received credentials for SSID '${info!!.ssid}'")
+                    val parsed = WifiInfoResponse.parseFrom(message.payload)
+                    // The schema is deliberately all-optional so that an unusual
+                    // head unit reaches this line instead of dying inside
+                    // parseFrom with a message that names no field. The SSID is
+                    // the one part there is no way to work around.
+                    if (!parsed.hasSsid() || parsed.ssid.isEmpty()) {
+                        throw WirelessHandshakeException(
+                            "the head unit answered WifiInfoRequest without an SSID " +
+                                "(${RfcommMessage.hex(message.payload)}). There is nothing " +
+                                "to join; please report this log."
+                        )
+                    }
+                    if (!parsed.hasSecurityMode()) {
+                        // Not fatal: the security type is taken from whether a
+                        // passphrase is present, not from this field. Logged
+                        // because an unset value here means the unit sent a wire
+                        // value outside the enum, which is worth knowing.
+                        onStep(
+                            "the head unit's security_mode is absent or outside the known " +
+                                "values; treating the network as " +
+                                if (parsed.password.isEmpty()) "open" else "WPA2-PSK"
+                        )
+                    }
+                    info = parsed
+                    onStep("received credentials for SSID '${parsed.ssid}'")
                 }
 
                 MessageId.WIFI_VERSION_REQUEST -> {
@@ -421,6 +445,11 @@ class WirelessHandshake(
                         )
                     }
                 }
+
+                MessageId.WIFI_PING_REQUEST -> answerPing(message)
+
+                MessageId.WIFI_PING_RESPONSE ->
+                    onStep("head unit answered a keepalive ping")
 
                 MessageId.WIFI_CONNECTION_STATUS -> {
                     val status = aap_protobuf.aaw.WifiConnectionStatusOuterClass
@@ -529,6 +558,84 @@ class WirelessHandshake(
         "head unit accepted the RFCOMM connection and then sent nothing at all for " +
             "${deadlineMillis}ms, including after being prompted. Check that Android Auto " +
             "is enabled for this phone in the car's Bluetooth device settings."
+    }
+
+    /**
+     * Answers a keepalive ping, echoing the timestamp the peer sent.
+     *
+     * The body is `PingRequest`/`PingResponse` from the control service, which
+     * already carry `timestamp` as field 1 — the layout aa-proxy-rs encodes by
+     * hand for this message (`src/bluetooth.rs` L930-L936). Echoing rather than
+     * re-stamping because a ping's purpose is round-trip measurement, and the
+     * sender's clock is the only one that can interpret its own timestamp.
+     */
+    private suspend fun answerPing(message: RfcommMessage) {
+        val timestamp = runCatching {
+            aap_protobuf.service.control.message.PingRequestOuterClass.PingRequest
+                .parseFrom(message.payload).timestamp
+        }.getOrDefault(0L)
+        send(
+            MessageId.WIFI_PING_RESPONSE,
+            aap_protobuf.service.control.message.PingResponseOuterClass.PingResponse
+                .newBuilder()
+                .setTimestamp(timestamp)
+                .build(),
+        )
+    }
+
+    /**
+     * Keeps reading the RFCOMM link after the credentials have arrived.
+     *
+     * ## Why the link cannot simply be left alone
+     *
+     * [perform] returns the moment it has credentials, and until this existed
+     * nothing read the socket again until it was closed. That leaves the whole
+     * Wi-Fi join window — which is where a real attempt spends its time, and can
+     * be a minute or more — with the head unit talking into a socket nobody is
+     * listening to. A ping goes unanswered; a `WifiConnectionStatus` reporting a
+     * problem is never seen; anything the unit says about its access point is
+     * lost. aa-proxy-rs keeps a reader on this link for the entire bring-up and
+     * answers pings from both directions, and it is the reference that actually
+     * talks to real head units.
+     *
+     * Runs until cancelled or until the link fails. Failures are reported and
+     * swallowed rather than thrown: by the time this is running, the session's
+     * fate belongs to the Wi-Fi join and the TCP connect, and an RFCOMM link
+     * that drops after handing over credentials must not by itself fail an
+     * attempt that is otherwise succeeding.
+     */
+    suspend fun serviceLink() {
+        try {
+            while (true) {
+                val message = RfcommMessage.read(transport)
+                val id = MessageId.forNumber(message.messageId)
+                onStep(
+                    "rx id=${message.messageId} (${id?.name ?: "unknown"}) " +
+                        RfcommMessage.hex(message.payload) + " [after handshake]"
+                )
+                when (id) {
+                    MessageId.WIFI_PING_REQUEST -> answerPing(message)
+                    MessageId.WIFI_CONNECTION_STATUS -> {
+                        val status = WifiConnectionStatus.parseFrom(message.payload)
+                        if (status.status != Status.STATUS_SUCCESS) {
+                            onStep(
+                                "the head unit reports a problem with the Wi-Fi link: " +
+                                    "${status.status}" +
+                                    if (status.hasErrorMessage()) ": ${status.errorMessage}" else ""
+                            )
+                        }
+                    }
+                    // Everything else is logged above and needs no answer. A
+                    // second WifiStartRequest in particular is normal: units
+                    // re-announce their endpoint once their access point is up.
+                    else -> Unit
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            onStep("the Bluetooth link stopped being readable after the handshake: ${e.message}")
+        }
     }
 
     /**
