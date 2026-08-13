@@ -352,6 +352,44 @@ class WirelessHandshakeTest {
     }
 
     @Test
+    fun `the logged frame does not contain the car's Wi-Fi passphrase`() {
+        // The leak this exists for. The capture shared to diagnose a real car
+        // contained `12 0c 33 4c 51 35 54 32 6d 36 42 72 56 72` -- the vehicle's
+        // Wi-Fi key, in plain hex, in the file the app tells users to attach to
+        // a bug report. SessionLog's scrubber could not catch it: it is handed
+        // the passphrase only after the handshake has already logged, and it
+        // matches the string rather than its bytes.
+        val key = "3LQ5T2m6BrVr"
+        val ssid = "myChevrolet1189"
+        val payload = byteArrayOf(0x0a, ssid.length.toByte()) + ssid.toByteArray() +
+            byteArrayOf(0x12, key.length.toByte()) + key.toByteArray() +
+            byteArrayOf(0x20, 0x08)
+
+        val rendered = RfcommMessage.redactedHex(MessageId.WIFI_INFO_RESPONSE, payload)
+
+        val keyHex = key.toByteArray().joinToString(" ") { "%02x".format(it) }
+        assertTrue(!rendered.contains(keyHex), "the passphrase is still in the log: $rendered")
+        assertTrue(rendered.contains("**"), "the masked bytes must be visible as masked: $rendered")
+        // Everything else must survive: the hex is logged because it is the only
+        // evidence when a head unit sends something the schemas do not describe.
+        val ssidHex = ssid.toByteArray().joinToString(" ") { "%02x".format(it) }
+        assertTrue(rendered.contains(ssidHex), "the rest of the frame must be intact: $rendered")
+    }
+
+    @Test
+    fun `frames without a passphrase are logged verbatim`() {
+        // Only WifiInfoResponse carries a key, so nothing else may be masked --
+        // a redaction that fired on the wrong message would quietly destroy the
+        // evidence the hex exists for.
+        val start = WifiStartRequest.newBuilder().setIpAddress("192.168.5.1").setPort(7001).build()
+        val bytes = start.toByteArray()
+        assertEquals(
+            RfcommMessage.hex(bytes),
+            RfcommMessage.redactedHex(MessageId.WIFI_START_REQUEST, bytes),
+        )
+    }
+
+    @Test
     fun `an open head unit network parses without a passphrase`() {
         // `required string password` would abort the parse for an access point
         // with no key at all -- and CarWifiNetwork already has a code path for

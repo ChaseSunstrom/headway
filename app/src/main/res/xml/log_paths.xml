@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This file is part of Headway.
+  Copyright (C) 2026 The Headway Authors
+  SPDX-License-Identifier: GPL-3.0-or-later
+
+  Exactly the log directory, and nothing else. A FileProvider grants access to
+  whatever it is pointed at, so pointing it at the whole of external-files would
+  hand a share target the quirk file and anything else that lands there.
+-->
+<paths>
+    <external-files-path name="logs" path="logs/" />
+    <files-path name="internal-logs" path="logs/" />
+</paths>

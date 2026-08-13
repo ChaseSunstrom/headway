@@ -94,6 +94,50 @@ data class RfcommMessage(val messageId: Int, val payload: ByteArray) {
             val shown = bytes.take(limit).joinToString(" ") { "%02x".format(it) }
             return if (bytes.size > limit) "$shown ... (${bytes.size} bytes)" else shown
         }
+
+        /**
+         * Hex for the log, with the car's Wi-Fi passphrase masked out.
+         *
+         * `WifiInfoResponse` carries the passphrase as an ordinary length-
+         * prefixed string, so dumping the frame verbatim put it in the
+         * exportable log in plain hex -- and it did: the capture that prompted
+         * this work contains `12 0c 33 4c 51 35 54 32 6d 36 42 72 56 72`, which
+         * is the vehicle's key, in a file the app tells the user to share when
+         * reporting a problem. `SessionLog`'s scrubber could not help, both
+         * because it is given the passphrase only after the handshake has
+         * already logged, and because it matches the string rather than its
+         * bytes.
+         *
+         * Masking is done on the byte sequence rather than by re-serialising a
+         * cleared copy, so every other byte of the frame -- which is the whole
+         * reason the hex is logged -- stays exactly as it arrived.
+         */
+        fun redactedHex(id: MessageId?, payload: ByteArray, limit: Int = 64): String {
+            if (id != MessageId.WIFI_INFO_RESPONSE) return hex(payload, limit)
+            val secret = runCatching {
+                WifiInfoResponse.parseFrom(payload).password.toByteArray()
+            }.getOrNull()
+            if (secret == null || secret.isEmpty()) return hex(payload, limit)
+
+            val masked = payload.copyOf()
+            val at = indexOf(masked, secret)
+            if (at >= 0) for (i in at until at + secret.size) masked[i] = 0
+            val shown = masked.take(limit).mapIndexed { i, b ->
+                if (at >= 0 && i >= at && i < at + secret.size) "**" else "%02x".format(b)
+            }.joinToString(" ")
+            return if (masked.size > limit) "$shown ... (${masked.size} bytes)" else shown
+        }
+
+        private fun indexOf(haystack: ByteArray, needle: ByteArray): Int {
+            if (needle.isEmpty() || needle.size > haystack.size) return -1
+            outer@ for (start in 0..haystack.size - needle.size) {
+                for (i in needle.indices) {
+                    if (haystack[start + i] != needle[i]) continue@outer
+                }
+                return start
+            }
+            return -1
+        }
     }
 }
 
@@ -322,7 +366,9 @@ class WirelessHandshake(
             onStep(
                 "rx id=${message.messageId} " +
                     "(${MessageId.forNumber(message.messageId)?.name ?: "unknown"}) " +
-                    RfcommMessage.hex(message.payload)
+                    RfcommMessage.redactedHex(
+                        MessageId.forNumber(message.messageId), message.payload,
+                    )
             )
             when (MessageId.forNumber(message.messageId)) {
                 MessageId.WIFI_START_REQUEST -> {
@@ -363,7 +409,8 @@ class WirelessHandshake(
                     if (!parsed.hasSsid() || parsed.ssid.isEmpty()) {
                         throw WirelessHandshakeException(
                             "the head unit answered WifiInfoRequest without an SSID " +
-                                "(${RfcommMessage.hex(message.payload)}). There is nothing " +
+                                "(${RfcommMessage.redactedHex(MessageId.WIFI_INFO_RESPONSE, message.payload)}). " +
+                                "There is nothing " +
                                 "to join; please report this log."
                         )
                     }
@@ -670,7 +717,7 @@ class WirelessHandshake(
                 val id = MessageId.forNumber(message.messageId)
                 onStep(
                     "rx id=${message.messageId} (${id?.name ?: "unknown"}) " +
-                        RfcommMessage.hex(message.payload) + " [after handshake]"
+                        RfcommMessage.redactedHex(id, message.payload) + " [after handshake]"
                 )
                 when (id) {
                     MessageId.WIFI_PING_REQUEST -> answerPing(message)

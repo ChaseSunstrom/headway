@@ -113,6 +113,26 @@
             android:foregroundServiceType="mediaProjection|connectedDevice" />
 
         <!--
+          Shares the exported log.
+
+          Needed because the export dialog's own instructions could not be
+          followed: the file lands in Android/data, and DocumentsUI has blocked
+          navigation into that directory since Android 11, so "open the Files
+          app and go to that folder" was advice to do something the platform
+          forbids. A share sheet hands the file straight to a mail or chat app
+          with a temporary read grant instead.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.logs"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/log_paths" />
+        </provider>
+
+        <!--
           Delivers the install session's outcome. Not exported: the only sender
           is the system installer answering a PendingIntent Headway created, and
           the PendingIntent carries the delivery right on its own.

@@ -301,6 +301,39 @@ class MainActivity : AppCompatActivity() {
             ),
         )
         column.addView(button("Export the session log") { exportLog() })
+
+        column.addView(sectionTitle("If the car's Wi-Fi never gets joined"))
+        column.addView(
+            body(
+                "Three things are known to differ between head units, and there " +
+                    "is no way to tell from the phone which yours needs. Change " +
+                    "one at a time and press Connect again; the log says which " +
+                    "combination was used.",
+            ),
+        )
+        column.addView(
+            quirkSwitch(
+                "Probe for a hidden network name",
+                "For a head unit that does not broadcast its SSID. It fails " +
+                    "exactly like a car that is not there.",
+                { it.hiddenSsid },
+            ) { q, on -> q.copy(hiddenSsid = on) },
+        )
+        column.addView(
+            quirkSwitch(
+                "Tell the car which Wi-Fi channel we accept",
+                "For a head unit that hands over credentials and then never " +
+                    "brings its Wi-Fi up.",
+                { it.announceWifiChannel },
+            ) { q, on -> q.copy(announceWifiChannel = on) },
+        )
+        column.addView(
+            body(
+                "Matching the car's exact radio is alternated automatically on " +
+                    "each attempt, because both settings have been needed on real " +
+                    "hardware. Edit the quirk file to force one.",
+            ),
+        )
         column.addView(
             button("Create the head unit quirk file") { createQuirkTemplate() },
         )
@@ -384,6 +417,16 @@ class MainActivity : AppCompatActivity() {
             } else {
                 "Disconnect"
             }
+
+        // Released as soon as the link settles either way. Keeping a phone
+        // screen awake for a whole drive is not this screen's job -- the car
+        // launcher holds its own flag once the session is up.
+        val keepAwake = state is LinkState.Connecting || state is LinkState.WaitingToRetry
+        if (keepAwake) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     // --- actions ------------------------------------------------------------
@@ -396,7 +439,7 @@ class MainActivity : AppCompatActivity() {
             HeadwayService.stop(this)
             return
         }
-        val missing = requiredPermissions().filterNot { isGranted(it.permission) }
+        val missing = essentialPermissions().filterNot { isGranted(it.permission) }
         if (missing.isNotEmpty()) {
             // Starting anyway would fail inside the service with a
             // SecurityException the user never sees, and read as "it just does
@@ -436,6 +479,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startLink() {
+        // Hold the screen on for the attempt.
+        //
+        // Android's Wi-Fi approval prompt has to be tapped by a person, and a
+        // display that times out while it is waiting takes the tap with it --
+        // scans are throttled with the screen off and there is nothing to press.
+        // In the capture that prompted all this, the activity stopped fourteen
+        // seconds into a seventy-five second wait with no other explanation.
+        // CarLauncherActivity already does this for the car screen; the phone
+        // screen needs it for exactly as long as the join does.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         HeadwayService.start(this)
         // The one moment where the user has a job: Android shows an approval
         // prompt for the car's network, and it has to be tapped.
@@ -507,15 +560,36 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Log exported")
             .setMessage(
-                "Saved to:\n\n$path\n\nOpen the Files app, go to that folder and " +
-                    "attach the file to your report. No cable or adb needed.",
+                "Saved to:\n\n$path\n\nShare it straight into your report — that " +
+                    "folder is under Android/data, which the Files app has not been " +
+                    "allowed to open since Android 11.",
             )
-            .setPositiveButton("Copy path") { _, _ ->
+            .setPositiveButton("Share") { _, _ -> shareLog(file) }
+            .setNeutralButton("Copy path") { _, _ ->
                 getSystemService(ClipboardManager::class.java)
                     ?.setPrimaryClip(ClipData.newPlainText("Headway log", path))
             }
             .setNegativeButton("Done", null)
             .show()
+    }
+
+    private fun shareLog(file: java.io.File) {
+        val uri = runCatching {
+            androidx.core.content.FileProvider.getUriForFile(
+                this, "$packageName.logs", file,
+            )
+        }.getOrElse {
+            toast("Could not share the log: ${it.message}")
+            return
+        }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "Headway log (build ${BuildConfig.VERSION_CODE})")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching { startActivity(Intent.createChooser(send, "Share the Headway log")) }
+            .onFailure { toast("Nothing on this phone can share a file") }
     }
 
     /**
@@ -698,6 +772,20 @@ class MainActivity : AppCompatActivity() {
         PermissionNeed(Manifest.permission.POST_NOTIFICATIONS, "Notifications: stay connected"),
     )
 
+    /**
+     * The subset without which connecting cannot work at all.
+     *
+     * `POST_NOTIFICATIONS` is deliberately not in it. The foreground service
+     * runs whether or not its notification can be shown -- posting without the
+     * permission is a no-op on the platform side, not an error -- so refusing
+     * to start without it turned a cosmetic refusal into "the Connect button
+     * does nothing". It is still requested and still shown as missing, because
+     * a user who cannot see the link state is worse off; it just no longer
+     * blocks the car.
+     */
+    private fun essentialPermissions(): List<PermissionNeed> =
+        requiredPermissions().filterNot { it.permission == Manifest.permission.POST_NOTIFICATIONS }
+
     private fun isGranted(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
@@ -755,6 +843,45 @@ class MainActivity : AppCompatActivity() {
         gravity = Gravity.CENTER
         setOnClickListener { onClick() }
         layoutParams = marginParams()
+    }
+
+    /**
+     * A switch bound to one boolean in the universal quirk profile.
+     *
+     * These are on the phone screen rather than only in the quirk file because
+     * the file is not reachable: it lives in the app's private storage, and the
+     * obvious alternative, `Android/data`, has been closed to file managers
+     * since Android 11. A user debugging a car has a phone and nothing else.
+     */
+    private fun quirkSwitch(
+        label: String,
+        explanation: String,
+        read: (dev.headway.app.quirks.HeadUnitQuirks) -> Boolean,
+        write: (dev.headway.app.quirks.HeadUnitQuirks, Boolean) -> dev.headway.app.quirks.HeadUnitQuirks,
+    ): View {
+        val store = QuirkStore.inAppStorage(this)
+        val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        row.addView(
+            SwitchCompat(this).apply {
+                text = label
+                setTextColor(TEXT)
+                minHeight = dp(MIN_TOUCH_TARGET_DP)
+                isChecked = runCatching { read(store.universalQuirks()) }.getOrDefault(false)
+                setOnCheckedChangeListener { _, checked ->
+                    // A storage failure here must not crash the only screen the
+                    // user has, and must not silently pretend to have worked.
+                    runCatching { store.editUniversalProfile { write(it, checked) } }
+                        .onSuccess {
+                            SessionLog.shared.info(TAG, "quirk '$label' set to $checked")
+                            toast("Saved. Press Connect to try it.")
+                        }
+                        .onFailure { toast("Could not save that: ${it.message}") }
+                }
+            },
+            marginParams(),
+        )
+        row.addView(body(explanation))
+        return row
     }
 
     /** One activity-lifecycle line into the exportable log. */

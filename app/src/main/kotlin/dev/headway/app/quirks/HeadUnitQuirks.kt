@@ -479,6 +479,33 @@ class QuirkStore(
     /** Where the user will find the file, for display in the UI. */
     val path: String get() = file.absolutePath
 
+    /**
+     * Rewrites the universal (`*`/`*`) profile through [edit], leaving every
+     * other profile alone.
+     *
+     * This exists because the file itself is not reachable. It lives in the
+     * app's private storage, which no file manager can open without root, and
+     * moving it to `Android/data` would not help either — DocumentsUI has
+     * blocked navigation into that directory since Android 11. So the knobs a
+     * user needs while sitting in a car, with no laptop, were documented and
+     * unusable. The settings screen drives this instead, and the file stays as
+     * the way to express anything more specific.
+     */
+    fun editUniversalProfile(edit: (HeadUnitQuirks) -> HeadUnitQuirks) {
+        val existing = load().profiles.filter { it !in builtIn }
+        val universal = existing.firstOrNull {
+            it.makePattern == QuirkProfile.MATCH_ANY && it.modelPattern == QuirkProfile.MATCH_ANY
+        }
+        val updated = QuirkProfile(quirks = edit(universal?.quirks ?: HeadUnitQuirks.DEFAULT))
+        write(existing.filterNot { it === universal } + updated)
+    }
+
+    /** The universal profile's knobs, for rendering the settings screen. */
+    fun universalQuirks(): HeadUnitQuirks =
+        load().profiles.lastOrNull {
+            it.makePattern == QuirkProfile.MATCH_ANY && it.modelPattern == QuirkProfile.MATCH_ANY
+        }?.quirks ?: HeadUnitQuirks.DEFAULT
+
     companion object {
         const val FILE_NAME: String = "head-unit-quirks.json"
 
