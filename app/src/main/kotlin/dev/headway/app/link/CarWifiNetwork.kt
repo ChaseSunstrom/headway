@@ -150,8 +150,11 @@ class CarWifiNetwork(
                                         "association failure: a wrong passphrase, or Android " +
                                         "waiting on a join prompt that was never tapped"
                                 null ->
-                                    "and whether the network is even being broadcast could " +
-                                        "not be checked"
+                                    "and whether it is being broadcast could not be checked, " +
+                                        "so the likeliest cause is the approval prompt: " +
+                                        "Android asks before letting an app join a network it " +
+                                        "chose, and that prompt has to be tapped while Headway " +
+                                        "is on screen"
                             }
                     )
                 )
@@ -188,7 +191,11 @@ class CarWifiNetwork(
             throw CarWifiException("requestNetwork rejected: ${e.message}", e)
         }
 
-        onStep("requesting ${spec.ssid}${if (spec.bssid != null) " (${spec.bssid})" else ""}")
+        onStep(
+            "requesting ${spec.ssid}${if (spec.bssid != null) " (${spec.bssid})" else " (any BSSID)"}" +
+                "; Android may show a prompt to approve joining it, and the join " +
+                "fails after ${timeoutMillis}ms if nothing taps it"
+        )
         return try {
             available.await()
         } catch (e: Throwable) {
@@ -390,9 +397,32 @@ class CarWifiNetwork(
          * ever ships WPA3-SAE this is the line to change — `setWpa3Passphrase`
          * is the WPA3 counterpart and no reference uses it.
          */
-        fun specFor(credentials: CarNetworkCredentials, hiddenSsid: Boolean = false): Spec = Spec(
+        fun specFor(
+            credentials: CarNetworkCredentials,
+            hiddenSsid: Boolean = false,
+            /**
+             * Whether to require the exact BSSID the head unit named.
+             *
+             * Off, and this is the important default in this class. The target
+             * vehicle announces `ce:44:26:bf:18:ec` over Bluetooth, while the
+             * platform's own scan logged **two** BSSIDs for that one SSID —
+             * `ce:22:26:bf:18:ec` and `ce:44:26:bf:18:ec` — which is what a
+             * dual-radio access point looks like. Pinning the wrong one does not
+             * fail loudly: `requestNetwork` simply never matches, and the join
+             * times out after 30 s looking exactly like a car that is not
+             * broadcasting.
+             *
+             * The SSID is what actually identifies the network, and a head unit
+             * SSID is already specific to one car. Matching on it alone works on
+             * whichever radio the unit brings up. The BSSID stays available for a
+             * unit that genuinely needs pinning — somewhere with two cars of the
+             * same model in range, say — but that is a rare problem and this was
+             * a common one.
+             */
+            pinBssid: Boolean = false,
+        ): Spec = Spec(
             ssid = credentials.ssid,
-            bssid = credentials.bssid.takeIf { isUsableBssid(it) },
+            bssid = credentials.bssid.takeIf { pinBssid && isUsableBssid(it) },
             passphrase = credentials.passphrase.takeIf { it.isNotEmpty() },
             hiddenSsid = hiddenSsid,
         )

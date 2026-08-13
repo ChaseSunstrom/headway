@@ -92,9 +92,32 @@ class CarWifiNetworkTest {
         val spec = CarWifiNetwork.specFor(credentials())
 
         assertEquals("AAWirelessDongle", spec.ssid)
-        assertEquals("02:11:22:33:44:55", spec.bssid)
         assertEquals("password", spec.passphrase)
         assertFalse("head unit APs are not hidden unless the quirk file says so", spec.hiddenSsid)
+    }
+
+    @Test
+    fun theBssidIsNotPinnedByDefault() {
+        // The target vehicle announces ce:44:26:bf:18:ec over Bluetooth while
+        // the platform's own scan logged two BSSIDs for that one SSID --
+        // ce:22:... and ce:44:... -- which is what a dual-radio access point
+        // looks like. Pinning the wrong one does not fail loudly: the request
+        // simply never matches and the join times out after 30s, looking exactly
+        // like a car that is not broadcasting at all.
+        assertNull(
+            "matching a single BSSID breaks a dual-radio head unit",
+            CarWifiNetwork.specFor(credentials()).bssid,
+        )
+        assertNotNull(
+            "an SSID-only match must still produce a usable specifier",
+            CarWifiNetwork.buildSpecifier(CarWifiNetwork.specFor(credentials())),
+        )
+    }
+
+    @Test
+    fun theBssidCanStillBePinnedWhenAskedFor() {
+        val spec = CarWifiNetwork.specFor(credentials(), pinBssid = true)
+        assertEquals("02:11:22:33:44:55", spec.bssid)
     }
 
     @Test
@@ -127,7 +150,7 @@ class CarWifiNetworkTest {
         // rejects the zero and broadcast addresses outright. None of these may
         // fail the connection attempt.
         for (bad in listOf("", "   ", "not-a-mac", "00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff")) {
-            val spec = CarWifiNetwork.specFor(credentials(bssid = bad))
+            val spec = CarWifiNetwork.specFor(credentials(bssid = bad), pinBssid = true)
             assertNull("bssid '$bad' should have been dropped", spec.bssid)
             assertFalse(CarWifiNetwork.isUsableBssid(bad))
             assertNotNull(
