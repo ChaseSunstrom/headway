@@ -4,7 +4,11 @@ import "aap_protobuf/aaw/Status.proto";
 
 package aap_protobuf.aaw;
 
+// Optional, not required: this arrives from a head unit, and proto2's `required`
+// turns an unusual sender into a parse abort whose message names no field. See
+// WifiInfoResponse.proto for the full reasoning. WirelessHandshake checks
+// hasStatus() rather than trusting the default.
 message WifiConnectionStatus {
-  required Status status = 1;
+  optional Status status = 1;
   optional string error_message = 2;
 }

@@ -192,6 +192,18 @@ data class HeadUnitQuirks(
     val hiddenSsid: Boolean = false,
 
     /**
+     * Tell the head unit which of its advertised Wi-Fi frequencies we accept.
+     *
+     * Field 5 of `WifiVersionResponse`. Off by default because the field's
+     * meaning is inferred rather than documented — see
+     * `WirelessHandshake.announceSelectedWifiChannel` for the full argument on
+     * both sides. Worth turning on for a head unit that hands over credentials
+     * and then never brings its access point up, which is what a unit waiting
+     * to be told a channel would look like.
+     */
+    val announceWifiChannel: Boolean = false,
+
+    /**
      * Require the exact BSSID the head unit named over Bluetooth.
      *
      * **Null means automatic**, which is the default and the right answer for
@@ -224,6 +236,7 @@ data class HeadUnitQuirks(
     fun describe(): String = "fragment=$maxFragmentSize version=$announcedVersion " +
         "mediaAudioOverAap=$mediaAudioOverAap keyframe=$keyframeIntervalFrames " +
         "hiddenSsid=$hiddenSsid pinBssid=${pinBssid ?: "auto"} " +
+        "announceWifiChannel=$announceWifiChannel " +
         "touch=${if (touch.isIdentity) "identity" else touch.toString()}"
 
     companion object {
@@ -481,6 +494,7 @@ class QuirkStore(
         private const val KEY_MEDIA_AUDIO_OVER_AAP = "mediaAudioOverAap"
         private const val KEY_KEYFRAME_INTERVAL = "keyframeIntervalFrames"
         private const val KEY_HIDDEN_SSID = "hiddenSsid"
+        private const val KEY_ANNOUNCE_WIFI_CHANNEL = "announceWifiChannel"
         private const val KEY_PIN_BSSID = "pinBssid"
         private const val KEY_TOUCH = "touch"
 
@@ -496,7 +510,7 @@ class QuirkStore(
         private val PROFILE_KEYS = setOf(
             KEY_MAKE, KEY_MODEL, KEY_MAX_FRAGMENT_SIZE, KEY_ANNOUNCED_VERSION,
             KEY_MEDIA_AUDIO_OVER_AAP, KEY_KEYFRAME_INTERVAL, KEY_TOUCH,
-            KEY_HIDDEN_SSID, KEY_PIN_BSSID,
+            KEY_HIDDEN_SSID, KEY_PIN_BSSID, KEY_ANNOUNCE_WIFI_CHANNEL,
         )
 
         private val TOUCH_KEYS = setOf(
@@ -577,6 +591,7 @@ class QuirkStore(
                     .put(KEY_MEDIA_AUDIO_OVER_AAP, quirks.mediaAudioOverAap)
                     .put(KEY_KEYFRAME_INTERVAL, quirks.keyframeIntervalFrames)
                     .put(KEY_HIDDEN_SSID, quirks.hiddenSsid)
+                    .put(KEY_ANNOUNCE_WIFI_CHANNEL, quirks.announceWifiChannel)
                     .apply {
                         // Omitted when automatic: an absent key is what "let
                         // Headway alternate" looks like, and writing `false`
@@ -677,6 +692,9 @@ class QuirkStore(
                     ),
                     keyframeIntervalFrames = keyframe,
                     hiddenSsid = json.optBoolean(KEY_HIDDEN_SSID, defaults.hiddenSsid),
+                    announceWifiChannel = json.optBoolean(
+                        KEY_ANNOUNCE_WIFI_CHANNEL, defaults.announceWifiChannel,
+                    ),
                     pinBssid =
                         if (json.has(KEY_PIN_BSSID)) json.optBoolean(KEY_PIN_BSSID, false)
                         else defaults.pinBssid,

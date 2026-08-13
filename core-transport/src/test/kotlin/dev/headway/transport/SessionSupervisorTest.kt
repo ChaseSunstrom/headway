@@ -80,17 +80,105 @@ class SessionSupervisorTest {
     }
 
     @Test
-    fun `the worst case reconnect fits inside the fifteen second budget`() {
+    fun `the worst case reconnect fits inside the fifteen second budget`() = runBlocking {
         // CLAUDE.md: "reconnecting automatically within 15 seconds of the car
         // being available". Worst case is one full capped wait that began just
         // before the car came back, plus the connect attempt after it.
-        val supervisor = SessionSupervisor(runSession = { _ -> }, maxDelayMillis = 8_000)
-        val worstWait = supervisor.backoffFor(consecutiveFailures = 50)
-        assertEquals(8_000L, worstWait, "backoff must stay capped no matter how long the car was gone")
-        assertTrue(
-            worstWait < 15_000,
-            "a $worstWait ms wait leaves no room to connect inside the 15 s budget",
+        //
+        // Driven through run() rather than asserted on backoffFor() alone. The
+        // old version of this test called backoffFor(50) directly and checked it
+        // equalled the cap, which is a restatement of the implementation: it
+        // would have passed unchanged while run() ignored the cap entirely.
+        val h = Harness()
+        var attempt = 0
+        val supervisor = SessionSupervisor(
+            runSession = { _ ->
+                attempt++
+                // Fail for a long time -- the car was gone all night -- then
+                // succeed, which is the car coming back.
+                if (attempt < 30) throw IllegalStateException("car not in range")
+            },
+            onState = { h.states += it },
+            maxAttempts = 31,
+            sleep = h::sleep,
         )
+        supervisor.run()
+
+        val waitBeforeSuccess = h.slept[28]
+        assertTrue(
+            waitBeforeSuccess <= 8_000,
+            "after a long absence the wait was $waitBeforeSuccess ms; the cap is what keeps " +
+                "the car-becomes-available-to-connected time inside 15 s",
+        )
+        assertTrue(h.slept.all { it <= 8_000 }, "no wait may exceed the cap: ${h.slept}")
+    }
+
+    @Test
+    fun `a per-failure delay override is honoured, and only for that failure`() = runBlocking {
+        // The join-failure path needs a much longer wait than the rest: coming
+        // straight back after releasing a Wi-Fi network request lands on
+        // Android's stale approval dialog instead of raising a new one. Every
+        // other failure must keep the sub-second backoff the 15 s budget needs.
+        class JoinFailure : RuntimeException("join")
+
+        val h = Harness()
+        var attempt = 0
+        val supervisor = SessionSupervisor(
+            runSession = { _ ->
+                attempt++
+                if (attempt == 1) throw JoinFailure() else throw IllegalStateException("other")
+            },
+            onState = { h.states += it },
+            delayOverrideFor = { if (it is JoinFailure) 30_000L else null },
+            maxAttempts = 3,
+            sleep = h::sleep,
+        )
+        supervisor.run()
+
+        assertEquals(30_000L, h.slept[0], "the join failure must get its own long wait")
+        assertEquals(1_000L, h.slept[1], "an unrelated failure must not inherit it")
+    }
+
+    @Test
+    fun `a listener that throws cannot stop the link`() = runBlocking {
+        // onState drives a notification and a log, both diagnostics. Three of
+        // the calls sit outside the session's own try block, so before they were
+        // guarded a notification posted without permission could end the retry
+        // loop for the rest of the drive.
+        val h = Harness()
+        var attempt = 0
+        val supervisor = SessionSupervisor(
+            runSession = { _ -> attempt++ },
+            onState = { state ->
+                h.states += state
+                throw IllegalStateException("the notification blew up")
+            },
+            maxAttempts = 3,
+            sleep = h::sleep,
+        )
+        supervisor.run()
+
+        assertEquals(3, attempt, "the loop must keep running despite a throwing listener")
+    }
+
+    @Test
+    fun `an Error in a session is retried rather than ending reconnection`() = runBlocking {
+        // An OutOfMemoryError decoding a frame is a bad session, not a reason to
+        // stop reconnecting. Only genuine cancellation ends the supervisor.
+        val h = Harness()
+        var attempt = 0
+        val supervisor = SessionSupervisor(
+            runSession = { _ ->
+                attempt++
+                if (attempt == 1) throw StackOverflowError("deep")
+            },
+            onState = { h.states += it },
+            maxAttempts = 2,
+            sleep = h::sleep,
+        )
+        supervisor.run()
+
+        assertEquals(2, attempt, "the attempt after an Error must still happen")
     }
 
     @Test

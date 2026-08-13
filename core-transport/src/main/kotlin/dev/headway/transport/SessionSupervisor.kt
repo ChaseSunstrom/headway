@@ -118,12 +118,12 @@ class SessionSupervisor(
         while (true) {
             coroutineContext.ensureActive()
             attempts++
-            onState(LinkState.Connecting(attempts))
+            report(LinkState.Connecting(attempts))
 
             val failure = try {
                 // Connected is signalled from inside the session, when the link
                 // is up, not here on return -- return means it has ended.
-                runSession { onState(LinkState.Connected) }
+                runSession { report(LinkState.Connected) }
                 completedSessions++
                 // A session that ended cleanly is not a failure, so the next
                 // attempt starts from the short delay rather than inheriting the
@@ -147,7 +147,12 @@ class SessionSupervisor(
                 coroutineContext.ensureActive()
                 consecutiveFailures++
                 e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Throwable, not Exception. An OutOfMemoryError decoding a
+                // frame, or a NoClassDefFoundError from a platform API missing
+                // on some build, is a bad session -- not a reason for the car
+                // link to stop reconnecting for the rest of the drive. Genuine
+                // cancellation is still distinguished above.
                 consecutiveFailures++
                 e
             }
@@ -158,14 +163,14 @@ class SessionSupervisor(
             // the limit is null) but makes the limit meaningless when one is set.
             val limit = maxAttempts
             if (limit != null && attempts >= limit) {
-                if (failure != null) onState(LinkState.GaveUp(describe(failure)))
+                if (failure != null) report(LinkState.GaveUp(describe(failure)))
                 return
             }
 
             val delayMillis = failure?.let(delayOverrideFor)?.coerceAtLeast(0)
                 ?: backoffFor(consecutiveFailures)
             if (failure != null) {
-                onState(LinkState.WaitingToRetry(attempts, delayMillis, describe(failure)))
+                report(LinkState.WaitingToRetry(attempts, delayMillis, describe(failure)))
             }
             sleep(delayMillis)
         }
@@ -186,6 +191,19 @@ class SessionSupervisor(
         return if (scaled <= 0 || scaled > maxDelayMillis) maxDelayMillis else scaled
     }
 
-    private fun describe(e: Exception): String =
+    /**
+     * Publishes a state, and never lets the listener stop the link.
+     *
+     * `onState` is wired to a notification and a log. Both are diagnostics, and
+     * a diagnostic that throws -- a notification posted without permission, a
+     * formatting bug -- must not escape into the retry loop and end it. Three
+     * of these calls sit outside the session's own try block, so before this
+     * they could do exactly that.
+     */
+    private fun report(state: LinkState) {
+        runCatching { onState(state) }
+    }
+
+    private fun describe(e: Throwable): String =
         e.message?.takeIf { it.isNotBlank() } ?: e::class.simpleName ?: "unknown failure"
 }

@@ -190,32 +190,30 @@ class WirelessHandshake(
     /**
      * Whether to populate `selected_wifi_channel_type` (response field 5).
      *
-     * **On**, which reverses an earlier decision, so the reasoning matters.
+     * Off by default, and reachable from the quirk file as `announceWifiChannel`.
      *
-     * It was off because the field's meaning is not documented anywhere: no
-     * reference records an observed value, and "channel type" is not obviously
-     * the MHz frequency the head unit advertised. aasdk's schema stops at field
-     * 4 and does not have the field at all. Since the bug that immediately
-     * preceded that decision was putting a guessed value into a field whose
-     * meaning was unknown, leaving it empty was the cautious choice.
+     * The case for sending it is real: aa-proxy-rs decodes this field out of
+     * frames captured from genuine Android Auto phones
+     * (`WifiVersionResponseDebugInfo`, `src/bluetooth.rs` L1206-L1214), so real
+     * phones populate it and Headway is the odd one out. The head unit's
+     * version request is also where it advertises its frequencies — the target
+     * vehicle sends `[0, 5745]` — which makes "which of these do you accept"
+     * the natural reading of a reply field.
      *
-     * What changed is the evidence about what real phones do. aa-proxy-rs
-     * decodes this field *out of frames captured from genuine Android Auto
-     * phones* (`WifiVersionResponseDebugInfo`, `src/bluetooth.rs` L1206-L1214,
-     * read by `inspect_wifi_version_response` L1604-L1657), so a real phone
-     * populates it and Headway was the odd one out. And the head unit's version
-     * request is where it advertises its frequencies — the target vehicle sends
-     * `[0, 5745]` — which makes "which of these do you accept" the only reading
-     * of a reply field that fits. A unit waiting to be told before it commits a
-     * channel and brings its access point up would look exactly like the
-     * observed failure: credentials handed over, then an access point that
-     * never appears.
+     * The case against sending it by default is stronger. That reading is
+     * inferred: no reference records an observed *value*, "channel type" is not
+     * obviously an MHz frequency, and aasdk's schema does not have the field at
+     * all. Putting a guessed value into a field whose meaning was unknown is
+     * exactly what broke this handshake once already, one field earlier, when a
+     * status of 2 made a real head unit stop talking with no error. The
+     * credentials exchange demonstrably works without this field, and a default
+     * that can break something known to work is the wrong default when each
+     * test costs a drive to a car.
      *
-     * Still a flag, and the value sent is logged, because the reading is
-     * inferred rather than documented. Set it false if a capture shows a unit
-     * objecting.
+     * So it ships off and the quirk file turns it on, which makes it a text
+     * edit to A/B against the real vehicle rather than a rebuild.
      */
-    private val announceSelectedWifiChannel: Boolean = true,
+    private val announceSelectedWifiChannel: Boolean = false,
 ) {
 
     /**
@@ -328,8 +326,23 @@ class WirelessHandshake(
             )
             when (MessageId.forNumber(message.messageId)) {
                 MessageId.WIFI_START_REQUEST -> {
-                    endpoint = WifiStartRequest.parseFrom(message.payload)
-                    onStep("head unit offers ${endpoint!!.ipAddress}:${endpoint!!.port}")
+                    val start = WifiStartRequest.parseFrom(message.payload)
+                    // Both fields are optional in the schema so an unusual unit
+                    // reaches this line instead of dying inside parseFrom. A
+                    // half-filled endpoint is worse than none: it would send the
+                    // AAP connect to "" or port 0.
+                    if (!start.hasIpAddress() || start.ipAddress.isEmpty() ||
+                        !start.hasPort() || start.port !in 1..65535
+                    ) {
+                        onStep(
+                            "ignoring an incomplete WifiStartRequest " +
+                                "(${RfcommMessage.hex(message.payload)}); the endpoint will " +
+                                "be resolved from the access point instead"
+                        )
+                    } else {
+                        endpoint = start
+                        onStep("head unit offers ${start.ipAddress}:${start.port}")
+                    }
                     // Ask for the credentials now that we know where to connect,
                     // unless answering the version request already did.
                     if (info == null && askedForCredentials.compareAndSet(false, true)) {
@@ -496,7 +509,10 @@ class WirelessHandshake(
                 MessageId.WIFI_CONNECTION_STATUS -> {
                     val status = aap_protobuf.aaw.WifiConnectionStatusOuterClass
                         .WifiConnectionStatus.parseFrom(message.payload)
-                    if (status.status != Status.STATUS_SUCCESS) {
+                    // hasStatus(), not the value: the field is optional now, and
+                    // an absent status means the unit said nothing rather than
+                    // that it reported whatever the enum default happens to be.
+                    if (status.hasStatus() && status.status != Status.STATUS_SUCCESS) {
                         throw WirelessHandshakeException(
                             "head unit reported ${status.status}" +
                                 if (status.hasErrorMessage()) ": ${status.errorMessage}" else ""
@@ -660,7 +676,7 @@ class WirelessHandshake(
                     MessageId.WIFI_PING_REQUEST -> answerPing(message)
                     MessageId.WIFI_CONNECTION_STATUS -> {
                         val status = WifiConnectionStatus.parseFrom(message.payload)
-                        if (status.status != Status.STATUS_SUCCESS) {
+                        if (status.hasStatus() && status.status != Status.STATUS_SUCCESS) {
                             onStep(
                                 "the head unit reports a problem with the Wi-Fi link: " +
                                     "${status.status}" +

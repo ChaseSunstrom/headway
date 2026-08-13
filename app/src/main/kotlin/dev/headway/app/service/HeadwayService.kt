@@ -363,7 +363,23 @@ open class HeadwayService : Service() {
         val car = resolveCar(adapter)
         Log.i(TAG, "connecting to ${car.address}")
 
-        BluetoothCarLink(car, adapter, onStep = ::step).use { link ->
+        // Resolved before the link, because two of these knobs shape the Wi-Fi
+        // association and one shapes the Bluetooth exchange itself. Identity is
+        // unknown until service discovery, so this yields the catch-all profile
+        // plus any user entry matching every unit -- which is where a "my head
+        // unit needs X to connect at all" override has to live, since the user
+        // cannot get far enough to learn the unit's identity.
+        val quirks = QuirkStore.inAppStorage(this).quirksFor(HeadUnitIdentity())
+        if (quirks != HeadUnitQuirks.DEFAULT) {
+            step("applying head unit quirks: ${quirks.describe()}")
+        }
+
+        BluetoothCarLink(
+            car,
+            adapter,
+            announceWifiChannel = quirks.announceWifiChannel,
+            onStep = ::step,
+        ).use { link ->
             val credentials = link.fetchCredentials()
             // From here to the end of the attempt, something has to keep
             // reading Bluetooth. The head unit does not go quiet once it has
@@ -373,16 +389,6 @@ open class HeadwayService : Service() {
             // entire Wi-Fi join, which is the longest part of the bring-up.
             val rfcommService = scope.launch { link.serviceLink() }
             try {
-            // Resolved before the join, not after, because two of these knobs
-            // decide how the access point is matched. Identity is unknown until
-            // service discovery, so this yields the catch-all profile plus any
-            // user entry that matches every unit -- which is exactly where a
-            // "my head unit hides its SSID" override has to live, since the
-            // user cannot get far enough to learn the unit's identity.
-            val quirks = QuirkStore.inAppStorage(this).quirksFor(HeadUnitIdentity())
-            if (quirks != HeadUnitQuirks.DEFAULT) {
-                step("applying head unit quirks: ${quirks.describe()}")
-            }
             // CarNetworkCredentials.toString already redacts the passphrase, but
             // register it with the scrubber too, so it cannot leak through some
             // other log line before the export is shared for diagnosis.

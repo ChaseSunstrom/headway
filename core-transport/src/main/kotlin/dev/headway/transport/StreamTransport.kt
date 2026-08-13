@@ -19,7 +19,11 @@ package dev.headway.transport
 
 import dev.headway.protocol.io.Transport
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.DisposableHandle
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -70,11 +74,21 @@ class StreamTransport(
 
         return readLock.withLock {
             withContext(dispatcher) {
+                val abort = closeOnCancel()
                 val buffer = ByteArray(length)
                 var read = 0
+                try {
                 while (read < length) {
                     val n = try {
                         input.read(buffer, read, length - read)
+                    } catch (e: java.net.SocketTimeoutException) {
+                        // Not a failure: TcpTransport sets a read timeout
+                        // precisely so this loop gets control back periodically.
+                        // Checking for cancellation here is what makes a
+                        // cancelled session actually stop, since the blocking
+                        // read itself cannot be interrupted.
+                        coroutineContext.ensureActive()
+                        continue
                     } catch (e: Exception) {
                         // A close() racing an in-flight read surfaces as a
                         // SocketException / IOException. Reconnection treats a
@@ -91,9 +105,30 @@ class StreamTransport(
                     read += n
                 }
                 buffer
+                } finally {
+                    abort?.dispose()
+                }
             }
         }
     }
+
+    /**
+     * Closes the transport if the calling coroutine is cancelled.
+     *
+     * `withContext` cannot interrupt a thread that is inside a blocking
+     * `read()`, so cancelling a coroutine that is waiting on this transport
+     * does nothing at all until bytes arrive — which, for a head unit that has
+     * gone away, is never. The session then survives its own cancellation,
+     * holding a thread and a socket, and reconnection waits behind it.
+     *
+     * Closing the underlying stream is the only thing that reliably ends a
+     * blocking read, and it is what `BluetoothCarLink` already does for the
+     * RFCOMM connect. Doing it here covers every transport uniformly.
+     */
+    private fun CoroutineScope.closeOnCancel(): DisposableHandle? =
+        coroutineContext[Job]?.invokeOnCompletion { cause ->
+            if (cause != null) close()
+        }
 
     override suspend fun write(bytes: ByteArray, offset: Int, length: Int) {
         require(offset >= 0 && length >= 0 && offset + length <= bytes.size) {
@@ -103,12 +138,15 @@ class StreamTransport(
 
         writeLock.withLock {
             withContext(dispatcher) {
+                val abort = closeOnCancel()
                 try {
                     output.write(bytes, offset, length)
                     output.flush()
                 } catch (e: Exception) {
                     if (closed.get()) throw EOFException("transport closed during write")
                     throw e
+                } finally {
+                    abort?.dispose()
                 }
             }
         }

@@ -85,6 +85,8 @@ class BluetoothCarLink(
      * the secure socket rather than downgrade.
      */
     private val secure: Boolean = true,
+    /** Quirk file's `announceWifiChannel`; see [WirelessHandshake]. */
+    private val announceWifiChannel: Boolean = false,
     private val onStep: (String) -> Unit = {},
 ) : AutoCloseable {
 
@@ -188,7 +190,7 @@ class BluetoothCarLink(
             val startedAt = System.nanoTime()
             try {
                 onStep("RFCOMM up ($label); waiting for the head unit to speak")
-                val exchange = WirelessHandshake(wrapped, onStep)
+                val exchange = WirelessHandshake(wrapped, onStep, announceWifiChannel)
                 handshake = exchange
                 return withTimeout(handshakeTimeoutMillis) {
                     exchange.perform()

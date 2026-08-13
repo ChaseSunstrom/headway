@@ -390,12 +390,13 @@ class WirelessHandshakeTest {
             assertEquals(1, response.majorVersion, "mirror the version the head unit announced")
             assertEquals(0, response.minorVersion)
 
-            // Field 5 now carries the frequency the head unit advertised, and
-            // 0 -- which the same advertisement also contains, as a placeholder
-            // -- must never be what gets sent back.
-            assertEquals(
-                5745, response.selectedWifiChannelType,
-                "the phone must name the real frequency, not the placeholder 0",
+            // Field 5 stays absent by default. Real phones do populate it, but
+            // its meaning is inferred rather than documented, and a guessed
+            // value in an unverified field is exactly what broke this handshake
+            // one field earlier. The quirk file turns it on.
+            assertTrue(
+                !response.hasSelectedWifiChannelType(),
+                "an inferred field must be opt-in, not the default",
             )
 
             pair.headUnit.close()
@@ -405,16 +406,15 @@ class WirelessHandshakeTest {
     }
 
     @Test
-    fun `the selected wifi channel can be suppressed for a unit that objects`() = runBlocking {
-        // The escape hatch, now in the other direction. Announcing the channel
-        // is the default because aa-proxy-rs decodes this field out of frames
-        // captured from genuine Android Auto phones, so a real phone sends it --
-        // but the field's meaning is inferred rather than documented, and a unit
-        // that objects needs a way to be given the old behaviour.
+    fun `the selected wifi channel can be announced when a head unit needs it`() = runBlocking {
+        // The quirk file's announceWifiChannel. 0 is a placeholder in the
+        // observed advertisement, so the value picked must be the real
+        // frequency -- naming the placeholder would be worse than saying
+        // nothing.
         LoopbackTransport.pair().use { pair ->
             val phone = async(Dispatchers.IO) {
                 runCatching {
-                    WirelessHandshake(pair.phone, announceSelectedWifiChannel = false)
+                    WirelessHandshake(pair.phone, announceSelectedWifiChannel = true)
                         .perform(maxMessages = 1)
                 }
             }
@@ -425,10 +425,7 @@ class WirelessHandshakeTest {
             val reply = withTimeout(10_000) { RfcommMessage.read(pair.headUnit) }
             val response = AawWifiVersionResponse.parseFrom(reply.payload)
             assertEquals(WirelessHandshake.STATUS_SUCCESS, response.status)
-            assertTrue(
-                !response.hasSelectedWifiChannelType(),
-                "suppressed means the field is absent, not zero",
-            )
+            assertEquals(5745, response.selectedWifiChannelType, "0 is a placeholder, 5745 is real")
 
             pair.headUnit.close()
             phone.await()

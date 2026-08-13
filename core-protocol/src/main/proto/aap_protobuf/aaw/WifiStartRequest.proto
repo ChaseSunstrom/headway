@@ -2,7 +2,10 @@ syntax="proto2";
 
 package aap_protobuf.aaw;
 
+// Optional for the same reason as WifiInfoResponse: received from a head unit,
+// so a missing field must be a diagnosable message rather than a parse abort.
+// WirelessHandshake validates both before using them as an endpoint.
 message WifiStartRequest {
-  required string ip_address = 1;
-  required uint32 port = 2;
+  optional string ip_address = 1;
+  optional uint32 port = 2;
 }

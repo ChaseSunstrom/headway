@@ -114,11 +114,25 @@ object AapTls {
         }
         return context.createSSLEngine().apply {
             useClientMode = clientMode
-            // The peer's certificate cannot be validated (see the class note), so
-            // requiring it would only produce a failure we cannot act on.
             if (!clientMode) {
+                // Ask for the head unit's certificate, but do not require it.
+                //
+                // This is `SSL_VERIFY_PEER` with an always-accept callback,
+                // which is what both phone-role references do — they request
+                // the peer certificate and then accept whatever comes back.
+                // Headway previously asked for nothing at all, which is a
+                // materially different ClientHello/CertificateRequest exchange
+                // from the one a real head unit has been built against, and it
+                // also meant the unit's certificate never reached us even as a
+                // diagnostic.
+                //
+                // `want`, not `need`: the certificate cannot be validated (see
+                // the class note on the expired bundled CA), so a unit that
+                // declines to send one must still get a session. `need` would
+                // turn "did not present a certificate" into a handshake failure
+                // for no gain.
+                wantClientAuth = true
                 needClientAuth = false
-                wantClientAuth = false
             }
             enabledProtocols = arrayOf(PROTOCOL)
         }

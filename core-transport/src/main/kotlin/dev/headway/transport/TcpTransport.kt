@@ -87,7 +87,20 @@ object TcpTransport {
         socket.tcpNoDelay = true
         // The session must notice a head unit that went away, rather than
         // blocking forever -- reconnection depends on the read failing.
+        //
+        // SO_KEEPALIVE alone does not do that. On Linux and Android it starts
+        // probing only after net.ipv4.tcp_keepalive_time, which defaults to two
+        // hours, so a car driven away from would hold a live-looking socket for
+        // the rest of the day. It is kept because it costs nothing and does
+        // eventually reap a dead connection.
         socket.keepAlive = true
+        // This is what actually bounds a read. StreamTransport treats a
+        // SocketTimeoutException as "nothing yet, check whether we have been
+        // cancelled, carry on", so the value is not a session timeout -- it is
+        // how often a blocked read gets the chance to notice the session is
+        // over. Short enough to make cancellation prompt, long enough not to
+        // spin.
+        socket.soTimeout = READ_TIMEOUT_MILLIS
     }
 
     /**
@@ -98,4 +111,13 @@ object TcpTransport {
      * (`getenv("AAWG_PROXY_PORT", 5288)`).
      */
     const val DEFAULT_PORT: Int = 5288
+
+    /**
+     * How long a blocking read waits before handing control back.
+     *
+     * Not a session timeout: [StreamTransport] retries after one of these, and
+     * only uses the opportunity to check whether the coroutine was cancelled.
+     * See the comment in `configure()`.
+     */
+    const val READ_TIMEOUT_MILLIS: Int = 10_000
 }
