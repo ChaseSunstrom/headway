@@ -138,6 +138,23 @@ class ScreenEncoder(
     private var virtualDisplay: VirtualDisplay? = null
     private var projection: MediaProjection? = null
     private var projectionCallback: MediaProjection.Callback? = null
+
+    /**
+     * The projection and its one virtual display, kept across encoder restarts.
+     *
+     * Since Android 14 `createVirtualDisplay` throws `SecurityException` on a
+     * projection that has already produced one, so a restart cannot simply make
+     * another. Encoder restarts are routine -- every reconnect is one -- so
+     * releasing the display on stop would have lost video for the rest of the
+     * session, with re-prompting the driver as the only way back.
+     *
+     * The display therefore outlives the codec: [stopLocked] detaches its
+     * surface and leaves it in place, and [start] resizes it and points it at
+     * the new encoder's surface. One consent, one display, any number of
+     * encoders.
+     */
+    @Volatile
+    private var heldProjection: MediaProjection? = null
     private var sink: Sink? = null
     private var scratch = ByteArray(INITIAL_SCRATCH_BYTES)
     private var baseTimestampUs = UNSET_TIMESTAMP
@@ -223,25 +240,46 @@ class ScreenEncoder(
                 val callback = object : MediaProjection.Callback() {
                     override fun onStop() {
                         onStep("media projection stopped by the system or the user")
-                        stop()
+                        // release(), not stop(): the consent is gone, so the
+                        // display cannot be reused and holding it would leak a
+                        // display for the life of the process. The next capture
+                        // needs a fresh projection anyway.
+                        release()
                     }
                 }
                 projection.registerCallback(callback, callbackHandler)
                 projectionCallback = callback
                 this.projection = projection
-                val display = projection.createVirtualDisplay(
-                    displayName,
-                    configuration.width,
-                    configuration.height,
-                    configuration.densityDpi,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC,
-                    surface,
-                    null,
-                    null,
-                )
-                    ?: throw ScreenEncoderException("the system refused the virtual display")
+
+                // Reuse the display this projection already owns, if it has one.
+                // Android will not give a second one out, and a restart that
+                // asked for another would fail outright.
+                val existing = virtualDisplay?.takeIf { heldProjection === projection }
+                val display = if (existing != null) {
+                    existing.resize(
+                        configuration.width,
+                        configuration.height,
+                        configuration.densityDpi,
+                    )
+                    existing.surface = surface
+                    onStep("re-pointed the existing virtual display '$displayName' at a new encoder")
+                    existing
+                } else {
+                    val created = projection.createVirtualDisplay(
+                        displayName,
+                        configuration.width,
+                        configuration.height,
+                        configuration.densityDpi,
+                        DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC,
+                        surface,
+                        null,
+                        null,
+                    ) ?: throw ScreenEncoderException("the system refused the virtual display")
+                    onStep("mirroring into virtual display '$displayName'")
+                    created
+                }
+                heldProjection = projection
                 virtualDisplay = display
-                onStep("mirroring into virtual display '$displayName'")
                 display
             } catch (e: Exception) {
                 stopLocked()
@@ -332,17 +370,38 @@ class ScreenEncoder(
      */
     fun stop() = synchronized(lock) { stopLocked() }
 
+    /**
+     * Releases the virtual display as well as the codec.
+     *
+     * For when the projection itself is going away -- the user revoked consent,
+     * or the service is shutting down -- as opposed to an encoder restart, which
+     * must keep the display. [stop] is the restart-safe one and is what the
+     * session path calls.
+     */
+    fun release() = synchronized(lock) {
+        stopLocked()
+        virtualDisplay?.let { runCatching { it.release() } }
+        virtualDisplay = null
+        heldProjection = null
+    }
+
     // --- internals ----------------------------------------------------------
 
     private fun stopLocked() {
-        virtualDisplay?.let { runCatching { it.release() } }
-        virtualDisplay = null
+        // The virtual display is released, but the projection is deliberately
+        // not stopped -- consent is the caller's asset and a reconnect that had
+        // to re-prompt the driver would be worse than useless.
+        //
+        // The display is detached rather than released, for the same reason:
+        // Android 14 refuses a second createVirtualDisplay on one projection, so
+        // releasing this one would make the next start fail with a
+        // SecurityException. Dropping the surface stops it consuming frames from
+        // a codec that is about to be released.
+        virtualDisplay?.let { runCatching { it.surface = null } }
         projectionCallback?.let { callback ->
             runCatching { projection?.unregisterCallback(callback) }
         }
         projectionCallback = null
-        // Deliberately not projection.stop(): consent is the caller's asset and a
-        // reconnect that had to re-prompt the driver would be worse than useless.
         projection = null
         codec?.let { active ->
             // stop() throws on a codec in an error state; release() still has to
@@ -448,6 +507,17 @@ class ScreenEncoder(
             setInteger(MediaFormat.KEY_BIT_RATE, configuration.bitRateBitsPerSecond)
             setInteger(MediaFormat.KEY_FRAME_RATE, configuration.frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, configuration.keyFrameIntervalSeconds)
+            // Put SPS/PPS in front of every IDR, not only in the one-off
+            // codec-config buffer at the start of the stream.
+            //
+            // The head unit's decoder needs parameter sets before it can decode
+            // anything, and AAP delivers them once. That is fine for a decoder
+            // listening from the first byte and useless for one that is not:
+            // a head unit that resumes video focus, or reopens the channel
+            // mid-session, gets IDRs it cannot decode and shows a black screen
+            // until something restarts the encoder. Self-contained IDRs cost a
+            // few tens of bytes each and remove the whole class of problem.
+            setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
             setLong(
                 MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,
                 configuration.repeatFrameAfterMicros,
