@@ -39,8 +39,26 @@ class FramedConnection(
     private val transport: Transport,
     private val fragmenter: MessageFragmenter = MessageFragmenter(),
     private val assembler: MessageAssembler = MessageAssembler(),
-    /** Optional frame logger; the debug build wires this to the in-app log export. */
-    private val onFrame: (direction: Direction, header: FrameHeader) -> Unit = { _, _ -> },
+    /**
+     * Optional frame logger, wired by the app's debug build to the log export.
+     *
+     * Carries the payload as well as the header, and that is the point. An
+     * earlier version passed only the header, and nothing wired it at all
+     * despite the comment claiming otherwise — so the exported log had hex for
+     * every Bluetooth frame and not one byte of AAP. A real head unit closed
+     * sessions over a single wrong flag bit for weeks, and the bit had to be
+     * found by reading four reference implementations instead of by reading the
+     * log the user had already sent.
+     *
+     * [payload] is what actually went on the wire in that direction: ciphertext
+     * on send when encrypted, decrypted plaintext on receive. Callers are
+     * expected to truncate — video frames run to 16 KB.
+     */
+    private val onFrame: (
+        direction: Direction,
+        header: FrameHeader,
+        payload: ByteArray,
+    ) -> Unit = { _, _, _ -> },
 ) : MessageChannel {
     enum class Direction { SENT, RECEIVED }
 
@@ -82,7 +100,10 @@ class FramedConnection(
                 // because for an encrypted frame that is the ciphertext length
                 // while the total-size field stays in plaintext units.
                 val header = fragment.headerFor(wire.size)
-                onFrame(Direction.SENT, header)
+                // Logged as plaintext, not as the ciphertext actually written:
+                // a hex dump of a TLS record tells a reader nothing, and the
+                // whole point of this hook is that a failure be readable.
+                onFrame(Direction.SENT, header, fragment.plaintext)
 
                 // One write per frame: header and payload must not be separated
                 // by another coroutine's frame.
@@ -104,7 +125,6 @@ class FramedConnection(
         receiveLock.withLock {
             while (true) {
                 val header = readHeader()
-                onFrame(Direction.RECEIVED, header)
 
                 val wire = transport.readFully(header.payloadLength)
                 val plaintext = if (header.encrypted) {
@@ -116,6 +136,9 @@ class FramedConnection(
                 } else {
                     wire
                 }
+                // After decryption rather than before, for the same reason the
+                // send side logs plaintext.
+                onFrame(Direction.RECEIVED, header, plaintext)
 
                 assembler.onFrame(header, plaintext)?.let { return it }
             }

@@ -44,6 +44,8 @@ import dev.headway.app.quirks.HeadUnitIdentity
 import dev.headway.app.quirks.HeadUnitQuirks
 import dev.headway.app.quirks.QuirkStore
 import dev.headway.protocol.control.ControlKeepalive
+import dev.headway.protocol.control.ControlMessageType
+import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.framing.MessageFragmenter
 import dev.headway.protocol.io.FramedConnection
 import dev.headway.protocol.session.AapSession
@@ -348,6 +350,50 @@ open class HeadwayService : Service() {
     }
 
     private fun portKey(address: String): String = "$KEY_LEARNED_PORT.$address"
+
+    /**
+     * Which bundled certificate this head unit accepted last time.
+     *
+     * Exactly the argument [rememberedPort] makes for the learned port: the
+     * useful case is the run *after* a restart. `rejectedCertificates` is a
+     * plain field on the service object, so a fresh Connect -- or a reboot, or
+     * an app update -- starts again at candidate 0, which is the one that
+     * expired in 2022. A real log shows eight full attempts burned on it.
+     *
+     * Keyed by Bluetooth address, again like the port: two cars can accept
+     * different certificates, and a value learned from one must never be tried
+     * against the other.
+     *
+     * Stored as the id rather than the index, because the index means nothing if
+     * the built-in order ever changes and `credentialFor` already takes an id.
+     */
+    private fun rememberedCertificate(address: String): String? =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getString(certificateKey(address), null)
+
+    private fun rememberCertificate(address: String, id: String) {
+        if (id == rememberedCertificate(address)) return
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(certificateKey(address), id)
+            .apply()
+        step("remembering that the head unit at $address accepts the '$id' certificate")
+    }
+
+    /**
+     * Forgets the remembered choice after a rejection.
+     *
+     * A head unit software update can revoke what used to work. Without this the
+     * phone would pin itself to a dead choice and rotate away from it on every
+     * single session, forever.
+     */
+    private fun forgetCertificate(address: String) {
+        if (rememberedCertificate(address) == null) return
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .remove(certificateKey(address))
+            .apply()
+        step("the remembered certificate for $address was rejected; forgetting it")
+    }
+
+    private fun certificateKey(address: String): String = "$KEY_ACCEPTED_CERT.$address"
 
     /**
      * Keeps the car's Wi-Fi credentials for the settings screen to offer.
@@ -745,12 +791,22 @@ open class HeadwayService : Service() {
                     val connection = FramedConnection(
                         transport,
                         fragmenter = MessageFragmenter(quirks.maxFragmentSize),
+                        onFrame = ::logFrame,
                     )
                     val certificates = PhoneCertificateStore.inAppStorage(this)
                     val attempt = rejectedCertificates
-                    val credential = certificates.credentialFor(attempt, quirks.certificate)
+                    // Quirk file wins, then whatever this car accepted last
+                    // time, then the built-in order -- the same three tiers the
+                    // learned AAP port already uses. Without the middle one,
+                    // every fresh Connect re-tests the certificate the car is
+                    // already known to reject: eight wasted attempts in a single
+                    // real-car log, each costing a Bluetooth handshake, a Wi-Fi
+                    // join and a TCP connect.
+                    val preferredCertificate =
+                        quirks.certificate ?: rememberedCertificate(car.address)
+                    val credential = certificates.credentialFor(attempt, preferredCertificate)
                     val keyMaterial = credential.material
-                    step("presenting ${certificates.describe(attempt, quirks.certificate)}")
+                    step("presenting ${certificates.describe(attempt, preferredCertificate)}")
                     step("why this one: ${credential.rationale}")
                     AapTls.validityProblem(keyMaterial)?.let {
                         // Said before the session rather than after it fails. A
@@ -782,6 +838,11 @@ open class HeadwayService : Service() {
                     val profile = try {
                         session.connect()
                     } catch (e: AuthenticationRejectedException) {
+                        // A remembered choice that just got rejected is worse
+                        // than no memory at all: it would be tried first every
+                        // session and rejected every session. See
+                        // forgetCertificate.
+                        forgetCertificate(car.address)
                         // Advance to the next certificate, if there is one, and
                         // let the supervisor reconnect. Only this failure moves
                         // the counter -- see rejectedCertificates.
@@ -805,12 +866,19 @@ open class HeadwayService : Service() {
                         throw e
                     }
 
-                    // Whatever got us here is the one that works. Say so: it is
-                    // the answer to a question the references cannot settle.
+                    // Whatever got us here is the one that works. Remember it,
+                    // and say so: it is the answer to a question the references
+                    // cannot settle.
+                    //
+                    // Remembered even when it was the first candidate -- the old
+                    // `attempt > 0` guard meant a car that accepts the default
+                    // taught us nothing, and the point of storing it is that the
+                    // built-in order may change under a user who never sees it.
+                    rememberCertificate(car.address, credential.id)
                     if (certificates.candidateCount() > 1 && attempt > 0) {
                         step("the head unit accepted ${credential.label} — " +
-                            "put \"certificate\": \"${credential.id}\" in the quirk file " +
-                            "to start with it next time")
+                            "remembering it for next time, and " +
+                            "\"certificate\": \"${credential.id}\" in the quirk file pins it")
                     }
 
                     // The link is genuinely up now: version, TLS-or-auth,
@@ -861,10 +929,20 @@ open class HeadwayService : Service() {
         while (true) {
             val message = connection.receive()
             if (ControlKeepalive.isPing(message)) {
-                ControlKeepalive.answer(connection, message)
+                // Encrypted whenever the session is, regardless of how the ping
+                // arrived. See ControlKeepalive.answer: a live cryptor is the
+                // signal, not the incoming flag.
+                ControlKeepalive.answer(connection, message, connection.cryptor != null)
                 continue
             }
-            Log.v(TAG, "unhandled message on channel ${message.channelId}")
+            // Into the exportable log rather than only logcat. This was Log.v,
+            // so everything a head unit sent after bring-up was invisible in the
+            // file users are actually asked to share -- and post-bring-up is
+            // where the remaining unknowns live.
+            step(
+                "unhandled ${ControlMessageType.describe(message.messageId)} on " +
+                    "${ChannelId.describe(message.channelId)} (${message.payload.size} bytes)"
+            )
         }
     }
 
@@ -968,6 +1046,44 @@ open class HeadwayService : Service() {
         mutableLinkState.value = state
     }
 
+    /**
+     * Puts every AAP frame in the exportable log, in hex.
+     *
+     * The Bluetooth handshake has had this since the beginning and it is what
+     * made every RFCOMM bug findable from a log alone. The TCP side had the hook
+     * and nothing wired to it, so a head unit that closed the session over one
+     * wrong flag bit produced an export in which the closure was visible and the
+     * cause was not.
+     *
+     * ## Why it is filtered rather than complete
+     *
+     * Video runs at 30 fps in fragments of up to `maxFragmentSize` (16 KB by
+     * default). Logging those would push everything else out of a 4000-line
+     * export within a couple of seconds and make the file useless for exactly
+     * the failures it exists to diagnose. So the media channels get a one-line
+     * summary and everything else gets bytes — bring-up is where the unknowns
+     * are, and bring-up is all low-rate control traffic.
+     */
+    private fun logFrame(
+        direction: FramedConnection.Direction,
+        header: dev.headway.protocol.framing.FrameHeader,
+        payload: ByteArray,
+    ) {
+        if (!BuildConfig.DEBUG) return
+        val arrow = if (direction == FramedConnection.Direction.SENT) "tx" else "rx"
+        val channel = ChannelId.describe(header.channelId)
+        val flags = buildString {
+            append(header.frameType.name)
+            if (header.control) append("|CONTROL")
+            if (header.encrypted) append("|ENC")
+        }
+        if (header.channelId in HIGH_RATE_CHANNELS) {
+            step("$arrow $channel [$flags] ${payload.size} bytes")
+            return
+        }
+        step("$arrow $channel [$flags] ${hex(payload)}")
+    }
+
     private fun step(message: String) {
         // Into the exportable log, not only logcat. MainActivity tells the user
         // "if the car refuses to connect, export the log and send it" -- and
@@ -1045,10 +1161,32 @@ open class HeadwayService : Service() {
         /** Where the learned head-unit port lives. */
         private const val PREFS: String = "headway_link"
         private const val KEY_LEARNED_PORT: String = "learned_aap_port"
+        private const val KEY_ACCEPTED_CERT: String = "accepted_certificate"
         private const val KEY_CAR_SSID: String = "car_wifi_ssid"
         private const val KEY_CAR_PASSPHRASE: String = "car_wifi_passphrase"
         private const val KEY_CAR_HIDDEN: String = "car_wifi_hidden"
         private const val KEY_SUGGESTED: String = "car_wifi_suggested"
+
+        /**
+         * Channels whose frames are summarised rather than dumped.
+         *
+         * Video at 30 fps and audio at 48 kHz would fill the export in seconds.
+         * Everything involved in bring-up -- and therefore everything currently
+         * unknown -- is control traffic on other channels.
+         */
+        private val HIGH_RATE_CHANNELS: Set<Int> = setOf(
+            ChannelId.MEDIA_SINK_VIDEO.id,
+            ChannelId.MEDIA_SINK_MEDIA_AUDIO.id,
+            ChannelId.MEDIA_SINK_GUIDANCE_AUDIO.id,
+            ChannelId.MEDIA_SINK_SYSTEM_AUDIO.id,
+            ChannelId.MEDIA_SOURCE_MICROPHONE.id,
+        )
+
+        /** Same 64-byte truncation the RFCOMM logger uses, for the same reason. */
+        internal fun hex(bytes: ByteArray, limit: Int = 64): String {
+            val shown = bytes.take(limit).joinToString(" ") { "%02x".format(it) }
+            return if (bytes.size > limit) "$shown ... (${bytes.size} bytes)" else shown
+        }
 
         /**
          * The car's Wi-Fi credentials from the last handshake, for the UI.

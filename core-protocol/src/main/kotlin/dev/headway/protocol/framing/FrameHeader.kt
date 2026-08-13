@@ -109,13 +109,25 @@ data class FrameHeader(
      * Source: `aasdk/include/aasdk/Messenger/MessageType.hpp` L26-L29, which
      * defines `SPECIFIC = 0, CONTROL = 1 << 2`.
      *
-     * **Known reference disagreement:** AACS (`AACS/include/enums.h` L16-L19)
-     * names the same bit the other way round — `Control = 0, Specific = 1 << 2`
-     * — and is internally self-consistent with that naming. `aa-proxy-rs`
-     * (`src/mitm.rs` L143) agrees with aasdk. CLAUDE.md directs us to prefer
-     * aasdk and record the discrepancy, so bit set means control here. See
-     * `docs/protocol-notes.md` for the full note; this is a naming disagreement
-     * about one bit, and it should be confirmed against a real capture.
+     * **Reference disagreement, now settled by a real capture.** AACS
+     * (`AACS/include/enums.h` L16-L19) names the same bit the other way round —
+     * `Control = 0, Specific = 1 << 2` — and is internally self-consistent with
+     * that naming. `aa-proxy-rs` (`src/mitm.rs` L143) agrees with aasdk.
+     *
+     * The names disagree; the *behaviour* does not, and that is what matters.
+     * Both stacks set this bit on a channel-open message travelling on a
+     * service channel and clear it on channel 0 — AACS's phone role sends
+     * `Bulk | Encrypted | Specific` on `channelId`
+     * (`AACS/AAServer/src/ChannelHandler.cpp` L34-L46), and aa-proxy-rs derives
+     * the same rule from observed traffic:
+     * `let control_flag = if channel == 0 { 0 } else { CONTROL_FLAG };`
+     * (`src/bt_real_hu_passthrough.rs` L131).
+     *
+     * An earlier version of this note asked for confirmation "against a real
+     * capture". It arrived: sending a channel open *without* this bit made a
+     * 2021 Chevrolet Infotainment 3 unit close the session about 30 ms later,
+     * deterministically. See `AapSession.openChannel` and
+     * `docs/protocol-notes.md`.
      */
     val control: Boolean,
     /** The `ENCRYPTED` flag, bit 3 (0x08). Source: `EncryptionType.hpp` L24-L27. */

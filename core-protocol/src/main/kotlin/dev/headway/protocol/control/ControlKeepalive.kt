@@ -59,18 +59,32 @@ object ControlKeepalive {
      * parse still gets an answer — the head unit is waiting for one, and a
      * timestamp Headway cannot read is not a reason to let the session die.
      *
-     * The reply mirrors the request's encryption. Everything after `AuthComplete`
-     * travels inside TLS, so a ping that arrived encrypted must be answered the
-     * same way, and one that did not must not be.
+     * ## Encryption: follow AACS, do not mirror
+     *
+     * The reply used to mirror the request's encryption flag. No reference does
+     * that, and the one phone-side implementation known to work against real
+     * head units always encrypts: AACS answers with
+     * `sendMessage(0, EncryptionType::Encrypted | FrameType::Bulk, plainMsg)`
+     * regardless of how the request arrived
+     * (`AACS/AAServer/src/AaCommunicator.cpp` L252-L268). aasdk sends *plain*
+     * pings, but aasdk is the head unit — that is evidence about what a phone
+     * must tolerate, not about what a car does.
+     *
+     * So: encrypted once TLS is up, plain before it. Mirroring was an invention
+     * with no source behind it.
+     *
+     * @param secured whether the TLS session is established. Passed rather than
+     *   inferred from the request, because the request's flag is exactly the
+     *   thing that must stop being trusted here.
      */
-    suspend fun answer(connection: MessageChannel, ping: AapMessage) {
+    suspend fun answer(connection: MessageChannel, ping: AapMessage, secured: Boolean = ping.encrypted) {
         val timestamp = runCatching { PingRequest.parseFrom(ping.payload).timestamp }
             .getOrDefault(0L)
         connection.send(
             AapMessage(
                 channelId = ChannelId.CONTROL.id,
                 control = false,
-                encrypted = ping.encrypted,
+                encrypted = secured,
                 messageId = ControlMessageType.PING_RESPONSE.id,
                 payload = PingResponse.newBuilder().setTimestamp(timestamp).build().toByteArray(),
             )

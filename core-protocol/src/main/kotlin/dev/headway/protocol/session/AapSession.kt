@@ -298,7 +298,7 @@ class AapSession(
                 // this is handled everywhere rather than where it was last
                 // observed.
                 else -> if (ControlKeepalive.isPing(message)) {
-                    ControlKeepalive.answer(connection, message)
+                    ControlKeepalive.answer(connection, message, secured)
                     onStep("answered a keepalive during the TLS exchange")
                 } else {
                     throw SessionException(
@@ -408,6 +408,34 @@ class AapSession(
      * `required int32 service_id`. openauto sends priority 0 for every channel,
      * so we do the same rather than inventing a scheme the head unit has no
      * reason to honour.
+     *
+     * ## The CONTROL flag, and why this message is not a channel-0 message
+     *
+     * This is the one place a control message travels on a *service* channel
+     * rather than on channel 0, and on a non-zero channel it must carry the
+     * CONTROL bit. Four references agree:
+     *
+     * - aasdk handles `CHANNEL_OPEN_REQUEST` only inside per-service channels
+     *   (`SensorServiceChannel.cpp` L74, `VideoServiceChannel.cpp` L113, and
+     *   six more). `ControlServiceChannel::messageHandler` has no case for it.
+     * - AACS's phone role sends
+     *   `sendToHeadunit(channelId, Bulk | Encrypted | Specific, ...)`
+     *   (`AACS/AAServer/src/ChannelHandler.cpp` L34-L46); its `Specific` is the
+     *   same wire bit aasdk calls `CONTROL`.
+     * - aa-proxy-rs, from observed traffic:
+     *   `let control_flag = if channel == 0 { 0 } else { CONTROL_FLAG };`
+     *   (`src/bt_real_hu_passthrough.rs` L131) and "Non-zero service-channel
+     *   control frames observed from real HU/DHU use 0x0f: ENCRYPTED | CONTROL
+     *   | FIRST | LAST. Without CONTROL (0x04), Android may not treat our
+     *   synthetic CHANNEL_OPEN_RESPONSE as a channel-control frame."
+     *   (`src/mitm.rs` L3999-L4004).
+     *
+     * Headway sent `control = false` here, so the frame left as `0x0B`
+     * (`BULK|ENCRYPTED`) where the car expects `0x0F`. A 2021 Chevrolet
+     * Infotainment 3 unit answered that by closing both the TCP and RFCOMM
+     * links about 30 ms later, with no alert and no error frame -- eleven times
+     * out of eleven. Everything before this point is on channel 0, where CONTROL
+     * correctly *is* 0, which is why bring-up got this far and no further.
      */
     suspend fun openChannel(channelId: Int, priority: Int = 0) {
         val request = ChannelOpenRequest.newBuilder()
@@ -418,7 +446,10 @@ class AapSession(
         connection.send(
             AapMessage(
                 channelId = channelId,
-                control = false,
+                // Set on a service channel, clear on channel 0. Not a constant
+                // `true`: the references are equally clear that channel-0
+                // traffic leaves it unset, and that half already works.
+                control = channelId != ChannelId.CONTROL.id,
                 encrypted = secured,
                 messageId = ControlMessageType.CHANNEL_OPEN_REQUEST.id,
                 payload = request.toByteArray(),
@@ -458,7 +489,7 @@ class AapSession(
                 // opening, which is exactly when a unit checks whether the phone
                 // it just authenticated is really there.
                 if (ControlKeepalive.isPing(message)) {
-                    ControlKeepalive.answer(connection, message)
+                    ControlKeepalive.answer(connection, message, secured)
                     onStep(
                         "answered a keepalive while opening ${ChannelId.describe(channelId)}"
                     )
@@ -526,7 +557,7 @@ class AapSession(
                 )
             }
             if (ControlKeepalive.isPing(message)) {
-                ControlKeepalive.answer(connection, message)
+                ControlKeepalive.answer(connection, message, secured)
                 onStep("answered a keepalive while waiting for ${type.name}")
             } else {
                 onStep(

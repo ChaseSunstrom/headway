@@ -322,6 +322,28 @@ class EmulatedHeadUnit(
         // a keepalive at this exact moment, and a head unit that treated a pong
         // as a protocol violation would be modelling something no real unit does.
         val message = expect(ControlMessageType.CHANNEL_OPEN_REQUEST)
+
+        // Hang up on a channel open that does not carry CONTROL, because a real
+        // head unit does.
+        //
+        // This emulator accepted such a frame for the whole of the project's
+        // life, which is exactly why every acceptance test stayed green while a
+        // 2021 Chevrolet Infotainment 3 unit closed the session ~30 ms after
+        // receiving one, eleven times out of eleven. ADR 0002 warned that
+        // sharing protocol code with the phone makes this harness a weak
+        // oracle; this is that warning coming true, so the check belongs here
+        // as well as in the byte fixtures.
+        //
+        // The rule is aa-proxy-rs's, derived from observed traffic
+        // (`src/bt_real_hu_passthrough.rs` L131):
+        //   let control_flag = if channel == 0 { 0 } else { CONTROL_FLAG };
+        if (message.channelId != ChannelId.CONTROL.id && !message.control) {
+            throw IllegalStateException(
+                "channel open for service ${message.channelId} arrived without the CONTROL " +
+                    "flag; a real head unit closes the session rather than answering this"
+            )
+        }
+
         val request = ChannelOpenRequest.parseFrom(message.payload)
 
         // Refuse a channel we never advertised, the way a real unit would --
@@ -333,7 +355,9 @@ class EmulatedHeadUnit(
         connection.send(
             AapMessage(
                 channelId = message.channelId,
-                control = false,
+                // Mirrors the request: the response travels on the same service
+                // channel and carries the same flag.
+                control = message.channelId != ChannelId.CONTROL.id,
                 encrypted = true,
                 messageId = ControlMessageType.CHANNEL_OPEN_RESPONSE.id,
                 payload = ChannelOpenResponse.newBuilder().setStatus(status).build().toByteArray(),

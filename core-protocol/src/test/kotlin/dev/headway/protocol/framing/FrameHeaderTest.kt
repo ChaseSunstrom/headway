@@ -270,6 +270,49 @@ class FrameHeaderTest {
         assertEquals(255, ChannelId.NONE.id)
     }
 
+    /**
+     * A channel open on a service channel must carry CONTROL; one on channel 0
+     * must not.
+     *
+     * This is the byte-level oracle for the bug that stopped a real car dead.
+     * Headway sent a `ChannelOpenRequest` for SENSOR as `0x0B`
+     * (`BULK|ENCRYPTED`); the head unit expects `0x0F`
+     * (`BULK|ENCRYPTED|CONTROL`) and closed the session ~30 ms later, eleven
+     * times out of eleven, with no alert and no error frame.
+     *
+     * The emulator could not have caught this -- it shares this code, so a
+     * symmetric mistake round-trips cleanly, which is precisely ADR 0002's
+     * warning and precisely what happened. Hand-derived bytes are the oracle.
+     *
+     * Rule, from aa-proxy-rs's observed traffic
+     * (`src/bt_real_hu_passthrough.rs` L131):
+     * `let control_flag = if channel == 0 { 0 } else { CONTROL_FLAG };`
+     */
+    @Test
+    fun `a channel open on a service channel sets CONTROL, on channel zero it does not`() {
+        // SENSOR (1), encrypted, BULK: 0x03 | 0x08 | 0x04 = 0x0f
+        val onService = FrameHeader(
+            channelId = ChannelId.SENSOR.id,
+            frameType = FrameType.BULK,
+            control = true,
+            encrypted = true,
+            payloadLength = 6,
+            totalMessageLength = null,
+        )
+        assertEquals("01 0f 00 06", onService.encode().toHex())
+
+        // The same message on channel 0 leaves CONTROL clear: 0x03 | 0x08 = 0x0b.
+        val onControl = FrameHeader(
+            channelId = ChannelId.CONTROL.id,
+            frameType = FrameType.BULK,
+            control = false,
+            encrypted = true,
+            payloadLength = 6,
+            totalMessageLength = null,
+        )
+        assertEquals("00 0b 00 06", onControl.encode().toHex())
+    }
+
     @Test
     fun `unknown channel ids stay legible rather than being dropped`() {
         assertEquals("CONTROL", ChannelId.describe(0))

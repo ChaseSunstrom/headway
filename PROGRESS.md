@@ -94,6 +94,12 @@ Stated so the gap between "CI green" and "works in a car" is never implied away.
   exception is the Bluetooth version exchange, which a user has now run against
   a real vehicle and whose bytes are pinned as a fixture — everything after it
   on the real link is still unrun.
+- **Channel open was malformed for the whole life of the project.** Headway
+  never set the CONTROL flag on any frame, and a `ChannelOpenRequest` travels on
+  its service's own channel where that bit must be set. The target car answered
+  by closing the session ~30 ms after discovery, 11 times out of 11. Fixed, with
+  a byte fixture and an emulator gate — the emulator previously *accepted* the
+  malformed frame, which is exactly the weak-oracle failure ADR 0002 predicted.
 - **A real car now reaches service discovery.** On 2026-08-13 a 2021 Chevrolet
   Infotainment 3 unit accepted the `internal` certificate, completed TLS,
   authenticated, and advertised all 13 of its services — the first real-vehicle
