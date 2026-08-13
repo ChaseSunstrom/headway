@@ -198,6 +198,53 @@ session log**) and read the join lines. They now say what the
 platform's own verdict was — `NOT_FOUND`, `AUTHENTICATION`, `ASSOCIATION`,
 `IP_PROVISIONING` or `NO_RESPONSE` — and each one points somewhere different.
 
+### Why the same car behaves differently from one attempt to the next
+
+Because a connection is not one thing that works or does not. It is **five
+gates in series**, each with an independent cause of failure, and you never
+see gate *n+1* until gate *n* happens to pass. Every setting worth fiddling
+with moves exactly one gate, which is why changing one can look like it fixed
+everything and then look like it fixed nothing.
+
+| # | Gate | Fails when | Moved by |
+|---|------|-----------|----------|
+| 1 | Bluetooth RFCOMM handshake | the head unit is not offering the AA Wireless service, or thinks a session is already running | the car's **connect-device-first** / priority setting; whether the car is already talking to another phone |
+| 2 | The car's access point is on the air | projection Wi-Fi is off in the car, or its AP has not finished coming up | the car's Wi-Fi setting; how far the previous attempt got |
+| 3 | Association | wrong passphrase, wrong BSSID, no 5 GHz | `pinBssid`, `hiddenSsid` |
+| 4 | Getting an IP | the head unit's address table is full — see `IP_PROVISIONING` below | **DHCP vs static IP** |
+| 5 | TLS and authentication | the phone's certificate is outside the head unit's validity window | the imported certificate, or the car's clock |
+
+Read across the variables you have been changing:
+
+- **Static IP versus DHCP** only touches gate 4. It cannot make a car that is
+  not offering its access point start offering one, and it cannot do anything
+  about the certificate — so "static IP got me further and then it still
+  failed" is exactly what a fixed gate 4 in front of a stuck gate 5 looks
+  like.
+- **Already being on the car's Wi-Fi** skips gates 3 *and* 4 outright, which
+  is why a manual join changes so much at once. It also changes something
+  subtler: a network Headway requests is *local-only* — it carries no default
+  route and every socket has to be bound to it explicitly — whereas a network
+  you joined yourself is the phone's ordinary default network. Two quite
+  different code paths reach the same head unit.
+- **Bluetooth already being connected** changes who is mid-sequence when you
+  press Connect. The head unit is the one that speaks first on RFCOMM
+  (`docs/protocol-notes.md`, step 6), and it brings its access point up as
+  part of that exchange. Arriving while the car is partway through — or after
+  it has already given up — is not the same as arriving cold.
+- **Connect-device-first** changes gate 1's *initiator*. With it on, the car
+  pokes the phone over Bluetooth at ignition and waits for Google's Android
+  Auto to answer by opening the RFCOMM channel (step 3). Headway is not
+  Android Auto and does not answer that poke; it opens the channel itself when
+  you press Connect. So the setting decides whether the car has already
+  started, and possibly already abandoned, an attempt of its own before
+  Headway arrives.
+
+Practically: if you want repeatable results while debugging, hold gates 1–4
+still — car Wi-Fi and Bluetooth on, no other phone paired in, joined by hand
+with a static IP — and change one thing at a time. The log names the gate it
+reached on every attempt.
+
 ### If the log says `IP_PROVISIONING`
 
 This one has a specific cause and a specific fix. It means the phone got onto
@@ -298,8 +345,24 @@ openssl pkcs8 -topk8 -nocrypt -in phone.key -out phone_key.pem
 
 The other option, if you have no certificate to import, is to set the **car's**
 clock to a date inside the expired certificate's validity window — it ran from
-2014-07-04 to 2022-08-24. That makes the head unit's check pass. It is a real
-workaround and a bad one: it leaves the car's clock wrong.
+2014-07-04 to 2022-08-24. The head unit judges validity against its own clock,
+so this makes its check pass. Headway always presents its certificate rather
+than letting the phone's TLS stack quietly withhold an expired one, so the head
+unit gets to make that judgement.
+
+**This breaks Google's Android Auto for as long as the clock is wrong, and the
+two cannot both work.** Google's certificate is current, so a car whose clock
+says 2016 sees it as *not yet valid* and refuses it — with the same "the phone
+and vehicle calendars are set to different dates and times" screen, for the
+mirror-image reason. That is why the protocol has a distinct
+`STATUS_AUTHENTICATION_FAILURE_CERT_NOT_YET_VALID` (-23) next to
+`..._CERT_EXPIRED` (-24). One car clock cannot satisfy an expired certificate
+and a current one at the same time.
+
+So treat the clock as a diagnostic, not a setting: use it to prove the
+certificate is the only thing left in the way, then put it back. Importing
+current material is the only route that leaves both Headway and Android Auto
+working, and restoring the car's clock is the only route back to Android Auto.
 
 ### Or skip DHCP entirely with a static IP
 

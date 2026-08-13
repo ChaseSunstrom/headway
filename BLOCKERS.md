@@ -47,8 +47,8 @@ from the message definition rather than observed.
 
 ## B-003 — The public phone-side TLS certificate expired on 2022-08-24
 
-**Status:** Open — mitigated as far as is possible client-side. **This is the
-most likely reason a real car will refuse to connect.**
+**Status:** Open — **confirmed against the target car**, mitigated as far as is
+possible client-side. This is the reason the 2021 Malibu refuses to connect.
 
 **Blocked:** Authenticating to a head unit that validates the phone's
 certificate.
@@ -60,25 +60,57 @@ is the one extracted by the AACS project
 `notAfter = Aug 24 12:29:12 2022 GMT`. It is therefore expired, and we do not
 have the CA key to issue a replacement.
 
-Whether this actually breaks a given car depends on whether its head unit checks
-the validity dates. Every reference implementation disables peer verification on
-its own side (`aasdk/src/Transport/SSLWrapper.cpp` L137-L140 calls
-`SSL_set_verify(ssl, SSL_VERIFY_NONE, nullptr)`), which tells us nothing about
-what a factory head unit does with the certificate the phone presents. Some
-units are known to be lenient. Assume the Malibu is not until a log proves
-otherwise.
+Every reference implementation disables peer verification on its own side
+(`aasdk/src/Transport/SSLWrapper.cpp` L137-L140 calls
+`SSL_set_verify(ssl, SSL_VERIFY_NONE, nullptr)`), which told us nothing about
+what a factory head unit does with the certificate the phone presents. The
+Malibu now has: it completes the version handshake, exchanges
+`ENCAPSULATED_SSL`, and answers `AUTH_COMPLETE` with
+`STATUS_AUTHENTICATION_FAILURE` (-3). On the car screen this surfaces as
 
-**Workaround shipped:** The certificate is not baked in. `AapTls.phoneEngine`
-takes `KeyMaterial`, and the bundled pair is only the default, so a user who can
-extract current material from a licensed Android Auto installation can supply it
-without rebuilding the protocol layer. `TlsSessionTest` asserts the expiry
-explicitly, so it is a stated fact in the suite rather than a surprise in a car
-park.
+> The phone and vehicle calendars are set to different dates and times.
+
+which is that unit's wording for a certificate validity failure — and is
+consistent with the protocol having distinct
+`STATUS_AUTHENTICATION_FAILURE_CERT_EXPIRED` (-24) and
+`..._CERT_NOT_YET_VALID` (-23) statuses at all. Note it returned
+`AUTHENTICATION_FAILURE` and not `STATUS_CERTIFICATE_ERROR` (-2), which reads as
+"the chain was acceptable, the dates were not".
+
+**Workaround shipped:** Two, both one-time.
+
+1. *Import a certificate.* The certificate is not baked in.
+   `AapTls.phoneEngine` takes `KeyMaterial`, and the bundled pair is only the
+   default. `PhoneCertificateStore` lets a user who can extract current material
+   from a licensed Android Auto installation drop a PEM + PKCS#8 pair into the
+   app's private storage from the settings screen; it is validated on import
+   (both halves parse, and the RSA modulus matches) and used for every session
+   afterwards. aa-proxy-rs reached the same conclusion and ships no certificate
+   at all, loading the pair from an operator-supplied path
+   (`src/ssl_rustls.rs` L440-L441). `TlsSessionTest` asserts the bundled
+   certificate's expiry explicitly, so it is a stated fact in the suite rather
+   than a surprise in a car park.
+2. *Move the car's clock.* The head unit judges validity against **its own**
+   clock, so setting the car's date back inside 2014-08..2022-08 makes the
+   bundled certificate current from its point of view. `FixedKeyManager` exists
+   for exactly this: the platform `KeyManagerFactory` filters candidate aliases
+   on validity against the *phone's* clock and would drop an expired certificate
+   before it was ever sent, failing the handshake as "no cipher suites in
+   common". Headway has one certificate and no choice to make, so it always
+   presents it and lets the head unit judge.
+
+**The two workarounds are mutually exclusive with Google's Android Auto, and
+that trade-off must be stated to users.** Google's own certificate is current,
+so a car whose clock has been rolled back to 2016 sees it as *not yet valid* and
+refuses Android Auto with the same "calendars are set to different dates" screen
+— which is precisely why `..._CERT_NOT_YET_VALID` exists. One car clock cannot
+satisfy both an expired certificate and a current one. Rolling the clock back is
+therefore a diagnostic and a stopgap, not a configuration to leave in place;
+importing current material (workaround 1) is the only route that leaves both
+working, and restoring the car's clock is the only route back to Android Auto.
 
 **What would actually fix it:** Nothing available to this project. Issuing a
-valid certificate needs the Google Automotive Link CA private key. If a real
-Malibu rejects the session, the frame log will show the TLS alert, and the
-options are user-supplied certificate material or nothing.
+valid certificate needs the Google Automotive Link CA private key.
 
 ---
 

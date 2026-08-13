@@ -259,10 +259,22 @@ class AapSession(
                 ControlMessageType.AUTH_COMPLETE.id -> {
                     val status = parseAuthStatus(message.payload)
                     if (status != MessageStatus.STATUS_SUCCESS.number) {
+                        // Whether TLS finished is the single most useful fact
+                        // here and it was not being recorded. A unit that
+                        // rejects during the handshake is objecting to the
+                        // certificate itself; one that rejects after a completed
+                        // handshake is objecting to something else, and the two
+                        // send a reader to opposite ends of the stack.
+                        val tlsState = if (tls.handshakeComplete) {
+                            "the TLS handshake had completed"
+                        } else {
+                            "the TLS handshake had NOT completed, so the head unit stopped " +
+                                "while looking at the certificate"
+                        }
                         throw SessionException(
                             "head unit rejected authentication: " +
-                                "${MessageStatus.forNumber(status)?.name ?: "status $status"}" +
-                                authFailureAdvice(status)
+                                "${MessageStatus.forNumber(status)?.name ?: "status $status"} " +
+                                "($tlsState)" + authFailureAdvice(status)
                         )
                     }
                     if (!tls.handshakeComplete) {

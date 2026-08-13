@@ -489,6 +489,22 @@ class CarWifiNetwork(
         for (candidate in candidates) {
             val capabilities = manager.getNetworkCapabilities(candidate) ?: continue
             if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+
+            // Skip the VPN, which otherwise looks exactly like the car.
+            //
+            // A VPN's NetworkCapabilities report the transports of the network
+            // underneath it, so a VPN running over Wi-Fi answers true to
+            // hasTransport(TRANSPORT_WIFI) — and its LinkProperties describe the
+            // tunnel, whose default route points at the VPN server. Without this
+            // Headway picks the VPN, decides the head unit lives at the VPN
+            // server's address, and dials it.
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ||
+                !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            ) {
+                onStep("ignoring a VPN network ($candidate) while looking for the car")
+                continue
+            }
+
             val properties = manager.getLinkProperties(candidate) ?: continue
 
             val why = when {
@@ -886,6 +902,14 @@ class CarWifiNetwork(
      */
     fun headUnitAddress(): String? {
         val joined = network ?: return null
+        val capabilities = connectivityManager?.getNetworkCapabilities(joined)
+        if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true) {
+            // Belt and braces: adoption already refuses a VPN, and a requested
+            // network is never one. Returning the tunnel's gateway here would
+            // send the AAP connect to the VPN server.
+            onStep("refusing to read a head unit address from a VPN network")
+            return null
+        }
         val properties = connectivityManager?.getLinkProperties(joined) ?: return null
 
         properties.dhcpServerAddress?.hostAddress?.let {

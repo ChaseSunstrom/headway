@@ -19,14 +19,12 @@ package dev.headway.transport.tls
 
 import java.io.ByteArrayInputStream
 import java.security.KeyFactory
-import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.SecureRandom
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.security.spec.PKCS8EncodedKeySpec
 import java.util.Base64
-import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.TrustManager
@@ -190,22 +188,68 @@ object AapTls {
         }
     }
 
-    private fun keyManagers(material: KeyMaterial): Array<javax.net.ssl.KeyManager> {
-        val keyStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
-            load(null, null)
-            setKeyEntry(
-                "aap",
-                material.privateKey,
-                KEYSTORE_PASSWORD,
-                arrayOf(material.certificate),
-            )
+    /**
+     * A key manager that always presents Headway's certificate.
+     *
+     * The platform's own `KeyManagerFactory` is deliberately not used. Its
+     * `chooseServerAlias` filters candidate aliases, and one of the things it
+     * filters on is validity: a certificate that expired in 2022 can be skipped
+     * on a phone whose clock says 2026, leaving the handshake with no alias and
+     * failing it as "no cipher suites in common" — a message that says nothing
+     * about certificates at all.
+     *
+     * Headway has exactly one certificate and no choice to make, so there is
+     * nothing for a selection policy to do except go wrong. Whether the
+     * certificate is acceptable is the *head unit's* judgement, made against the
+     * head unit's clock, and this makes sure it always gets the chance to make
+     * it. That matters for the one workaround available to a user with no
+     * replacement certificate: rolling the car's clock back into the validity
+     * window only helps if the phone still sends the thing.
+     */
+    private class FixedKeyManager(private val material: KeyMaterial) :
+        javax.net.ssl.X509ExtendedKeyManager() {
+
+        override fun getClientAliases(keyType: String?, issuers: Array<out java.security.Principal>?) =
+            arrayOf(ALIAS)
+
+        override fun chooseClientAlias(
+            keyType: Array<out String>?,
+            issuers: Array<out java.security.Principal>?,
+            socket: java.net.Socket?,
+        ) = ALIAS
+
+        override fun getServerAliases(keyType: String?, issuers: Array<out java.security.Principal>?) =
+            arrayOf(ALIAS)
+
+        override fun chooseServerAlias(
+            keyType: String?,
+            issuers: Array<out java.security.Principal>?,
+            socket: java.net.Socket?,
+        ) = ALIAS
+
+        override fun chooseEngineServerAlias(
+            keyType: String?,
+            issuers: Array<out java.security.Principal>?,
+            engine: SSLEngine?,
+        ) = ALIAS
+
+        override fun chooseEngineClientAlias(
+            keyType: Array<out String>?,
+            issuers: Array<out java.security.Principal>?,
+            engine: SSLEngine?,
+        ) = ALIAS
+
+        override fun getCertificateChain(alias: String?) = arrayOf(material.certificate)
+
+        override fun getPrivateKey(alias: String?) = material.privateKey
+
+        private companion object {
+            const val ALIAS = "aap"
         }
-        val factory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-        factory.init(keyStore, KEYSTORE_PASSWORD)
-        return factory.keyManagers
     }
 
-    private val KEYSTORE_PASSWORD = CharArray(0)
+    private fun keyManagers(material: KeyMaterial): Array<javax.net.ssl.KeyManager> =
+        arrayOf(FixedKeyManager(material))
 
     private fun loadResourceKeyMaterial(name: String): KeyMaterial {
         val certPem = readResource("$RESOURCE_ROOT/$name.crt")
