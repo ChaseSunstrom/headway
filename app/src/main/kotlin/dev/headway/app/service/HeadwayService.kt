@@ -17,6 +17,7 @@
 
 package dev.headway.app.service
 
+import aap_protobuf.aaw.StatusOuterClass.Status
 import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
@@ -60,6 +61,23 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+
+/**
+ * Marks a failure that happened while joining the car's access point.
+ *
+ * The distinction earns its keep in the retry delay. A join failure is the one
+ * failure class that may have left Android's own approval activity on screen in
+ * an error state — releasing the request broadcasts `onAbort` to it, and it
+ * shows "the application has cancelled the request" until it is dismissed or
+ * finishes. Coming straight back 500 ms later with a fresh request does not get
+ * a fresh prompt; it gets the stale one. Everything else — Bluetooth, TCP, TLS
+ * — should still retry promptly, so this cannot just be a longer global backoff.
+ *
+ * Carries the cause's message verbatim so the notification and the UI keep
+ * saying what actually went wrong.
+ */
+class CarNetworkJoinException(cause: Throwable) :
+    RuntimeException(cause.message ?: cause::class.simpleName ?: "join failed", cause)
 
 /**
  * Holds the car link for as long as the user wants to be connected.
@@ -194,6 +212,12 @@ open class HeadwayService : Service() {
             publish(state)
             updateNotification(describe(state))
             Log.i(TAG, "link state: $state")
+        },
+        delayOverrideFor = { failure ->
+            // See CarNetworkJoinException: a fresh request straight after a
+            // failed join lands on Android's stale approval dialog rather than
+            // producing a new one. Give it time to clear.
+            if (failure is CarNetworkJoinException) JOIN_RETRY_DELAY_MILLIS else null
         },
     )
 
@@ -350,11 +374,20 @@ open class HeadwayService : Service() {
                     wifi.adoptExistingCarNetwork(credentials)
                         ?: wifi.join(credentials, hiddenSsid = quirks.hiddenSsid, pinBssid = quirks.pinBssid)
                 } catch (e: Throwable) {
+                    // Tell the head unit before dropping Bluetooth. Otherwise it
+                    // is left mid-bootstrap believing the phone is still coming,
+                    // and the next attempt reconnects into a projection state
+                    // machine that was never told the last one failed.
+                    if (e !is kotlinx.coroutines.CancellationException) {
+                        runCatching {
+                            link.reportWifiFailed(Status.STATUS_WIFI_NETWORK_UNAVAILABLE)
+                        }
+                    }
                     // join() closes itself on failure, and a closed
                     // CarWifiNetwork cannot be joined again, so it must not be
                     // the one the next attempt picks up.
                     releaseCarWifi()
-                    throw e
+                    throw CarNetworkJoinException(e)
                 }
                 Log.i(TAG, "bound to car network $network")
 
@@ -601,6 +634,22 @@ open class HeadwayService : Service() {
 
     companion object {
         private const val TAG = "HeadwayService"
+
+        /**
+         * How long to wait after a failed Wi-Fi join before trying again.
+         *
+         * Long, and deliberately so. Releasing the network request tells
+         * Settings' approval activity to abort, which leaves it showing an
+         * error rather than finishing, and it is `singleTop` in its own task —
+         * so a request re-issued immediately re-uses that activity instead of
+         * getting a fresh prompt. The user then sees a dialog that says the
+         * request was cancelled and no way to accept the new one.
+         *
+         * Only join failures wait this long; every other failure keeps the
+         * ordinary sub-second backoff, because those are the ones the
+         * 15-second reconnect requirement is about.
+         */
+        const val JOIN_RETRY_DELAY_MILLIS: Long = 30_000
 
         const val ACTION_STOP: String = "dev.headway.app.action.STOP"
 

@@ -331,6 +331,11 @@ class BluetoothCarLink(
         handshake?.serviceLink()
     }
 
+    /** @see WirelessHandshake.reportWifiFailed */
+    suspend fun reportWifiFailed(status: aap_protobuf.aaw.StatusOuterClass.Status) {
+        handshake?.reportWifiFailed(status)
+    }
+
     /** Idempotent; safe to call from the reconnect path and from teardown. */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return

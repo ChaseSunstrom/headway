@@ -126,6 +126,17 @@ data class CarNetworkCredentials(
      * `docs/protocol-notes.md` § "Evidence from a real head unit".
      */
     val endpoint: CarEndpoint? = null,
+    /**
+     * Wi-Fi frequencies in MHz the head unit said its access point can use.
+     *
+     * From `WifiVersionRequest`, which the target vehicle answers with
+     * `[0, 5745]` — 5745 MHz being 5 GHz channel 149. Carried through to the
+     * association because Android will use it to make the first scan a
+     * channel-limited one instead of a full-band sweep, which is the difference
+     * between finding the car in the first scan and finding it in the third.
+     * Empty when the unit never ran a version exchange.
+     */
+    val advertisedFrequenciesMhz: List<Int> = emptyList(),
 ) {
     /** Redacts the passphrase; this gets logged and logs get shared for diagnosis. */
     override fun toString(): String =
@@ -179,19 +190,32 @@ class WirelessHandshake(
     /**
      * Whether to populate `selected_wifi_channel_type` (response field 5).
      *
-     * Off, because the field's *meaning* is not established. aa-proxy-rs reads
-     * it out of real phone-side frames, so real phones do send it, but no
-     * reference records an observed value and the name says "channel type",
-     * which is not obviously the MHz frequency the head unit advertised. aasdk's
-     * schema stops at field 4 and does not have it at all.
+     * **On**, which reverses an earlier decision, so the reasoning matters.
      *
-     * CLAUDE.md's rule for exactly this situation is to implement the
-     * aasdk-documented behaviour, make it configurable and log loudly — and the
-     * bug this class was just fixed for was putting a guessed value into a field
-     * whose meaning was unknown. Doing it again one field along would not be an
-     * improvement. Turn this on only with a log from a unit that needs it.
+     * It was off because the field's meaning is not documented anywhere: no
+     * reference records an observed value, and "channel type" is not obviously
+     * the MHz frequency the head unit advertised. aasdk's schema stops at field
+     * 4 and does not have the field at all. Since the bug that immediately
+     * preceded that decision was putting a guessed value into a field whose
+     * meaning was unknown, leaving it empty was the cautious choice.
+     *
+     * What changed is the evidence about what real phones do. aa-proxy-rs
+     * decodes this field *out of frames captured from genuine Android Auto
+     * phones* (`WifiVersionResponseDebugInfo`, `src/bluetooth.rs` L1206-L1214,
+     * read by `inspect_wifi_version_response` L1604-L1657), so a real phone
+     * populates it and Headway was the odd one out. And the head unit's version
+     * request is where it advertises its frequencies — the target vehicle sends
+     * `[0, 5745]` — which makes "which of these do you accept" the only reading
+     * of a reply field that fits. A unit waiting to be told before it commits a
+     * channel and brings its access point up would look exactly like the
+     * observed failure: credentials handed over, then an access point that
+     * never appears.
+     *
+     * Still a flag, and the value sent is logged, because the reading is
+     * inferred rather than documented. Set it false if a capture shows a unit
+     * objecting.
      */
-    private val announceSelectedWifiChannel: Boolean = false,
+    private val announceSelectedWifiChannel: Boolean = true,
 ) {
 
     /**
@@ -210,6 +234,7 @@ class WirelessHandshake(
         var endpoint: WifiStartRequest? = null
         var info: WifiInfoResponse? = null
         var projectionEndpoint: WifiProjectionProtocolInfo? = null
+        var advertised: List<Int> = emptyList()
         val heardSomething = AtomicBoolean(false)
         val lastActivity = AtomicLong(System.nanoTime())
 
@@ -359,6 +384,7 @@ class WirelessHandshake(
                     // schema and its provenance.
                     val request = AawWifiVersionRequest.parseFrom(message.payload)
                     val frequencies = advertisedFrequencies(request)
+                    advertised = frequencies.filter { it > 0 }
                     onStep(
                         "head unit speaks AA Wireless " +
                             "${request.majorVersion}.${request.minorVersion}; " +
@@ -505,6 +531,7 @@ class WirelessHandshake(
                     securityMode = i.securityMode,
                     accessPointType = i.accessPointType,
                     endpoint = resolved,
+                    advertisedFrequenciesMhz = advertised,
                 )
             }
         }
@@ -660,6 +687,35 @@ class WirelessHandshake(
             )
         } catch (e: Exception) {
             onStep("could not tell the head unit we joined its network: ${e.message}")
+        }
+    }
+
+    /**
+     * Tells the head unit the phone could not get onto its access point.
+     *
+     * The counterpart to [reportWifiConnected], and its absence was a real gap.
+     * A phone that gives up simply dropped Bluetooth, leaving the head unit in
+     * the middle of a bootstrap it believed was still in flight — and Headway
+     * then reconnected half a second later into a projection state machine that
+     * had never been told the previous attempt failed. `Status` has the
+     * vocabulary for this precisely because real phones use it: aa-proxy-rs
+     * decodes the frame from genuine phones and records both shapes, `[08, 00]`
+     * for success and a large negative for "phone cannot connect to our Wi-Fi
+     * AP" (`src/bluetooth.rs` L4738-L4750).
+     *
+     * Best-effort, like its counterpart: by the time this is sent the attempt
+     * has already failed, and a Bluetooth link that is also gone must not turn
+     * one failure into two.
+     */
+    suspend fun reportWifiFailed(status: Status) {
+        try {
+            onStep("telling the head unit the Wi-Fi join failed: $status")
+            send(
+                MessageId.WIFI_CONNECTION_STATUS,
+                WifiConnectionStatus.newBuilder().setStatus(status).build(),
+            )
+        } catch (e: Exception) {
+            onStep("could not tell the head unit the join failed: ${e.message}")
         }
     }
 

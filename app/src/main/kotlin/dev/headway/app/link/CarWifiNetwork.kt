@@ -245,7 +245,16 @@ class CarWifiNetwork(
         requireWifiEnabled()
 
         val spec = specFor(credentials, hiddenSsid, pinBssid)
-        val request = buildRequest(spec)
+        val maxChannels = runCatching {
+            wifiManager?.maxNumberOfChannelsPerNetworkSpecifierRequest ?: 0
+        }.getOrDefault(0)
+        if (spec.preferredFrequenciesMhz.isNotEmpty()) {
+            onStep(
+                "the head unit advertised ${spec.preferredFrequenciesMhz} MHz; asking " +
+                    "Android to scan there first (it accepts $maxChannels channel hints)"
+            )
+        }
+        val request = buildRequest(spec, maxChannels)
 
         available = CompletableDeferred()
         lost = CompletableDeferred()
@@ -838,6 +847,12 @@ class CarWifiNetwork(
         /** Null for an open network. */
         val passphrase: String?,
         val hiddenSsid: Boolean,
+        /**
+         * Frequencies in MHz to scan first, from the head unit's own
+         * advertisement. Empty means "scan every band", which is the default
+         * behaviour and simply slower.
+         */
+        val preferredFrequenciesMhz: List<Int> = emptyList(),
     )
 
     companion object {
@@ -997,7 +1012,22 @@ class CarWifiNetwork(
             bssid = credentials.bssid.takeIf { pinBssid && isUsableBssid(it) },
             passphrase = credentials.passphrase.takeIf { it.isNotEmpty() },
             hiddenSsid = hiddenSsid,
+            preferredFrequenciesMhz = credentials.advertisedFrequenciesMhz
+                .filter { it in MIN_WIFI_FREQUENCY_MHZ..MAX_WIFI_FREQUENCY_MHZ }
+                .distinct(),
         )
+
+        /**
+         * Bounds on a plausible Wi-Fi frequency in MHz, so a misparsed field
+         * cannot be handed to the platform.
+         *
+         * The low end covers 2.4 GHz channel 1 (2412) with room to spare and the
+         * high end covers 6 GHz. The target vehicle advertises 5745, and it also
+         * advertises 0 as a placeholder in the same message — which is exactly
+         * the kind of value that must not reach `setPreferredChannelsFrequenciesMhz`.
+         */
+        const val MIN_WIFI_FREQUENCY_MHZ: Int = 2400
+        const val MAX_WIFI_FREQUENCY_MHZ: Int = 7125
 
         /**
          * True if [raw] is a MAC address the platform will accept as a match
@@ -1023,13 +1053,32 @@ class CarWifiNetwork(
             return parsed
         }
 
-        fun buildSpecifier(spec: Spec): WifiNetworkSpecifier =
+        /**
+         * @param maxPreferredChannels what
+         *   `WifiManager.getMaxNumberOfChannelsPerNetworkSpecifierRequest()`
+         *   reports. Passing more than the platform accepts makes `build()`
+         *   throw, and the limit is device-specific, so it is read rather than
+         *   assumed. Zero or negative disables the hint entirely.
+         */
+        fun buildSpecifier(spec: Spec, maxPreferredChannels: Int = 0): WifiNetworkSpecifier =
             WifiNetworkSpecifier.Builder()
                 .setSsid(spec.ssid)
                 .apply {
                     parseBssid(spec.bssid.orEmpty())?.let { setBssid(it) }
                     spec.passphrase?.let { setWpa2Passphrase(it) }
                     if (spec.hiddenSsid) setIsHiddenSsid(true)
+                    // Tells the platform where to look first. AOSP turns this
+                    // into a channel-limited first scan before falling back to a
+                    // full-band sweep, which is the difference between matching
+                    // the car on the first scan and on the third — and each
+                    // scan cycle is 10 s of the user staring at a prompt with
+                    // nothing on it. Never combined with setBand, which build()
+                    // rejects.
+                    if (maxPreferredChannels > 0 && spec.preferredFrequenciesMhz.isNotEmpty()) {
+                        setPreferredChannelsFrequenciesMhz(
+                            spec.preferredFrequenciesMhz.take(maxPreferredChannels).toIntArray()
+                        )
+                    }
                 }
                 .build()
 
@@ -1055,10 +1104,11 @@ class CarWifiNetwork(
          * addresses rather than obtaining them" — the car DHCPs the phone, so it
          * does not apply.
          */
-        fun buildRequest(spec: Spec): NetworkRequest = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .setNetworkSpecifier(buildSpecifier(spec))
-            .build()
+        fun buildRequest(spec: Spec, maxPreferredChannels: Int = 0): NetworkRequest =
+            NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .setNetworkSpecifier(buildSpecifier(spec, maxPreferredChannels))
+                .build()
     }
 }

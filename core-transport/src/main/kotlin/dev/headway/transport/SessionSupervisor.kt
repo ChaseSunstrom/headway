@@ -77,6 +77,21 @@ class SessionSupervisor(
     private val onState: (LinkState) -> Unit = {},
     private val initialDelayMillis: Long = 500,
     private val maxDelayMillis: Long = 8_000,
+    /**
+     * A per-failure override for the retry delay, in milliseconds.
+     *
+     * Returning null keeps the ordinary backoff. It exists because not every
+     * failure wants the same haste: most of them are "the car is not in range
+     * yet" and should retry within a second, but a failure that involved a
+     * system UI the user has to interact with needs that UI to settle first, and
+     * hammering it makes the situation worse rather than better. Capping the
+     * whole backoff at that slower rate instead would punish the common case,
+     * which is the one the 15-second reconnect requirement is about.
+     *
+     * The override is used verbatim rather than combined with the backoff, so
+     * the caller can be explicit about what it wants.
+     */
+    private val delayOverrideFor: (Throwable) -> Long? = { null },
     /** Null means retry forever, which is the default and the intended behaviour. */
     private val maxAttempts: Int? = null,
     /** Injected so tests can run the state machine without real waiting. */
@@ -147,7 +162,8 @@ class SessionSupervisor(
                 return
             }
 
-            val delayMillis = backoffFor(consecutiveFailures)
+            val delayMillis = failure?.let(delayOverrideFor)?.coerceAtLeast(0)
+                ?: backoffFor(consecutiveFailures)
             if (failure != null) {
                 onState(LinkState.WaitingToRetry(attempts, delayMillis, describe(failure)))
             }
