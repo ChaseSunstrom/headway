@@ -142,8 +142,12 @@ launched onto a trusted display. So:
 1. Settings → System → Developer options → **Simulate secondary displays** →
    `720x480/142`. **Not** an entry labelled `(secure)`; those cannot be recorded
    and produce a black car screen with no error.
-2. Same screen → **Disable screen-share protections for apps and notifications**,
-   or Android stops the capture every time the phone locks.
+2. Same screen → **Disable screen-share protections for apps and notifications**.
+   Android 15 and later stop a screen capture when the phone locks and ask for
+   consent again on the next unlock, which would cost the car its picture every
+   time; this toggle is the reported mitigation, though whether it is the one
+   that governs that behaviour is not something this project has been able to
+   confirm from source. Harmless to try, and B-015 records the uncertainty.
 3. Headway's setup screen → **Render apps on the car display**. Then when Android
    asks what to share, pick the row named for that display — not "Entire screen".
 

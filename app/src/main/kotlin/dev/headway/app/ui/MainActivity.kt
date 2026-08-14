@@ -698,9 +698,12 @@ class MainActivity : AppCompatActivity() {
                     "says (secure) — those cannot be recorded and the car goes black " +
                     "with no error.\n\n" +
                     "2. In the same screen, turn on \"Disable screen-share protections " +
-                    "for apps and notifications\". Without it Android stops the capture " +
-                    "every time the phone locks, and the car loses the picture until " +
-                    "you accept a fresh prompt.\n\n" +
+                    "for apps and notifications\". Android 15 and later stop a screen " +
+                    "capture when the phone locks and ask again on the next unlock, " +
+                    "which costs the car its picture every time; this is the reported " +
+                    "way to prevent it. Worth turning on, though Headway has not been " +
+                    "able to confirm from Android's own source that this is the toggle " +
+                    "that governs it.\n\n" +
                     "3. Turn the switch above on. Then when you press Connect and " +
                     "Android asks what to share, pick the row named for that display " +
                     "— not \"Entire screen\".\n\n" +

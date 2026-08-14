@@ -51,7 +51,7 @@ androidx-activity-compose = { module = "androidx.activity:activity-compose", ver
 # the side Google never published a host for -- but the AAR ships every piece a
 # host needs as public API: the ICarApp/ICarHost/IAppHost AIDL stubs, the
 # Bundler wire format, and the whole template model with public getters. See
-# docs/adr/0007-template-host-on-androidx-car-app.md for why this is a
+# docs/adr/0007-headway-as-a-car-app-host.md for why this is a
 # dependency and not a fork. Apache-2.0, one-way compatible with GPLv3, and
 # free of Play Services -- `checkNoGms` covers it like everything else.
 androidx-car-app = { module = "androidx.car.app:app", version.ref = "androidxCarApp" }

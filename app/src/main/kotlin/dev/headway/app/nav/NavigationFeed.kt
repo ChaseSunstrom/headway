@@ -147,7 +147,19 @@ object NavigationFeed {
         // which beats anything that can be recovered from a notification. While
         // one is doing so, the scrape stays out of the way rather than
         // overwriting a structured maneuver with a parsed display string.
-        if (current?.structured == true && current?.source != sbn.packageName) return false
+        //
+        // Regardless of package. The first version excluded only a *different*
+        // package, which inverted the rule for the one case the doc names: an
+        // app that supplies both — OsmAnd ships a CarAppService and also posts
+        // an ongoing nav notification — had its structured step overwritten by
+        // its own scrape a moment later.
+        if (current?.structured == true) {
+            // True, not false: this *is* a navigation update, so the caller
+            // must still count it as one and neither file it as a message nor
+            // conclude that nothing is navigating. Headway simply already has
+            // a better version of it.
+            return parse(sbn, extraPackages) != null
+        }
         val parsed = parse(sbn, extraPackages) ?: return false
         publish(parsed)
         return true

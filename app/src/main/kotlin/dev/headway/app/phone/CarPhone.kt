@@ -156,12 +156,18 @@ object CarPhone {
      */
     fun readLiveCall(context: Context, sbn: StatusBarNotification): LiveCall? {
         val notification = sbn.notification ?: return null
-        if ((notification.flags and Notification.FLAG_ONGOING_EVENT) == 0 &&
-            notification.category != Notification.CATEGORY_CALL
-        ) {
-            return null
-        }
+        // CATEGORY_CALL alone is not enough. A missed call and a voicemail
+        // carry it too, and the message list deliberately forwards non-ongoing
+        // CATEGORY_CALL notifications here rather than showing them as texts —
+        // so without a liveness test a missed call became a phantom "in call"
+        // pane with an Answer button for a call that ended.
+        //
+        // The first version tested the ongoing flag and then rejected every
+        // non-CATEGORY_CALL notification on the next line, which made the two
+        // conditions together mean nothing more than the second: the flag
+        // played no part at all.
         if (notification.category != Notification.CATEGORY_CALL) return null
+        val ongoing = (notification.flags and Notification.FLAG_ONGOING_EVENT) != 0
 
         val extras = notification.extras
         // --- the structured path, Android 12+ CallStyle ------------------------
@@ -204,6 +210,10 @@ object CarPhone {
         }
 
         // --- the fallback, for a dialer that never adopted CallStyle -----------
+        // Only for a call that is actually happening. The structured path above
+        // carries its own liveness in EXTRA_CALL_TYPE; this one has nothing but
+        // the flag.
+        if (!ongoing) return null
         val actions = notification.actions ?: return null
         val who = extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()
             ?.takeIf { it.isNotBlank() }
@@ -346,7 +356,16 @@ object CarPhone {
      * short: a longer list would start matching "answer machine".
      */
     private val ANSWER_WORDS = listOf("answer", "accept", "pick up")
-    private val END_WORDS = listOf("hang up", "end call", "decline", "reject", "dismiss")
+
+    /**
+     * Deliberately without "dismiss".
+     *
+     * On a missed-call or voicemail notification "Dismiss" clears the
+     * *notification*, not a call, and matching it synthesised a LiveCall whose
+     * hang-up button silently swiped away a notification instead. The ongoing
+     * test above already keeps most of those out; this keeps the rest.
+     */
+    private val END_WORDS = listOf("hang up", "end call", "decline", "reject")
 
     private const val MAX_RECENTS = 12
 }

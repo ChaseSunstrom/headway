@@ -118,7 +118,11 @@ object CarAppTrips {
         val value = distance.displayDistance
         val precise = distance.displayUnit == Distance.UNIT_KILOMETERS_P1 ||
             distance.displayUnit == Distance.UNIT_MILES_P1
-        val number = if (precise) String.format("%.1f", value) else value.toInt().toString()
+        // Rounded, not truncated. The non-P1 units mean "no fractional part",
+        // which every reference host renders by rounding; toInt() truncates
+        // toward zero, so 0.8 mi read as "0 mi" and 10.9 as "10 mi" — always
+        // short, which is the wrong direction for a distance to a junction.
+        val number = if (precise) String.format("%.1f", value) else Math.round(value).toString()
         return "$number ${unitName(distance.displayUnit)}"
     }
 

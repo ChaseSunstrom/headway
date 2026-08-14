@@ -71,10 +71,23 @@ the user does not even have to set it.
 The line worth being careful about. Headway is not claiming to *be* Android Auto,
 and structurally cannot:
 
-- The package name Headway sends in the handshake is cross-checked against
-  `Binder.getCallingUid()` before the validator runs. A host that lies about its
-  identity is rejected with `IllegalStateException` before route 4 is reached.
-  Every app sees `dev.headway.app` and Headway's real signing certificate.
+- The package name Headway sends in the handshake is cross-checked against the
+  real calling uid, and a host that lies about its identity is rejected with
+  `IllegalStateException` before route 4 is reached. Every app sees
+  `dev.headway.app` and Headway's real signing certificate.
+
+  One precision, since an earlier draft of this ADR put the check a frame too
+  early: it is *inside* `HostValidator.validateHost`, not in
+  `CarAppBinder.onHandshakeCompleted`. The binder reads
+  `HandshakeInfo.getHostPackageName()`, reads `Binder.getCallingUid()`, builds
+  the `HostInfo` and hands it straight to `isValidHost`; `validateHost` then
+  resolves the claimed package and throws when
+  `packageInfo.applicationInfo.uid != hostInfo.getUid()`. That matters only in
+  that `isValidHost` short-circuits ahead of `validateHost` on two paths — an
+  app whose validator is `ALLOW_ALL_HOSTS_VALIDATOR`, and a cached verdict —
+  neither of which is a path a lying host could use to be *accepted* under a
+  name it does not own, because a debug app accepts everyone anyway and the
+  cache is keyed on a package that was checked when it was first seen.
 - An app that would rather not serve Headway can still refuse it by name — the
   allowlist is consulted first, and an app is free to add a deny.
 - The permission names a *role*: rendering car-app templates. Headway performs

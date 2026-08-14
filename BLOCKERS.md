@@ -639,9 +639,25 @@ concludes it is not in a car, and several of them then decline to run their car
 service at all.
 
 **Workaround shipped:** delete the `<provider>` block from
-`app/src/main/AndroidManifest.xml` and rebuild. Templates render either way;
-what is lost is apps knowing they are projected, which affects behaviour rather
-than rendering. Nothing else in the codebase depends on the provider.
+`app/src/main/AndroidManifest.xml` and rebuild. Templates should render either
+way; what is lost is apps knowing they are projected, which affects behaviour
+rather than rendering. Nothing in Headway's own code reads the provider.
+
+One caveat found in review and *not* resolved: `androidx.car.app:app:1.7.0`'s
+own manifest carries
+`<queries><provider android:authorities="androidx.car.app.connection" /></queries>`,
+which merges into every app that depends on the library. Owning that authority
+is therefore one thing that makes Headway visible to a car app under Android
+11+ package-visibility filtering, and `HostValidator.validateHost` begins by
+resolving the *host's* `PackageInfo` from inside the app's process — a lookup
+that returns null for an invisible package and rejects the host outright.
+Whether binding the service already grants that visibility on its own is
+disputed: two reviewers read AOSP's `AppsFilter` in opposite directions and
+neither reading could be settled from source here. So "templates render either
+way" is the expectation, not a verified fact. If the provider is removed and
+apps start answering "package not found", add
+`<queries><package android:name="…" /></queries>` for the car apps in use, or
+put the provider back.
 
 **How to close it:** it cannot be closed while both hosts are installed. The
 authority is a well-known string precisely so that whichever host is present can
@@ -675,6 +691,16 @@ The second unverified item, which the same session answers: whether the driver
 picked a usable simulated display at all. The Settings menu lists `(secure)`
 entries that look identical and carry `FLAG_SECURE`, which makes the display
 unrecordable.
+
+**Also unverified, and stated in the setup screen and the README as though it
+were settled:** that Developer options' "Disable screen-share protections for
+apps and notifications" is what keeps a projection alive across a screen lock.
+Android 15 QPR1 does stop a projection on lock —
+`MediaProjectionManagerService` builds a `MediaProjectionStopController` whose
+`onKeyguardLockedStateChanged` fires `STOP_REASON_KEYGUARD` — so the *problem*
+is real. Whether that toggle is the fix for it, rather than a control over
+sensitive-content redaction, could not be settled from source. The wording now
+says so.
 
 **Workaround shipped:** the whole route is behind a switch that is off by
 default, and `CarAppDisplay.resolve` logs which display it settled on — or that

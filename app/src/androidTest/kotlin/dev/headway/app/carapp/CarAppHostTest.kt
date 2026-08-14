@@ -21,6 +21,7 @@ import android.content.pm.PackageManager
 import androidx.car.app.HandshakeInfo
 import androidx.car.app.model.Action
 import androidx.car.app.model.CarText
+import androidx.car.app.model.Distance
 import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.Row
@@ -188,6 +189,26 @@ class CarAppHostTest {
             val words = CarAppTrips.describeManeuver(type)
             assertTrue("maneuver $type produced an empty instruction", words.isNotBlank())
         }
+    }
+
+    /**
+     * A whole-unit distance is rounded, not truncated.
+     *
+     * The non-P1 units mean "render with no fractional part"; `toInt()`
+     * truncates toward zero, so every distance read short — 0.8 mi as "0 mi",
+     * 10.9 as "10 mi" — which is the wrong direction for the distance to a
+     * junction.
+     */
+    @Test
+    fun `a whole-unit distance rounds rather than truncating`() {
+        assertEquals("1 mi", CarAppTrips.describeDistance(Distance.create(0.8, Distance.UNIT_MILES)))
+        assertEquals("11 mi", CarAppTrips.describeDistance(Distance.create(10.9, Distance.UNIT_MILES)))
+        assertEquals("300 m", CarAppTrips.describeDistance(Distance.create(300.0, Distance.UNIT_METERS)))
+        // P1 units keep their one decimal place.
+        assertEquals(
+            "0.8 mi",
+            CarAppTrips.describeDistance(Distance.create(0.8, Distance.UNIT_MILES_P1)),
+        )
     }
 
     /** The host offers a level the library actually knows about. */

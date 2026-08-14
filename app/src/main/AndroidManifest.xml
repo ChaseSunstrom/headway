@@ -134,9 +134,14 @@
 
       This is not impersonation and cannot become it. Headway still tells every
       app its real package name, and the library cross-checks that name against
-      Binder.getCallingUid() before the validator ever runs
-      (CarAppBinder.onHandshakeCompleted). An app that would rather not talk to
-      Headway can still refuse it by name.
+      the real calling uid: HostValidator.validateHost looks the claimed package
+      up and throws IllegalStateException when its uid does not match the
+      HostInfo it was handed. CarAppBinder.onHandshakeCompleted supplies that
+      HostInfo from Binder.getCallingUid() and does no checking of its own, so
+      the guarantee lives one frame further in than an earlier version of this
+      comment said. It is reached on the permission branch, which is the branch
+      Headway takes. An app that would rather not talk to Headway can still
+      refuse it by name.
 
       signature rather than normal, so nothing else on the phone can pick the
       permission up from Headway's declaration.

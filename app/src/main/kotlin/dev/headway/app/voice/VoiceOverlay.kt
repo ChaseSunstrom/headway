@@ -100,6 +100,29 @@ class VoiceOverlay(
      *   and not an error — the session is unaffected and the log says how to fix
      *   it.
      */
+    /**
+     * The `WindowManager` for the display the car is showing.
+     *
+     * Falls back to the application context's on any failure, which is display
+     * 0 — the behaviour of every build before ADR 0008, and correct whenever no
+     * simulated display is in use.
+     */
+    private fun windowManagerForCar(): WindowManager? {
+        val target = dev.headway.app.video.CarAppDisplay.active
+            ?: return context.getSystemService(WindowManager::class.java)
+        val display = runCatching {
+            context.getSystemService(android.hardware.display.DisplayManager::class.java)
+                ?.getDisplay(target.displayId)
+        }.getOrNull() ?: return context.getSystemService(WindowManager::class.java)
+        return runCatching {
+            context.createWindowContext(
+                display,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                null,
+            ).getSystemService(WindowManager::class.java)
+        }.getOrNull() ?: context.getSystemService(WindowManager::class.java)
+    }
+
     fun show(sizePx: Int): Boolean {
         // Views may only be constructed on a thread with a Looper, and this is
         // called from the session's coroutine, which has none: a real drive
@@ -125,7 +148,21 @@ class VoiceOverlay(
         }
         if (view != null) return true
 
-        val manager = context.getSystemService(WindowManager::class.java) ?: return false
+        // The WindowManager of the display the car is actually looking at.
+        //
+        // An application context's WindowManager is bound to display 0, which
+        // was right while "mirroring" meant display 0. With ADR 0008's
+        // simulated display in use the car sees display 1, apps launch there
+        // and touches are aimed there — and this button, the only route back to
+        // the dashboard from a full-screen app, stayed on a display the car
+        // never captures and the driver cannot reach. That made handing the car
+        // screen to an app a one-way trip.
+        //
+        // createWindowContext(Display, type, options) is public API since API
+        // 30 and is the documented way to add a window to a non-default
+        // display; it needs no permission beyond the overlay grant already
+        // held.
+        val manager = windowManagerForCar() ?: return false
         val button = buildChrome(sizePx)
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
