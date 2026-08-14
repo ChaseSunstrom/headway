@@ -1207,6 +1207,15 @@ class CarShell(
     private fun addWidget(path: DashPath, provider: ComponentName) {
         showVoiceMessage("Finish adding this widget on the phone")
         WidgetSetup.request(context, provider) { widgetId, bound ->
+            // The driver was on the phone while this ran, and a session can end
+            // there: a reconnect, a car switched off, an unplugged head unit.
+            // Writing to a dismissed Presentation's view tree would take the
+            // process with it, and the widget is bound either way -- the next
+            // session's picker will find it.
+            if (!isShowing) {
+                onStep("widget added while the car screen was gone; not placing it")
+                return@request
+            }
             if (widgetId == AppWidgetManager.INVALID_APPWIDGET_ID || bound == null) {
                 showVoiceMessage("That widget was not added")
                 return@request
