@@ -150,6 +150,12 @@ jobs:
       # aosp_atd carries zero Google Play Services, which matches the project's
       # no-GMS constraint rather than merely tolerating it.
       - name: Instrumented tests
+        # The emulator is x86_64 and the published APK is arm64-only, so the
+        # test APK has to carry both — otherwise libvosk is absent and any test
+        # that touches the recognizer dies on UnsatisfiedLinkError. The model
+        # itself is skipped here; nothing instrumented needs 41 MB of it.
+        env:
+          GRADLE_OPTS: -Dorg.gradle.project.headway.abis=arm64-v8a,x86_64 -Dorg.gradle.project.headway.model=none
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -195,9 +201,18 @@ jobs:
     # Only after every gate above is green. Shipping a build whose protocol
     # tests failed would defeat the point of having them.
     needs: [protocol, acceptance, voice, android, instrumented, constraints]
-    # Pushes to the default branch only. A pull request must not publish, and
-    # neither should a feature branch -- otherwise every experiment mints a tag.
-    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    # Pushes to the default branch, or a manual run of this workflow on any
+    # branch. A pull request must not publish, and neither should an ordinary
+    # push to a feature branch -- otherwise every experiment mints a tag.
+    #
+    # The manual escape exists because the APK now carries a bundled 41 MB
+    # speech model and no longer fits down the channels a test build used to be
+    # handed over. A release is the delivery mechanism, and it is also the one
+    # the in-app updater already reads.
+    if: >-
+      (github.event_name == 'push' &&
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write

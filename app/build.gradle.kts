@@ -46,8 +46,16 @@ val voskModelUrl = "https://alphacephei.com/vosk/models/$voskModelName.zip"
 val voskModelCache = layout.projectDirectory.dir("../.gradle/model-cache")
 val voskAssetsDir = layout.buildDirectory.dir("generated/vosk/assets")
 
+// Bundling can be turned off with -Pheadway.model=none, which drops the APK
+// from ~63 MB to ~21 MB. That is not a preference knob — it exists because a
+// 63 MB file cannot be sent through some channels, and a build that cannot be
+// delivered cannot be tested. A slim build has no speech model on the device
+// and reports so; everything else is identical.
+val bundleVoskModel = (providers.gradleProperty("headway.model").orNull ?: "bundled") != "none"
+
 val fetchVoskModel by tasks.registering {
     description = "Downloads and verifies the bundled Vosk speech model."
+    onlyIf { bundleVoskModel }
     val cached = voskModelCache.file("$voskModelName.zip").asFile
     val staged = voskAssetsDir.map { it.file("$voskModelName.zip") }
     outputs.file(staged)

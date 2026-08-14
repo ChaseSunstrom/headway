@@ -78,6 +78,16 @@ object AapTls {
 
     private const val RESOURCE_ROOT = "/dev/headway/transport/tls"
 
+    private const val PKCS1_LABEL = "RSA PRIVATE KEY"
+
+    /** `1.2.840.113549.1.1.1` — rsaEncryption, DER-encoded. */
+    private val RSA_ENCRYPTION_OID = byteArrayOf(
+        0x2A, 0x86.toByte(), 0x48, 0x86.toByte(), 0xF7.toByte(), 0x0D, 0x01, 0x01, 0x01,
+    )
+
+    /** An ASN.1 NULL: the parameters rsaEncryption takes. */
+    private val DER_NULL = byteArrayOf(0x05, 0x00)
+
     /**
      * The phone-side certificate, as extracted by the AACS project.
      *
@@ -362,11 +372,72 @@ object AapTls {
      * would have to keep correct.
      */
     fun parsePkcs8PrivateKey(pem: String): PrivateKey {
-        require(!pem.contains("BEGIN RSA PRIVATE KEY")) {
-            "PKCS#1 key given; convert it first: openssl pkcs8 -topk8 -nocrypt -in key.pem -out key.pk8"
+        // PKCS#1 is accepted rather than refused. It used to tell the user to
+        // run `openssl pkcs8 -topk8`, which is a reasonable thing to ask of a
+        // developer and an unreasonable thing to ask of a driver who has been
+        // handed a key file — and the references emit PKCS#1: aasdk's
+        // `Cryptor.cpp` embeds a `BEGIN RSA PRIVATE KEY` literal, which is the
+        // pair for the one certificate a real Chevrolet accepts.
+        val der = if (pem.contains(PKCS1_LABEL)) {
+            wrapPkcs1AsPkcs8(decodePem(pem, PKCS1_LABEL))
+        } else {
+            decodePem(pem, "PRIVATE KEY")
         }
-        val der = decodePem(pem, "PRIVATE KEY")
         return KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(der))
+    }
+
+    /**
+     * Wraps a PKCS#1 `RSAPrivateKey` in a PKCS#8 `PrivateKeyInfo`.
+     *
+     * The JDK's `KeyFactory` only takes PKCS#8, and the difference between the
+     * two is an envelope, not an encoding — the inner key bytes are identical.
+     * PKCS#8 (RFC 5208 §5) is:
+     *
+     * ```text
+     * PrivateKeyInfo ::= SEQUENCE {
+     *   version              INTEGER (0),
+     *   privateKeyAlgorithm  SEQUENCE { OID 1.2.840.113549.1.1.1, NULL },
+     *   privateKey           OCTET STRING  -- the PKCS#1 DER, verbatim
+     * }
+     * ```
+     *
+     * Hand-written rather than pulled from Bouncy Castle: this is thirty lines
+     * of DER against a megabyte of dependency, and a cryptography library added
+     * for one envelope is a dependency the licence audit has to carry forever.
+     */
+    private fun wrapPkcs1AsPkcs8(pkcs1: ByteArray): ByteArray {
+        val algorithm = derSequence(derOid(RSA_ENCRYPTION_OID) + DER_NULL)
+        val version = byteArrayOf(0x02, 0x01, 0x00)
+        return derSequence(version + algorithm + derOctetString(pkcs1))
+    }
+
+    private fun derSequence(content: ByteArray): ByteArray =
+        byteArrayOf(0x30) + derLength(content.size) + content
+
+    private fun derOctetString(content: ByteArray): ByteArray =
+        byteArrayOf(0x04) + derLength(content.size) + content
+
+    private fun derOid(encoded: ByteArray): ByteArray =
+        byteArrayOf(0x06) + derLength(encoded.size) + encoded
+
+    /**
+     * DER definite-length encoding.
+     *
+     * Short form below 128, otherwise a leading byte carrying how many length
+     * bytes follow, big-endian. An RSA key is a couple of kilobytes, so two
+     * length bytes is the realistic maximum, but the loop is general because
+     * getting this subtly wrong produces a key that parses on one size of input
+     * and not another.
+     */
+    private fun derLength(length: Int): ByteArray {
+        if (length < 0x80) return byteArrayOf(length.toByte())
+        var remaining = length
+        val bytes = ArrayDeque<Byte>()
+        while (remaining > 0) {
+            bytes.addFirst((remaining and 0xFF).toByte())
+            remaining = remaining ushr 8
+        }
+        return byteArrayOf((0x80 or bytes.size).toByte()) + bytes.toByteArray()
     }
 
     private fun decodePem(pem: String, label: String): ByteArray {
