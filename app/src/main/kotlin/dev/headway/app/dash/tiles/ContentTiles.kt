@@ -904,16 +904,19 @@ class MessagesTile(context: Context) : DashTile {
         val context = list.context
         list.removeAllViews()
 
-        if (!NowPlayingTile.notificationAccessGranted(context)) {
-            list.addView(hint(context, NO_ACCESS_HINT))
-            return
+        // Centred while empty, top-aligned once there are rows. The ScrollView
+        // fills the viewport, so this is what puts the empty state in the
+        // middle of the pane instead of in its top-left corner.
+        val empty = when {
+            !NowPlayingTile.notificationAccessGranted(context) -> NO_ACCESS_HINT
+            !HeadwayNotificationListener.isConnected ->
+                "Waiting for the notification listener to connect."
+            shown.isEmpty() -> "No recent messages."
+            else -> null
         }
-        if (!HeadwayNotificationListener.isConnected) {
-            list.addView(hint(context, "Waiting for the notification listener to connect."))
-            return
-        }
-        if (shown.isEmpty()) {
-            list.addView(hint(context, "No recent messages."))
+        list.gravity = if (empty != null) Gravity.CENTER else Gravity.TOP
+        if (empty != null) {
+            list.addView(hint(context, empty))
             return
         }
         shown.forEach { list.addView(buildRow(context, it)) }

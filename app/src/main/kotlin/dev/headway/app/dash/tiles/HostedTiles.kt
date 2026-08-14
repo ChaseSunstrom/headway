@@ -773,7 +773,17 @@ class LauncherTile(
             // No dialog from here: a tile has no `Activity` to show one on, and
             // the picker that would fill this list lives on the phone.
             cells.addView(
-                messageView(context, "No apps pinned yet. Choose some in Headway on the phone."),
+                messageView(context, "No apps pinned yet. Choose some in Headway on the phone.")
+                    .apply {
+                        // Centred across the whole pane rather than left in the
+                        // top-left corner of a one-column grid, where a lone
+                        // sentence reads as a tile that failed to draw.
+                        layoutParams = GridLayout.LayoutParams().apply {
+                            width = MATCH_PARENT
+                            height = WRAP_CONTENT
+                            setGravity(Gravity.CENTER)
+                        }
+                    },
             )
             return
         }
@@ -1094,12 +1104,6 @@ private fun messageView(context: Context, message: String): TextView {
         gravity = Gravity.CENTER
         setLineSpacing(0f, 1.25f)
         setPadding(padding, padding, padding, padding)
-        // Centred in whatever it is put into rather than pinned to the top of
-        // it: these appear alone in a pane, and a sentence in the corner of an
-        // otherwise empty panel reads as a half-drawn tile.
-        layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply {
-            gravity = Gravity.CENTER
-        }
     }
 }
 

@@ -192,6 +192,15 @@ and it is how Headway's floating voice button works.
 
 ## Decision
 
+> **Superseded in part by [ADR 0006](0006-the-car-gets-its-own-screen.md).** The
+> findings below stand unchanged. What changed is the *mechanism* in point 1 and
+> the status of point 2. An activity cannot be launched onto this display at all
+> — see the correction at the end of this file — so the dashboard is a
+> `Presentation`, which is a window rather than a task and never enters the
+> activity-launch path. Mirroring is no longer a parallel "source" the user
+> picks between at connect time; it is a mode the driver switches into by
+> tapping an app and out of with a floating Home button.
+
 Headway supports two video sources, and the *dashboard* is the default:
 
 **1. Headway's own dashboard, on an own-content `VirtualDisplay`.** Headway's

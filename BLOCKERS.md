@@ -486,9 +486,18 @@ and neither is something Headway can decide on the driver's behalf.
 **Status:** Open. The code takes the path that should work; one device test
 confirms or refutes it.
 
-**Blocked:** Confirming that a Headway activity launches onto, and stays
-resumed on, a `DisplayManager`-created `VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY`
+**Blocked:** Confirming that Headway's `Presentation` appears on, and keeps
+drawing to, a `DisplayManager`-created `VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY`
 display on this phone.
+
+Updated 2026-08-14: this used to say "a Headway *activity* launches onto", and
+that question is now settled in the negative rather than open. The untrusted
+gate in `isCallerAllowedToLaunchOnDisplay` refuses the *first* activity onto
+such a display unconditionally — `ACTIVITY_EMBEDDING` is waived only when the
+caller already has an activity there — so no activity can bootstrap it. ADR 0006
+moves the dashboard to a `Presentation`, which is a window added through
+`WindowManager` and never enters that path. What remains open is whether the
+platform accepts that window here, which the fallback below already handles.
 
 **Why:** Android 17 added a gate ahead of every launch check
 (`ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay` L1308-1311) that
@@ -513,8 +522,10 @@ Two things remain unverified from source, and they compound:
 `MediaProjection`, so a phone where the dashboard cannot be hosted still casts
 exactly as it does today.
 
-**How to close it:** launch onto a projection-backed display and grep the log
-for `"display that cannot host tasks"` — its presence or absence answers (1).
-Then launch the dashboard onto the own-content display, lock the phone, and
-watch the activity's own lifecycle logging for (2). One session with the in-app
-export answers both.
+**How to close it:** connect once and read the exported log. `car surface
+ready:` means the display and the window both came up, and the car is being
+drawn for rather than mirrored; `car surface: the dashboard window was refused`
+names the exception if the platform turned the `Presentation` away. Then lock
+the phone and watch whether frames keep flowing, which answers (2). One session
+answers both, and the session degrades to mirroring either way rather than
+failing.
