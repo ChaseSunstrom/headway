@@ -177,6 +177,53 @@ off per drive. The cost is a portrait picture in a landscape panel, which is why
 from the car screen. The simulated display stays as the option that gives a
 car-shaped picture for anyone willing to pay its two costs.
 
+## Amendment, 2026-08-15 — share one app, not one display
+
+The first drive with a working pane reported that it showed "the entire external
+display, not the ONE app". It did, and the cause was the previous amendment:
+forcing `createConfigForDefaultDisplay()` **removes the single-app option from
+the consent dialog**, so the only thing a driver could share was a whole screen.
+
+Android has had the right answer since 14 QPR2, and its own page states it
+plainly: with app screen sharing *"the status bar, navigation bar,
+notifications, and other system UI elements are excluded from the shared
+display. Only the content of the selected app is shared"*, and *"apps that use
+the MediaProjection APIs are capable of app screen sharing automatically"*. So
+Headway asks with `createConfigForUserChoice()` and the driver picks the app.
+
+Three consequences follow, and they resolve most of what was still wrong:
+
+1. **No simulated display, ever.** The reason for ADR 0008's Developer-options
+   display was that a whole-screen capture is phone-shaped. A single-app capture
+   is *app*-shaped, reported through
+   `MediaProjection.Callback.onCapturedContentResize`, which the pane now fits
+   to. Nothing has to be enabled before a drive and nothing has to be turned off
+   after one.
+2. **The phone can look off.** The shared app still needs display 0 lit, but the
+   blackout overlay is system UI and is excluded from an app capture — so a black
+   screen hides the phone without touching what the car sees. That is the closest
+   an unprivileged app gets to "works when locked", and it is not the same thing;
+   B-020 records the difference.
+3. **`onCapturedContentVisibilityChanged`** tells the pane when the shared app is
+   covered, so it says so instead of holding a last frame that looks like a
+   frozen car screen.
+
+### Several different apps at once
+
+One grant, one virtual display, one shared app — the platform allows a second of
+none of them. What is unlimited is the other family: a `CAR_APP` pane renders a
+different app's own interface in each pane, and a `WIDGET` pane does the same
+with `RemoteViews`. Four apps at once is a layout of those, optionally with one
+`APP` pane beside them for whatever is being shared right now. The pane picker
+says this where the choice is made.
+
+### Nothing without permission
+
+An app cannot be opened, pinned, or launched by voice on the car until the driver
+has allowed it, one at a time, on the phone. Empty by default. `AllowedApps`
+holds the rule and `CarShell.openApp` is the single gate every route passes
+through.
+
 ## Consequences
 
 - `CarSurfaceMode`, the mirror-mode encoder, `CarVideoStream.show` and the

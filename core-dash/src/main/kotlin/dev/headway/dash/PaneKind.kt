@@ -39,6 +39,20 @@ package dev.headway.dash
  * (`MediaProjection.createVirtualDisplay` throws `SecurityException` on the
  * second, targeting SDK 34+) — but *which* pane is live is a call to
  * `VirtualDisplay.setSurface`, which costs nothing and asks the driver nothing.
+ *
+ * ## Several different apps at once
+ *
+ * Possible, and not through [APP]. A screen-capture grant is one grant, one
+ * virtual display, one shared app — the platform allows a second of none of
+ * those. What *is* unlimited is the model family: [CAR_APP] renders a different
+ * third-party app's own interface in every pane that asks for one, and [WIDGET]
+ * does the same with `RemoteViews`. Four panes can show four apps at once that
+ * way, live, with no capture involved.
+ *
+ * So the shape that works is a layout with one [APP] pane for whatever is being
+ * shared right now, and [CAR_APP] or [WIDGET] panes beside it for everything
+ * else. The pickers say so rather than leaving a driver to discover it by
+ * building a layout of four app panes and finding three of them dormant.
  */
 object PaneKind {
 
@@ -123,12 +137,12 @@ object PaneKind {
         BROWSE -> "Walk a media app's library and start something"
         MAPS -> "The next turn, from the app that is navigating"
         PHONE -> "Recent calls, and the call in progress"
-        CAR_APP -> "An app that publishes a car interface, drawn by Headway"
+        CAR_APP -> "An app's own car interface — several of these can run at once"
         MESSAGES -> "Incoming messages, with replies"
-        WIDGET -> "An app's own home-screen widget"
+        WIDGET -> "An app's own widget — several of these can run at once"
         LAUNCHER -> "A grid of every app, to open one here"
         CLOCK -> "Time, date and link status"
-        APP -> "A real app, running and touchable inside this pane"
+        APP -> "A shared app, live. One pane at a time shows it"
         else -> ""
     }
 

@@ -1069,10 +1069,20 @@ class CarShell(
     }
 
     private fun showKindPicker(path: DashPath) {
+        val appPanes = layout.leaves().count { PaneKind.isApp(it.kind) }
         val rows = PaneKind.ALL.map { kind ->
             CarSheet.Row(
                 title = PaneKind.describe(kind),
-                detail = PaneKind.explain(kind),
+                detail = if (kind == PaneKind.APP && appPanes >= 1) {
+                    // Said before the driver builds a layout of four app panes
+                    // and finds three of them dormant. One capture grant shares
+                    // one app; Car app and Widget panes each render a different
+                    // app and there is no limit on those.
+                    "A second one is a place to move the shared app to. For two apps at " +
+                        "once, use Car app or Widget panes"
+                } else {
+                    PaneKind.explain(kind)
+                },
                 selected = PaneKind.canonical(
                     (layout.nodeAt(path) as? DashNode.Leaf)?.kind.orEmpty(),
                 ) == kind,

@@ -915,3 +915,35 @@ now says so in as many words, and names the two settings that work: turn off
 **How to close it:** it cannot be closed from inside the app. What can be
 improved is the diagnosis, and that is done: the VPN line appears before the
 first connect attempt rather than after the failure.
+
+
+---
+
+## B-020 — The shared app needs the phone's display awake, so "works when locked" is approximate
+
+**Status:** Open, and as closed as an unprivileged app can get it.
+
+**Blocked:** Nothing visible, if the driver turns the blackout on. What is
+genuinely impossible is a *locked, dark* phone still feeding an app pane.
+
+**Why:** An app's window lives on display 0. `DisplayPolicy.screenTurnedOff`
+takes a sleep token for it, `DisplayContent.shouldSleep()` becomes true, its
+activities pause, and a capture of that app goes still. Headway's own dashboard
+is unaffected — it draws on a virtual display of its own, which ADR 0004
+Finding 4 establishes stays awake — so the car keeps its panels, its rail and
+its clock. It is only the *shared app's* pixels that stop.
+
+Nothing unprivileged moves a third-party activity off display 0:
+`ADD_TRUSTED_DISPLAY` is `signature|role`, and an untrusted virtual display
+refuses the first activity outright.
+
+**Workaround shipped:** the screen stays on and goes black. Since app screen
+sharing excludes system UI from the capture, an accessibility blackout hides the
+phone from the driver without appearing on the car screen — so the phone reads as
+off, is off to look at, and keeps drawing. It is off by default because with
+whole-display sharing the same overlay would black out the car screen too, and
+Headway cannot tell which kind of sharing the driver chose.
+
+**How to close it:** not closable from inside the app. The honest description is
+"the phone looks off and behaves as though it were", not "it works locked", and
+the README says it that way.
