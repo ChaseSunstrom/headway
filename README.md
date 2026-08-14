@@ -15,16 +15,18 @@ are the OS's, and both are derived from AOSP source in
 
 No Google services. No network. No root. No system privileges.
 
-> **Status: in development. A real car now reaches service discovery.** On
+> **Status: in development. A real car is showing the phone screen.** On
 > 2026-08-13 a 2021 Chevrolet Infotainment 3 unit completed the Bluetooth
 > handshake, the Wi-Fi join, TCP, the AAP version exchange, TLS, authentication
-> and service discovery, and listed all 13 of its channels. Nothing past channel
-> open has run on real hardware: no video has been sent, no touch received, no
-> audio played. The protocol stack, the test harness and the voice pipeline are
-> exercised in CI; the Android adapters for the encoder, input and audio are
-> written but never executed against a car. [`PROGRESS.md`](PROGRESS.md) records
-> the tier of evidence behind every phase — read it before believing anything
-> here works.
+> and service discovery, opened all 13 of its channels, and then — once Headway
+> started asking for video focus, which it had not been doing — put the phone
+> screen on the dashboard and held it there: 2754 frames, 4 dropped.
+>
+> Not yet confirmed on hardware: audio, touch coming back from the car, and
+> voice. Each had a distinct cause found in that same log and each has been
+> fixed, but "fixed" here means "the reason it could not have worked is gone",
+> not "observed working in a car". [`PROGRESS.md`](PROGRESS.md) records the tier
+> of evidence behind every phase — read it before believing anything here works.
 
 ## Why
 
@@ -73,7 +75,7 @@ headunit-emulator/  Head-unit test harness; hosts the acceptance suite      (JVM
 app/                UI, foreground service, permissions, Bluetooth, Wi-Fi   (Android)
 core-video/         MediaProjection capture -> MediaCodec H.264             (Android)
 core-input/         Car touch/keys -> AccessibilityService gestures         (Android)
-core-audio/         Audio channels, focus signalling, A2DP coexistence      (Android)
+core-audio/         Audio channels, focus signalling, playback capture      (Android)
 core-voice/         Car mic -> on-device STT -> command engine              (JVM)
 ```
 
@@ -269,7 +271,11 @@ Bluetooth one first — it is free.
 completes projection bring-up, DHCP included, only for a phone it considers
 connected. If the log line `Bluetooth profiles:` reads `headset=disconnected,
 a2dp=disconnected`, connect the car for **Phone calls** and **Media audio** in
-Bluetooth settings, and check **Android Auto is still enabled for this phone**
+Bluetooth settings — the head unit uses those profiles to decide a phone is
+present, whether or not it later routes audio over them; it will in fact drop
+A2DP once projection starts, which is why Headway sends music over AAP instead
+([ADR 0005](docs/adr/0005-media-audio-goes-over-aap-not-a2dp.md)) — and check
+**Android Auto is still enabled for this phone**
 on the car screen. Disabling Android Auto in the *car* is not the same as not
 using the Android Auto *app*; Headway takes the place of the app and still
 needs the car's permission.

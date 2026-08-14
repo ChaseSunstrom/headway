@@ -17,12 +17,26 @@ Both were settled against AOSP source (`android15-release`, with
 `android11-release` and `android13-release` used to date a removal), not from
 memory.
 
+> **Revised 2026-08-14** after a second pass against `android17-release`. The
+> verdict is unchanged and three of the supporting arguments were wrong. See the
+> *Corrections* section at the end; the text below has been fixed in place.
+
 ## Finding 1 — a third-party app cannot be placed on a display Headway owns
 
-`ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay` (L1201-1279) refuses
-the launch unless **the target app** declares `android:allowEmbedded="true"` —
-an opt-in belonging to the other developer, essentially never set — **and** the
-caller holds `ACTIVITY_EMBEDDING`, which is `signature|privileged`.
+`ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay` (L1284-1371 in
+`android17-release`) refuses the launch unless **the target app** declares
+`android:allowEmbedded="true"` — an opt-in belonging to the other developer,
+essentially never set. `ActivityInfo.java` L726-737 marks the corresponding
+`FLAG_ALLOW_EMBEDDED` `@Deprecated` and `@UnsupportedAppUsage(maxTargetSdk = R)`,
+with the comment *"TODO(b/191165536): delete this flag since is no longer
+used"* — which is the clearest possible statement that no app written this
+decade sets it.
+
+`ACTIVITY_EMBEDDING` (`signature|privileged`) is **not** an additional
+requirement, contrary to this ADR's first version: L1338-1340 waives it when
+`uidPresentOnDisplay` is true, and Headway's own launcher on Headway's own
+display satisfies that for free. The binding constraint is the target's opt-in,
+which is strictly worse — it is outside Headway's control entirely.
 
 `VIRTUAL_DISPLAY_FLAG_TRUSTED` bypasses the check, but it is `@SystemApi`
 (non-SDK, already out of bounds under CLAUDE.md constraint 2) and additionally
@@ -48,10 +62,18 @@ from `SystemActionPerformer` between `android11-release` and
 `false` with no diagnostic. Anything relying on it silently does nothing.
 
 `FLAG_ACTIVITY_LAUNCH_ADJACENT` (0x1000) still exists and is not deprecated,
-but it only *places an activity into a split that already exists*. It requires
-`FLAG_ACTIVITY_NEW_TASK` and a source **Activity** — the launch record needs an
-`mSourceRecord`, which a `Service` does not have. A foreground service cannot
-create a split, and nothing unprivileged can create one on demand.
+but it only *places an activity into a split that already exists*
+(`ActivityStarter` L3104-3120). It requires `FLAG_ACTIVITY_NEW_TASK` and a
+source **Activity** — the launch record needs an `mSourceRecord`, which a
+`Service` does not have — plus, new in Android 17, a source task that has not
+set `isLaunchAdjacentDisabled()`.
+
+This ADR originally read that as ruling the flag out. It does not:
+`CarLauncherActivity` *is* an Activity and does have an `mSourceRecord`. So
+**Headway can fill a split it did not create** — the user makes one in Recents
+once, and Headway then puts apps of their choosing into both panes. Two
+arbitrary apps, live, full framerate, touch working. What remains true is that
+nothing unprivileged can *create* the split.
 
 ## Finding 3 — mirroring the default display *cannot* survive screen-off
 
@@ -86,6 +108,54 @@ That inverts the video architecture. The own-content display is not a layout
 nicety to add later; it is the only source that meets the screen-locked
 requirement, and it needs no `MediaProjection` at all — which also sidesteps the
 Android 14 one-display-per-projection limit noted at `ScreenEncoder.kt:145`.
+
+## Finding 5 — on Android 17 a projection-backed display cannot host *anything*
+
+Android 17 adds a check ahead of every other one, at
+`ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay` L1308-1311:
+
+```java
+if (DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT.isTrue()) {
+    if (!displayContent.mDisplay.canHostTasks()) {
+        Slog.w(TAG, "Launch on display check: activity launch is not allowed on a "
+                + "display that cannot host tasks");
+        return false;
+    }
+}
+```
+
+The flag defaults true (`DesktopExperienceFlags.java` L88-90).
+`LogicalDisplay.validateCanHostTasksLocked` L1092-1094 returns false when
+`shouldOnlyMirror()`, and `VirtualDisplayAdapter` L548-551 defines that as
+*"created through a `MediaProjection`"*.
+
+So on Android 17, **nothing at all can be launched onto a MediaProjection-backed
+virtual display — not even Headway's own activity.** `ScreenEncoder.kt:268`
+creates exactly that kind of display. `LogicalDisplay` L1096-1105 returns true
+early for `FLAG_OWN_CONTENT_ONLY`, so the own-content path is unaffected.
+
+This promotes Consequence 3 below from a refactor to a prerequisite: the
+dashboard cannot exist on a projection display, so `CarDisplay` creates one
+through `DisplayManager` instead — which incidentally needs no projection
+consent at all.
+
+Not verifiable from source: whether
+`enable_display_content_mode_management` is enabled in the shipping GrapheneOS
+Pixel 10 Pro XL build; it comes from the release config. One device test settles
+it — launch onto a projection-backed display and grep logcat for
+`"display that cannot host tasks"`.
+
+## Finding 6 — an overlay reaches every app, and this ADR missed it
+
+`SYSTEM_ALERT_WINDOW` with `TYPE_APPLICATION_OVERLAY` composites Headway's own
+views *on top of whatever app is running* on display 0. It is a user-granted
+special access in the same class as the accessibility grant — not privileged,
+not `signature`, not ADB-only — so it is in bounds under constraint 2.
+
+Because the car mirrors display 0, an overlay is on the car screen whatever is
+running, and car touches already reach it through the existing input path. That
+makes it the best available primitive for custom car chrome over a real app,
+and it is how Headway's floating voice button works.
 
 ## Decision
 
@@ -147,11 +217,50 @@ and the `appop` term makes it user-grantable through
   activity on an `OWN_CONTENT_ONLY` virtual display stays resumed with the
   screen off and the phone locked. Tracked in `BLOCKERS.md`.
 
+## Corrections, 2026-08-14
+
+The verdict survived a second pass against `android17-release`. Three arguments
+did not, and one whole finding was missing. Recorded here rather than quietly
+edited, because the errors were the confident kind.
+
+1. **`ACTIVITY_EMBEDDING` was never the blocker** (Finding 1). It is waived when
+   the caller already has an activity on the display. The target's
+   `allowEmbedded` opt-in is the constraint, and it is worse — Headway cannot
+   influence it at all.
+2. **`FLAG_ACTIVITY_LAUNCH_ADJACENT` was wrongly written off** (Finding 2). The
+   `mSourceRecord` objection applies to a Service, and Headway's launcher is an
+   Activity. Filling a user-created split is a real capability that this ADR
+   said was unavailable.
+3. **The overlay path was missing entirely** (Finding 6). It is the only way to
+   put Headway's own controls over a third-party app, and it was not considered.
+4. **Android 17's `canHostTasks` gate was not known** (Finding 5), and it breaks
+   the pre-existing code rather than merely constraining new code.
+
+The lesson worth keeping: three of the four are cases where a *true* fact about
+one code path was generalised to a conclusion about a different one. Each
+citation was real; each inference over-reached.
+
 ## Sources
 
 - `services/core/java/com/android/server/wm/ActivityTaskSupervisor.java`
-  L1201-1279 (`isCallerAllowedToLaunchOnDisplay`), `android15-release`
+  L1284-1371 (`isCallerAllowedToLaunchOnDisplay`), `android17-release`;
+  L1201-1279 in `android15-release`
 - commit `ed115cd`, which introduced that check
+- `services/core/java/com/android/server/wm/ActivityStarter.java` L3104-3120
+  (`LAUNCH_ADJACENT`), `android17-release`
+- `services/core/java/com/android/server/wm/LogicalDisplay.java` L1092-1105
+  (`validateCanHostTasksLocked`), `android17-release`
+- `services/core/java/com/android/server/wm/TaskFragment.java` L839-928
+  (cross-app embedding opt-ins), `android17-release`
+- `packages/modules/Permission/PermissionController/res/xml/roles.xml` L99-106
+  (`virtual_device` permission set) and
+  `role-controller/.../model/Role.java` L909-911 (`systemOnly` enforcement)
+- `core/api/current.txt` vs `core/api/system-current.txt` vs
+  `core/api/test-current.txt` — for `TaskOrganizer`,
+  `WindowContainerTransaction`, `setLaunchWindowingMode`,
+  `VirtualDeviceManager.createVirtualDevice`, `VIRTUAL_DISPLAY_FLAG_TRUSTED`
+- `car/app/app/src/main/res/values/config.xml` and
+  `androidx.car.app.HostValidator` — the six hardcoded host signatures
 - `services/accessibility/java/com/android/server/accessibility/SystemActionPerformer.java`,
   `android11-release` vs `android13-release`
 - `services/core/java/com/android/server/wm/DisplayPolicy.java`

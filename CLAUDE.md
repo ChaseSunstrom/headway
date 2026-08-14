@@ -72,7 +72,7 @@ Reconnection is a first-class feature: the app must survive walking away from th
 ### Audio
 
 - Headway's own audio (voice replies, nav prompts if any, UI sounds) goes over the AAP speech/system audio channels.
-- Third-party media audio: do **not** attempt playback capture as the primary path (`AudioPlaybackCapture` is opt-out-able and adds latency). Default strategy: instruct/steer media audio over the car's normal Bluetooth A2DP link, which coexists with the AAP session. Implement AAP media-audio channel support behind a settings toggle for apps that allow capture.
+- Third-party media audio: ~~do **not** attempt playback capture as the primary path (`AudioPlaybackCapture` is opt-out-able and adds latency). Default strategy: instruct/steer media audio over the car's normal Bluetooth A2DP link, which coexists with the AAP session. Implement AAP media-audio channel support behind a settings toggle for apps that allow capture.~~ **Reversed 2026-08-14 — see [ADR 0005](docs/adr/0005-media-audio-goes-over-aap-not-a2dp.md).** A2DP does *not* coexist with the AAP session on the target vehicle: a capture of real Android Auto against the same head unit shows Gearhead deliberately tearing A2DP down while projecting (`disabling A2dp route while in projection`) and streaming third-party music over the AAP media channel, captured from `REMOTE_SUBMIX`. The driver confirms the car is silent. So **media audio goes over the AAP media-audio channel by default**, sourced from `AudioPlaybackCapture`, with the `mediaAudioOverAap` quirk available to put it back on A2DP for a head unit that does coexist. Telephony stays on Bluetooth HFP, which the same capture shows Gearhead keeping alive.
 - Implement audio focus signaling on the AAP control channel correctly so the car ducks/resumes radio audio.
 
 ### Voice (the car mic — this is a headline feature, not an afterthought)
@@ -105,7 +105,7 @@ Safety: show a first-run notice that video content while driving is the user's r
 
 **Phase 3 — Input.** Touch transform + accessibility gesture injection, key events. *Accepted when:* scripted emulator touches operate a real third-party app (e.g., open an app from the launcher grid, scroll a list, type via drag on keyboard) hands-free.
 
-**Phase 4 — Audio + focus.** Speech/system channels, focus signaling, A2DP coexistence logic. *Accepted when:* emulator receives a spoken TTS prompt over the speech channel while a music app plays over (simulated) A2DP, with correct duck/resume messages on the wire.
+**Phase 4 — Audio + focus.** Speech/system channels, focus signaling, and the media channel fed by playback capture (ADR 0005 — A2DP coexistence turned out not to exist on the target vehicle). *Accepted when:* emulator receives a spoken TTS prompt over the speech channel while music streams over the media channel, with correct focus and duck/resume messages on the wire.
 
 **Phase 5 — Voice.** AV-input channel, Vosk pipeline, command engine. *Accepted when:* WAV-injected "open calculator" through the emulator's fake mic launches the calculator on the phone with no network access, end-to-end under 2 s after end of speech.
 

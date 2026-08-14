@@ -440,3 +440,74 @@ drift apart. Both carry a comment saying so.
 into a piece that takes no `MediaProjection` — it needs the channel and the
 advertised service and nothing else — and drive that from the emulator suite.
 The encoder construction stays behind the device boundary.
+
+## B-010 — Which of the driver's apps allow their audio to be captured
+
+**Status:** Open, and only a real device answers it. Reported rather than
+worked around.
+
+**Blocked:** Knowing, before a drive, whether a given music app's audio will
+reach the car.
+
+**Why it matters:** ADR 0005 routes third-party media over the AAP media-audio
+channel, sourced from `AudioPlaybackCapture`. That API only hands over audio
+from apps whose `android:allowAudioPlaybackCapture` is true. The attribute
+defaults to true for anything targeting API 29 or later, so most apps are fine —
+but DRM-sensitive players set it false, and the platform offers no way to ask in
+advance.
+
+**The failure mode is the problem, not the limitation.** An app that opts out
+does not error. It produces a perfectly well-formed stream of digital silence,
+which on the wire is indistinguishable from everything working: frames sent,
+frames acknowledged, focus granted, no music. That is the same shape as the
+video-focus bug that cost a week — a healthy-looking session doing nothing.
+
+**Workaround shipped:** `PhoneAudioCapture.describeCapturePolicy()` states the
+rule in the session log once per session, and the audio line reports bytes
+actually captured and sent, so a silent drive is diagnosable as "captured
+nothing" rather than as an unexplained quiet.
+
+**How to close it:** try the driver's actual players.
+`app.symfonik.music.player` is the one Gearhead was streaming in the reference
+capture from this vehicle, so it is known to be capturable by *some* mechanism
+and is the first thing to test. If a favoured app turns out to opt out, the
+honest options are to use a different app or to fall back to A2DP for that app,
+and neither is something Headway can decide on the driver's behalf.
+
+## B-011 — Whether Android 17 lets Headway host its own dashboard at all
+
+**Status:** Open. The code takes the path that should work; one device test
+confirms or refutes it.
+
+**Blocked:** Confirming that a Headway activity launches onto, and stays
+resumed on, a `DisplayManager`-created `VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY`
+display on this phone.
+
+**Why:** Android 17 added a gate ahead of every launch check
+(`ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay` L1308-1311) that
+refuses any display whose `canHostTasks()` is false, and
+`LogicalDisplay.validateCanHostTasksLocked` returns false for anything
+`shouldOnlyMirror()` — which `VirtualDisplayAdapter` defines as *created through
+a `MediaProjection`*. So the display `ScreenEncoder` has always created can no
+longer host so much as Headway's own activity. `LogicalDisplay` L1096-1105
+returns true early for `FLAG_OWN_CONTENT_ONLY`, which is why `CarDisplay`
+creates one that way.
+
+Two things remain unverified from source, and they compound:
+
+1. Whether `enable_display_content_mode_management` is actually on in the
+   shipping GrapheneOS Pixel 10 Pro XL build. It is a release-config value, not
+   a source constant.
+2. Whether an activity on an own-content display stays **resumed** with the
+   screen off and the phone locked — the claim B-007 already tracks, and the
+   one the whole screen-off story rests on.
+
+**Workaround shipped:** the mirroring path is untouched and still uses
+`MediaProjection`, so a phone where the dashboard cannot be hosted still casts
+exactly as it does today.
+
+**How to close it:** launch onto a projection-backed display and grep the log
+for `"display that cannot host tasks"` — its presence or absence answers (1).
+Then launch the dashboard onto the own-content display, lock the phone, and
+watch the activity's own lifecycle logging for (2). One session with the in-app
+export answers both.

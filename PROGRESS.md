@@ -15,10 +15,10 @@ Each phase carries the **tier of evidence** behind it, defined in
 |-------|-------|--------|----------|
 | 0 | Test harness | **Done** | A — the emulator drives every acceptance test in CI |
 | 1 | Handshake | **Done (CI half)** | A — full bring-up 20/20 over the fake transport *and* over real TCP; the Bluetooth version exchange is now pinned to bytes captured from a real Chevrolet head unit; D for the rest of the real BT/Wi-Fi half |
-| 2 | Video out | **Module done, not wired** | A — 10 min of 30 fps stream in order, byte-identical, real NAL parsing; B — device encodes real H.264 with SPS/PPS; C for `MediaProjection` capture |
-| 3 | Input | **Module done, not wired** | A — event decode and letterbox transform; B — gesture building on-device; C for gesture *dispatch* (needs an enabled service) |
-| 4 | Audio + focus | **Module done, not wired** | A — three sinks, focus duck/resume asserted on the wire; B — resampling and AudioManager focus on-device; D for real A2DP |
-| 5 | Voice | **Module done, not wired** | A — real Vosk on real speech, "open calculator" resolved in ~720 ms; C for `startActivity` |
+| 2 | Video out | **Done on real hardware** | A — 10 min of 30 fps stream in order, byte-identical, real NAL parsing; **the 2021 Malibu displayed the phone screen on 2026-08-13: 2754 frames sent, 4 dropped, `focus VIDEO_FOCUS_PROJECTED`** |
+| 3 | Input | **Wired; the car has sent nothing yet** | A — event decode and letterbox transform, plus a new test that the emulator sends no report before the key binding; B — gesture building on-device; the first real session received zero reports and could not say why, which four new diagnostics now answer in one drive |
+| 4 | Audio + focus | **Wired, unverified on hardware** | A — sinks, focus duck/resume asserted on the wire; B — resampling and AudioManager focus on-device; media now goes over AAP rather than A2DP (ADR 0005), fed by `AudioPlaybackCapture`; D for whether the driver's own apps permit capture |
+| 5 | Voice | **Wired, unverified on hardware** | A — real Vosk on real speech, "open calculator" resolved in ~720 ms; the app shipped the *desktop* Vosk jar and no model, so nothing could ever have run on a phone — `vosk-android` and a checksum-pinned model now ship, and three triggers exist where there were none |
 | 6 | Reconnection, polish, packaging | **Done (except release signing)** | A — supervisor, quirks, log redaction; B — APK installs and 29 app tests pass on a real device |
 
 ## The gap between "module done" and "the app does it"
@@ -134,8 +134,9 @@ Stated so the gap between "CI green" and "works in a car" is never implied away.
 
 ## Where the real car currently gets to
 
-A 2021 Chevrolet Infotainment 3 unit. The last capture is from build 32; what
-follows is where that build got to and what has changed since.
+A 2021 Chevrolet Infotainment 3 unit. **The car screen now shows the phone.**
+Build 78 completed bring-up and projected: 2754 frames, 4 dropped, focus
+granted. What follows is the road there and what is still unproven.
 
 - **Bluetooth: works, every time.** SDP lookup, RFCOMM connect on channel 3,
   version exchange, and the credentials handshake all complete in under a
@@ -145,14 +146,23 @@ follows is where that build got to and what has changed since.
   settled this. The phone authenticates and associates with the car's access
   point; the log's `IP_PROVISIONING` verdict is only reachable after that
   succeeds.
-- **DHCP: the current wall.** The head unit accepts the phone onto the radio
-  and then never issues it an address. GrapheneOS's default per-connection MAC
-  randomization makes every attempt a new device to the head unit, whose DHCP
-  table is small and does not evict; GrapheneOS documents the failure. Android
-  exposes no way for an app to influence the MAC of a `WifiNetworkSpecifier`
-  connection, so Headway now reports it, stops retrying (each retry consumes
-  another address), and tells the user the two steps that clear it. See the
-  README.
+- **DHCP: solved, and it was never DHCP.** The head unit accepts the phone onto
+  the radio and never issues it an address — because it announces
+  `access_point_type = STATIC` in every `WifiInfoResponse`, meaning it assigns
+  no addresses at all. Every `IP_PROVISIONING` failure was the unit behaving
+  exactly as advertised. A static IP on a saved car network is the correct
+  configuration for this vehicle, not a workaround. See B-006, which keeps the
+  GrapheneOS MAC-randomization analysis because it remains true for a head unit
+  that advertises `DYNAMIC`.
+- **TLS: solved.** The certificate every reference sends expired in 2022. This
+  car checks the chain and the dates but not the role, so it accepts the
+  unexpired JVC Kenwood pair, and Headway now remembers per Bluetooth address
+  which one worked instead of re-testing rejects. See B-003.
+- **Video: working.** The session used to die after 15-19 s with the car stuck
+  on "Connecting Android Auto phone" while acknowledging every frame. Headway
+  had never sent a `VideoFocusRequest`; openauto volunteers focus and this car
+  does not, so the omission was invisible to every test. See ADR 0004 and the
+  Phase 2 focus test.
 
 What has changed since that capture, in rough order of how likely each is to be
 the cause:
