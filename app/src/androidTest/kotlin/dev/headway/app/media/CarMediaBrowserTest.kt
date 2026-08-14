@@ -48,8 +48,11 @@ class CarMediaBrowserTest {
 
     @Before
     fun setUp() {
-        // The *target* context, so the browser binds the service declared in
-        // the test app's own manifest under the app's package.
+        // The *test* app's context, because that is the package the fake
+        // service is declared in -- androidTest builds a separate APK with its
+        // own applicationId. The browser itself runs in the target process, so
+        // the bind crosses a package boundary and the service is exported for
+        // exactly that reason.
         context = InstrumentationRegistry.getInstrumentation().context
         FakeLibraryService.reset()
         app = MediaApp(
@@ -159,7 +162,15 @@ class CarMediaBrowserTest {
         val session = CarMediaBrowser(context, app)
         browser = session
         val items = awaitItems { onMain { session.connect(collector) } }
-        assertEquals("the root should list two folders", 2, items.size)
+        // The state is in the message because the three ways this fails look
+        // identical from the item count alone: REFUSED means the bind was
+        // turned away (the manifest), TIMED_OUT means the service never
+        // answered, EMPTY means it answered with nothing.
+        assertEquals(
+            "the root should list two folders; browser said $latestState",
+            2,
+            items.size,
+        )
         return session
     }
 
@@ -170,11 +181,16 @@ class CarMediaBrowserTest {
     @Volatile
     private var settled: CountDownLatch = CountDownLatch(1)
 
+    /** The state that came with [latest]; part of every failure message. */
+    @Volatile
+    private var latestState: BrowseState = BrowseState.UNKNOWN
+
     private val collector = CarMediaBrowser.Listener { state, items ->
         // WORKING is the intermediate the browser publishes on the way; only a
         // settled state counts as an answer.
         if (state == BrowseState.WORKING) return@Listener
         latest = items
+        latestState = state
         settled.countDown()
     }
 

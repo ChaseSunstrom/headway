@@ -29,12 +29,19 @@
           with a stubbed browser can see that, because the behaviour lives
           entirely in the platform service.
 
-          exported="false": the test app is the only client and nothing outside
-          it has any business binding this.
+          exported="true", and it has to be. AGP builds androidTest into a
+          separate APK with its own applicationId (dev.headway.app.test), so the
+          service lives in one package while MediaBrowser binds it from the
+          target process in another. A non-exported service across that boundary
+          is refused, and the refusal arrives as onConnectionFailed, which the
+          browser correctly reports as "this app will not serve us", so every
+          test failed with an empty root and no hint that the cause was the
+          manifest. Nothing ships this APK, and the only thing behind the door
+          is three fake tracks.
         -->
         <service
             android:name="dev.headway.app.media.FakeLibraryService"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
