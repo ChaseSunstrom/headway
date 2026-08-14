@@ -85,7 +85,12 @@ class PhoneTile(
     private var recents: List<RecentCall> = emptyList()
 
     private val listener = CarPhone.Listener { call ->
+        // A call ending is the one moment the recent list is guaranteed wrong:
+        // the call that just finished is in the log and not in `recents`, so a
+        // driver looking to call back finds the previous caller instead.
+        val ended = live != null && call == null
         live = call
+        if (ended && running) recents = CarPhone.recentCalls(appContext)
         render()
     }
 

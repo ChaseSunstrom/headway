@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This file is part of Headway.
+  Copyright (C) 2026 The Headway Authors
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+          A real MediaBrowserService, so CarMediaBrowser can be driven against
+          the actual framework rather than a mock of it. Debug builds only, so
+          it is never in a release APK.
+
+          It has to live here rather than in androidTest, and the reason is
+          worth writing down because the symptom was baffling. A service
+          declared in the androidTest manifest belongs to the *test* APK, which
+          AGP builds with its own applicationId and strips of every class the
+          app APK already contains, including the Kotlin standard library. The
+          platform instantiates it in a plain process for that package, not in
+          the instrumented one, so its classloader sees only the stripped APK
+          and the first stdlib touch throws NoClassDefFoundError for
+          kotlin.collections.MapsKt, in a process the test cannot see. From the
+          test's side that looks exactly like a service that never answered.
+
+          In the debug variant it is an ordinary component of the app APK,
+          instantiated in the app process, which is also the process
+          instrumentation runs in. So the statics the test reads are genuinely
+          shared, and exported="false" is correct again because the caller and
+          the service are now the same package and the same uid.
+        -->
+        <service
+            android:name="dev.headway.app.media.FakeLibraryService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

@@ -48,12 +48,13 @@ class CarMediaBrowserTest {
 
     @Before
     fun setUp() {
-        // The *test* app's context, because that is the package the fake
-        // service is declared in -- androidTest builds a separate APK with its
-        // own applicationId. The browser itself runs in the target process, so
-        // the bind crosses a package boundary and the service is exported for
-        // exactly that reason.
-        context = InstrumentationRegistry.getInstrumentation().context
+        // The *target* context. FakeLibraryService is a debug-variant
+        // component of the app APK, so it lives in dev.headway.app, is
+        // instantiated in the app process, and shares that process with the
+        // instrumentation — which is what makes the statics it publishes
+        // readable from here at all. See app/src/debug/AndroidManifest.xml for
+        // why it is not in androidTest.
+        context = InstrumentationRegistry.getInstrumentation().targetContext
         FakeLibraryService.reset()
         app = MediaApp(
             packageName = context.packageName,
