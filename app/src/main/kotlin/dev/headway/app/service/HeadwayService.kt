@@ -1354,6 +1354,11 @@ open class HeadwayService : Service() {
                     if (command.packageName == null) say("I could not find ${command.query}")
                 }
 
+                is VoiceCommand.Navigate -> {
+                    fallback(command)
+                    say("Navigating to ${command.destination}")
+                }
+
                 is VoiceCommand.Unrecognised -> say("Sorry, I did not catch that")
 
                 else -> fallback(command)

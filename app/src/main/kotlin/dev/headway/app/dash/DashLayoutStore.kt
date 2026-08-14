@@ -135,6 +135,29 @@ class DashLayoutStore(private val storage: Storage) {
     }
 
     /**
+     * Whether the driver has saved anything, as opposed to [list] substituting
+     * the shipped set.
+     *
+     * The tab editor needs this and cannot get it from [list], which by design
+     * cannot tell the two apart. The first edit of any kind has to write *all*
+     * of the shipped tabs first, or saving one would make the other five
+     * disappear the moment the substitution stopped applying.
+     */
+    fun hasSaved(): Boolean = stored().isNotEmpty()
+
+    /**
+     * Replaces the whole set, in one write.
+     *
+     * For reordering, which is the one edit that is not about a single layout.
+     * Doing it as delete-then-save per tab would work and would also drop the
+     * active pointer the moment the active tab's turn came round, putting the
+     * driver back on the first tab every time they nudged the order.
+     */
+    fun replaceAll(layouts: List<DashLayout>) {
+        storage.write(mapOf(KEY_LAYOUTS to DashLayout.encodeAll(layouts)))
+    }
+
+    /**
      * Records which layout should be on screen.
      *
      * Deliberately not checked against [list]. A caller that creates a layout and

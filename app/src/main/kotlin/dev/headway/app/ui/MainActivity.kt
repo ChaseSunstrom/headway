@@ -170,6 +170,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pairingStatus: Phone.StatusRow
     private lateinit var phoneStatus: Phone.StatusRow
 
+    /**
+     * The tab editor, held so `onStart` can re-read the store.
+     *
+     * The car screen writes to the same store when the driver switches tabs, so
+     * a card built once and never refreshed shows the wrong tab as active after
+     * any drive.
+     */
+    private var tabsCard: TabsCard? = null
+
     private var uiScope: CoroutineScope? = null
 
     /**
@@ -457,6 +466,7 @@ class MainActivity : AppCompatActivity() {
         column.addView(buildChecklist())
         column.addView(Phone.sectionLabel(this, "The car"))
         column.addView(buildCarScreenCard())
+        column.addView(TabsCard(this) { }.also { tabsCard = it }.view)
         column.addView(buildCarWifiCard())
         column.addView(buildQuirksCard())
         column.addView(buildCertificateCard())
@@ -862,6 +872,7 @@ class MainActivity : AppCompatActivity() {
     // --- state --------------------------------------------------------------
 
     private fun refresh() {
+        tabsCard?.refresh()
         refreshPermissions()
         refreshPhonePermissions()
         refreshAccessibility()

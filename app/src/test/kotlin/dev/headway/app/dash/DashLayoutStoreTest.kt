@@ -325,6 +325,56 @@ class DashLayoutStoreTest {
         assertEquals(listOf(sample()), store.list())
     }
 
+    // --- what the tab editor needs -------------------------------------------
+
+    /**
+     * `hasSaved` tells the substitution apart from a real save, which `list`
+     * deliberately cannot.
+     *
+     * The tab editor writes all six shipped tabs before its first edit, and it
+     * decides whether to on this. Get it wrong and saving one tab makes the
+     * other five disappear — the substitution stops applying the moment
+     * anything is stored.
+     */
+    @Test
+    fun `hasSaved distinguishes the shipped tabs from a real one`() {
+        val store = DashLayoutStore(FakeStorage())
+        assertFalse(store.hasSaved(), "nothing is stored yet")
+        assertEquals(DashLayoutStore.DEFAULT_TABS, store.list())
+
+        store.save(sample())
+        assertTrue(store.hasSaved(), "a saved layout is a saved layout")
+    }
+
+    /** `replaceAll` rewrites the set in one go and leaves the active tab alone. */
+    @Test
+    fun `replaceAll reorders without losing the active tab`() {
+        val store = DashLayoutStore(FakeStorage())
+        store.replaceAll(DashLayoutStore.DEFAULT_TABS)
+        store.setActive("Phone")
+
+        val reordered = DashLayoutStore.DEFAULT_TABS.reversed()
+        store.replaceAll(reordered)
+
+        assertEquals(reordered, store.list())
+        assertEquals(
+            "Phone",
+            store.active().name,
+            "reordering must not put the driver back on the first tab",
+        )
+    }
+
+    /** Replacing with nothing falls back to the shipped set rather than breaking. */
+    @Test
+    fun `replaceAll with an empty list returns the shipped tabs`() {
+        val store = DashLayoutStore(FakeStorage())
+        store.save(sample())
+        store.replaceAll(emptyList())
+
+        assertFalse(store.hasSaved())
+        assertEquals(DashLayoutStore.DEFAULT_TABS, store.list())
+    }
+
     // --- the store's bookkeeping ---------------------------------------------
 
     @Test

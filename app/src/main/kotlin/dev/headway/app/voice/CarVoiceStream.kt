@@ -22,6 +22,7 @@ import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaC
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import dev.headway.app.dash.tiles.MapsTile
 import dev.headway.app.ui.CarLauncherActivity
 import dev.headway.protocol.channel.MicrophoneChannel
 import dev.headway.protocol.channel.MicrophoneChannelException
@@ -714,6 +715,13 @@ class CarVoiceStream(
                             if (started.isSuccess) "voice: returned to the car launcher"
                             else "voice: could not open the car launcher (${started.exceptionOrNull()})"
                         )
+                    }
+
+                    is VoiceCommand.Navigate -> {
+                        // MapsTile owns the geo: hand-off, the driver's chosen
+                        // map app, and giving the car screen to it, so the
+                        // executor asks rather than reimplementing all three.
+                        MapsTile.navigateTo(context, command.destination, onStep)
                     }
 
                     is VoiceCommand.Media -> onStep("voice: ${command.action} needs a media handler")

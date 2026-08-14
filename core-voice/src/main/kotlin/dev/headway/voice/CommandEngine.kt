@@ -60,6 +60,12 @@ class CommandEngine(
         matchGoHome(words)?.let { return it }
         matchVolume(words)?.let { return it }
         matchMedia(words)?.let { return it }
+        // Before search, because "find the nearest petrol station" is a
+        // navigation request and "find" is also a search verb. Navigation is
+        // the more specific reading and the one that is dangerous to get wrong:
+        // typing a destination into whatever happens to be on screen is a
+        // driver looking at a phone.
+        matchNavigate(words)?.let { return it }
         matchSearch(words)?.let { return it }
         matchLaunch(words)?.let { return it }
 
@@ -98,6 +104,34 @@ class CommandEngine(
             if (joined == phrase || joined.startsWith("$phrase ") || joined.endsWith(" $phrase")) {
                 return VoiceCommand.Media(action)
             }
+        }
+        return null
+    }
+
+    /**
+     * "navigate to X", "drive to X", "take me to X", "directions to X".
+     *
+     * The verb *is* required here, unlike a launch. A bare place name is far
+     * more likely to be an app the driver wants opened than a destination they
+     * want a route to, and starting navigation by accident hands the car screen
+     * to a map app in the middle of something else.
+     *
+     * "find the nearest X" is included because it is how people actually ask,
+     * and because `geo:0,0?q=` is a search query rather than a coordinate — the
+     * map app does the finding.
+     */
+    private fun matchNavigate(words: List<String>): VoiceCommand? {
+        val joined = words.joinToString(" ")
+        for (verb in NAVIGATE_VERBS) {
+            if (!joined.startsWith("$verb ")) continue
+            // Whole words, not string prefixes. Stripping "to " off "to"
+            // leaves "to", so "navigate to" with nothing after it used to
+            // produce a route to a place called "to" -- and the map app would
+            // dutifully search for one.
+            val rest = joined.removePrefix("$verb ").trim().split(' ')
+                .filter { it.isNotEmpty() }
+                .dropWhile { it in FILLER_PREFIXES }
+            if (rest.isNotEmpty()) return VoiceCommand.Navigate(rest.joinToString(" "))
         }
         return null
     }
@@ -226,6 +260,18 @@ class CommandEngine(
         val MUTE_WORDS = setOf("mute", "silence", "unmute")
 
         val SEARCH_VERBS = listOf("search for", "search", "look for", "find", "type")
+
+        /**
+         * Longest first, so "navigate to" is not matched as "navigate" leaving
+         * "to the airport" for the filler stripper to guess at.
+         */
+        val NAVIGATE_VERBS = listOf(
+            "navigate to", "directions to", "take me to", "drive to", "route to",
+            "navigate", "directions", "find the nearest", "find nearest",
+        )
+
+        /** Words left over after the verb that are not part of a place name. */
+        val FILLER_PREFIXES = setOf("to", "the", "a", "an")
 
         val NUMBER_WORDS = mapOf(
             "one" to 1, "two" to 2, "three" to 3, "four" to 4, "five" to 5,

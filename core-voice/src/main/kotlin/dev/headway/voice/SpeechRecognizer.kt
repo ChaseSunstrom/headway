@@ -73,6 +73,18 @@ sealed interface VoiceCommand {
     /** Type [text] into whatever has focus. */
     data class Search(val text: String) : VoiceCommand
 
+    /**
+     * Start navigation to [destination] in the driver's map app.
+     *
+     * Distinct from [Search] because it goes somewhere else entirely: a search
+     * types into the foreground app, whereas this hands a `geo:` link to a map
+     * app and gives it the car screen. Distinct from [LaunchApp] because the
+     * destination is the point — "navigate to the airport" is not a request to
+     * open a map and then find the airport by hand, which is the one thing a
+     * driver must not be doing.
+     */
+    data class Navigate(val destination: String) : VoiceCommand
+
     /** Recognised speech that matched no rule. [transcript] is kept for the debug log. */
     data class Unrecognised(val transcript: String) : VoiceCommand
 }
