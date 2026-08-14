@@ -958,8 +958,23 @@ class CarShell(
         }.getOrDefault(emptyList())
     }
 
-    private fun installedPackages(): Set<String> =
-        launchableApps().mapTo(mutableSetOf()) { it.first }
+    /**
+     * Every package with a launcher entry, by name only.
+     *
+     * Deliberately *not* [launchableApps]: that one loads a label and a drawable
+     * for every app on the phone, and this is called on every rail fill — which
+     * happens on a tab switch, on a theme change and after every layout edit, on
+     * the thread drawing the car screen. Pruning the rail needs names and
+     * nothing else.
+     */
+    private fun installedPackages(): Set<String> {
+        val manager = context.packageManager
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        return runCatching {
+            manager.queryIntentActivities(intent, 0)
+                .mapNotNullTo(mutableSetOf()) { it.activityInfo?.packageName }
+        }.getOrDefault(emptySet())
+    }
 
     private fun showRailItemMenu(item: RailItem) {
         showOverlay(
