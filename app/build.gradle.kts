@@ -15,6 +15,7 @@
  * Headway. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import java.io.File
 import java.security.MessageDigest
 
 plugins {
@@ -42,6 +43,12 @@ val voskModelName = "vosk-model-small-en-us-0.15"
 val voskModelSha256 = "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"
 val voskModelUrl = "https://alphacephei.com/vosk/models/$voskModelName.zip"
 
+// Generous enough for a slow runner on a 41 MB file, short enough that a stalled
+// connection fails in minutes rather than occupying a CI job until it is killed.
+val MODEL_CONNECT_TIMEOUT_MILLIS = 30_000
+val MODEL_READ_TIMEOUT_MILLIS = 120_000
+val MODEL_FETCH_ATTEMPTS = 3
+
 // Outside build/, so `clean` does not cost another 41 MB download.
 val voskModelCache = layout.projectDirectory.dir("../.gradle/model-cache")
 val voskAssetsDir = layout.buildDirectory.dir("generated/vosk/assets")
@@ -64,8 +71,50 @@ val fetchVoskModel by tasks.registering {
         if (!cached.exists()) {
             cached.parentFile.mkdirs()
             logger.lifecycle("Fetching $voskModelName (~41 MB)...")
-            uri(voskModelUrl).toURL().openStream().use { input ->
-                cached.outputStream().use { input.copyTo(it) }
+            // Timeouts, a temp file, and retries -- all three earned.
+            //
+            // `openStream()` has neither a connect nor a read timeout, so a
+            // stalled TCP connection to the model host blocks the build until
+            // GitHub kills the job six hours later. That is not hypothetical:
+            // a release build sat on this step for forty minutes against a
+            // ninety-second norm, with the job log frozen and nothing to say
+            // why.
+            //
+            // The temp file is the other half. Downloading straight into the
+            // cache leaves a truncated file behind on any failure, and the
+            // `if (!cached.exists())` above then *skips* the download on every
+            // later run and fails the checksum instead -- so one network blip
+            // poisons the cache until somebody reads the message closely enough
+            // to delete the file by hand.
+            val partial = File(cached.parentFile, "${cached.name}.part")
+            var lastFailure: Exception? = null
+            for (attempt in 1..MODEL_FETCH_ATTEMPTS) {
+                try {
+                    val connection = uri(voskModelUrl).toURL().openConnection().apply {
+                        connectTimeout = MODEL_CONNECT_TIMEOUT_MILLIS
+                        readTimeout = MODEL_READ_TIMEOUT_MILLIS
+                    }
+                    connection.getInputStream().use { input ->
+                        partial.outputStream().use { input.copyTo(it) }
+                    }
+                    partial.renameTo(cached)
+                    lastFailure = null
+                    break
+                } catch (e: Exception) {
+                    lastFailure = e
+                    partial.delete()
+                    logger.lifecycle(
+                        "Attempt $attempt of $MODEL_FETCH_ATTEMPTS failed: ${e.message}",
+                    )
+                }
+            }
+            lastFailure?.let {
+                throw GradleException(
+                    "could not fetch the speech model from $voskModelUrl after " +
+                        "$MODEL_FETCH_ATTEMPTS attempts: ${it.message}. Build with " +
+                        "-Pheadway.model=none to produce a slim APK without it.",
+                    it,
+                )
             }
         }
         val digest = MessageDigest.getInstance("SHA-256").digest(cached.readBytes())
