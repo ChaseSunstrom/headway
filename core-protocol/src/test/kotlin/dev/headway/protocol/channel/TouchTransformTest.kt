@@ -385,6 +385,89 @@ class TouchTransformTest {
  * The pane case: an app's picture is a rectangle inside the car frame that the
  * driver's layout chose, not the whole screen. See ADR 0010.
  */
+/**
+ * The offset a single-app capture needs, which is the difference between where
+ * the frames start and where a gesture lands.
+ *
+ * App screen sharing gives one app's window, so capture pixel (0, 0) is the
+ * window's corner rather than the screen's. `dispatchGesture` is absolute on the
+ * display. Without the origin every touch is high by a status bar -- the failure
+ * that reads as "I cannot do anything on the pane" -- and nothing logs an error,
+ * because nothing is in error: two correct coordinate spaces, silently mixed.
+ */
+class TouchTransformCaptureOriginTest {
+
+    /** A 1080x2136 app window on a 1080x2400 phone: 132 px of status bar, 132 of gesture bar. */
+    private val windowWidth = 1080
+    private val windowHeight = 2136
+    private val statusBar = 132.0
+
+    /** The pane the window is drawn into, on an 800x480 car screen. */
+    private val pane = CarRect(left = 300.0, top = 48.0, width = 218.0, height = 431.0)
+
+    private fun transform(originY: Double) = TouchTransform(
+        carWidth = 800,
+        carHeight = 480,
+        phoneWidth = windowWidth,
+        phoneHeight = windowHeight,
+        explicitContent = pane,
+        phoneOriginY = originY,
+    )
+
+    @Test
+    fun `without an origin the top of the pane maps to the top of the screen`() {
+        // Which is the bug: the top of the *window* is 132 px lower than that.
+        val mapped = transform(0.0).toPhone(pane.left, pane.top)!!
+        assertEquals(0.0, mapped.y, 0.5)
+    }
+
+    @Test
+    fun `with an origin the top of the pane maps to the top of the window`() {
+        val mapped = transform(statusBar).toPhone(pane.left, pane.top)!!
+        assertEquals(statusBar, mapped.y, 0.5)
+    }
+
+    @Test
+    fun `the whole range is shifted, not just the edge`() {
+        val shifted = transform(statusBar)
+        val plain = transform(0.0)
+        listOf(pane.top, pane.top + 100.0, pane.top + pane.height / 2, pane.bottom).forEach { y ->
+            val a = plain.toPhone(pane.left + 10.0, y)!!
+            val b = shifted.toPhone(pane.left + 10.0, y)!!
+            assertEquals(statusBar, b.y - a.y, 0.001)
+            // Horizontally untouched: the window is full width.
+            assertEquals(a.x, b.x, 0.001)
+        }
+    }
+
+    @Test
+    fun `the bottom of the pane still lands inside the window`() {
+        val mapped = transform(statusBar).toPhone(pane.left, pane.bottom)!!
+        // The last row of the window, in screen coordinates.
+        assertEquals(statusBar + windowHeight, mapped.y, 1.0)
+        // And that is inside the 2400-pixel screen, not past its end -- the
+        // arithmetic that would put it there is what a wrong origin looks like.
+        assertTrue(mapped.y < 2400.0, "mapped past the bottom of the screen: ${mapped.y}")
+    }
+
+    @Test
+    fun `a touch outside the pane is still nobody's`() {
+        // The origin shifts what is behind the pane; it must not widen the pane.
+        assertNull(transform(statusBar).toPhone(100.0, 200.0))
+        assertNull(transform(statusBar).toPhone(400.0, 10.0))
+    }
+
+    @Test
+    fun `no origin is the same transform as before`() {
+        val without = TouchTransform(800, 480, 1080, 2400, explicitContent = pane)
+        val zeroed = TouchTransform(800, 480, 1080, 2400, explicitContent = pane, phoneOriginX = 0.0)
+        val point = zeroed.toPhone(pane.left + 50.0, pane.top + 50.0)!!
+        val same = without.toPhone(pane.left + 50.0, pane.top + 50.0)!!
+        assertEquals(same.x, point.x, 0.001)
+        assertEquals(same.y, point.y, 0.001)
+    }
+}
+
 class TouchTransformPaneTest {
 
     /** An 800x480 car panel; the app pane occupies the right two-thirds. */

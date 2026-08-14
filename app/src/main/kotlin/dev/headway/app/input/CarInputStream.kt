@@ -508,11 +508,21 @@ class CarInputStream(
     private fun activeTransform(): TouchTransform {
         val rect = AppPaneHost.pictureRect
         if (rect.width <= 0 || rect.height <= 0) return transform
-        val cached = paneTransform
-        if (cached != null && paneRect == rect) return cached
         val sourceWidth = AppPaneHost.sourceWidth
         val sourceHeight = AppPaneHost.sourceHeight
         if (sourceWidth <= 0 || sourceHeight <= 0) return transform
+        // The source is part of the key, not just the pane: a shared app that
+        // rotates or is replaced changes the capture's size and its origin while
+        // the pane it draws into stays exactly where it was, and a transform
+        // memoised on the pane alone would go on mapping into the old geometry.
+        val source = SourceGeometry(
+            sourceWidth,
+            sourceHeight,
+            AppPaneHost.sourceOriginX,
+            AppPaneHost.sourceOriginY,
+        )
+        val cached = paneTransform
+        if (cached != null && paneRect == rect && paneSource == source) return cached
         val built = runCatching {
             TouchTransform(
                 carWidth = transform.carWidth,
@@ -525,17 +535,38 @@ class CarInputStream(
                     width = rect.width.toDouble(),
                     height = rect.height.toDouble(),
                 ),
+                // Non-zero when the driver shared one app rather than the whole
+                // display: the capture then starts at the app window's corner,
+                // and a gesture is dispatched in screen coordinates. See
+                // `AppPaneHost.sourceOriginX`.
+                phoneOriginX = AppPaneHost.sourceOriginX.toDouble(),
+                phoneOriginY = AppPaneHost.sourceOriginY.toDouble(),
             )
         }.getOrNull() ?: return transform
         paneRect = rect
+        paneSource = source
         paneTransform = built
-        onStep("input: touches inside the app pane map $rect -> ${sourceWidth}x$sourceHeight")
+        onStep(
+            "input: touches inside the app pane map $rect -> ${sourceWidth}x$sourceHeight " +
+                "at ${AppPaneHost.sourceOriginX},${AppPaneHost.sourceOriginY}",
+        )
         return built
     }
 
     /** The rectangle [paneTransform] was built for. */
     private var paneRect: PaneRect? = null
+
+    /** The capture geometry [paneTransform] was built for. */
+    private var paneSource: SourceGeometry? = null
     private var paneTransform: TouchTransform? = null
+
+    /** The half of the mapping that comes from the capture rather than the pane. */
+    private data class SourceGeometry(
+        val width: Int,
+        val height: Int,
+        val originX: Int,
+        val originY: Int,
+    )
 
     private fun submit(gesture: CarGesture) {
         // Re-read every time: an unbind between two touches is normal (the user

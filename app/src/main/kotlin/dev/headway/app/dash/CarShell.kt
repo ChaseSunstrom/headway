@@ -34,6 +34,7 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import dev.headway.app.carapp.TemplateApps
 import dev.headway.app.dash.tiles.AppPaneTile
 import dev.headway.app.dash.tiles.CarAppTile
 import dev.headway.app.dash.tiles.ClockTile
@@ -525,7 +526,14 @@ class CarShell(
         when (PaneKind.canonical(leaf.kind)) {
             PaneKind.NOW_PLAYING -> NowPlayingTile(context)
             PaneKind.BROWSE -> MediaBrowseTile(context, onStep)
-            PaneKind.MAPS -> MapsTile(context, onStep)
+            // A real map when one of the driver's allowed apps offers a car
+            // interface -- the app draws its own map into the pane's surface and
+            // Headway draws its templates over it -- and the turn card when none
+            // does. Both are the Maps pane; which one a phone gets depends on
+            // what is installed and allowed, not on what the driver picked.
+            PaneKind.MAPS -> TemplateApps.navigators(context).firstOrNull()
+                ?.let { CarAppTile(context, leaf.argument ?: it.service.flattenToString(), onStep) }
+                ?: MapsTile(context, onStep)
             PaneKind.PHONE -> PhoneTile(context, onStep)
             PaneKind.CAR_APP -> CarAppTile(context, leaf.argument, onStep)
             PaneKind.MESSAGES -> MessagesTile(context)

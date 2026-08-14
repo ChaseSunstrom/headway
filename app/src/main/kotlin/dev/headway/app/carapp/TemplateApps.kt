@@ -105,6 +105,26 @@ object TemplateApps {
      * `MATCH_ALL` is deliberately not passed: a disabled component should not be
      * offered, and the default match already excludes it.
      */
+    /**
+     * The car apps that say they are navigators, best first.
+     *
+     * This is what makes a Maps pane an actual map. A navigation car app is
+     * handed a `Surface` through `SurfaceContainer` and draws its own map into
+     * it -- see `CarAppSession` -- so the pane holds the app's rendering rather
+     * than a picture of it, at the car's size, with no capture involved and
+     * nothing on the phone's screen. That is how Android Auto does maps too.
+     *
+     * Order is the order [installed] returns, which is by label, so a phone with
+     * one navigator gets that one and a phone with several gets a stable choice
+     * the driver can override in the pane's own picker.
+     *
+     * Empty is the ordinary case on a phone whose map app has no car interface,
+     * and `MapsTile` -- the turn card and a way into the app -- is what that
+     * phone gets instead.
+     */
+    fun navigators(context: Context): List<TemplateApp> =
+        installed(context).filter { CarAppService.CATEGORY_NAVIGATION_APP in it.categories }
+
     fun installed(context: Context): List<TemplateApp> {
         val packages = context.packageManager
         // The same gate as the app picker and the widget picker: an app reaches

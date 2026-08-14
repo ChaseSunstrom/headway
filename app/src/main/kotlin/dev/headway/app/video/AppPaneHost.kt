@@ -25,6 +25,8 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Display
 import android.view.Surface
+import android.view.WindowInsets
+import android.view.WindowManager
 import dev.headway.app.log.SessionLog
 import dev.headway.dash.PaneRect
 import java.util.concurrent.CopyOnWriteArrayList
@@ -117,6 +119,45 @@ object AppPaneHost {
      */
     @Volatile
     var sourceMeasured: Boolean = false
+        private set
+
+    /**
+     * Where the captured region's top-left corner sits on the phone's screen.
+     *
+     * ## Why a capture is not always at (0, 0)
+     *
+     * App screen sharing. The frames hold one app's window and nothing else --
+     * Android excludes "the status bar, navigation bar, notifications, and other
+     * system UI elements" -- so capture pixel (0, 0) is the *window's* corner,
+     * one status bar down from the top of the screen.
+     *
+     * Touches go the other way. A `GestureDescription` path is absolute on the
+     * display, so mapping a car touch into window space and dispatching it as
+     * though it were screen space puts every finger high by that same status
+     * bar. On a Pixel that is about 48 dp: enough to hit the row above the one
+     * the driver aimed at, every time, with nothing in any log to say why. It is
+     * most of what "I cannot do anything on it" is.
+     *
+     * ## Where the number comes from
+     *
+     * The system-bar insets of display 0, and the measured capture size. If the
+     * capture is shorter than the display by at least the status bar, the window
+     * starts below the status bar and this is that height; if it is the full
+     * height -- a whole-display capture, or an edge-to-edge app -- it is zero.
+     * Horizontally the window is centred, which for every phone layout means
+     * zero, and the halved difference covers the ones where it does not.
+     *
+     * Insets rather than the accessibility service on purpose. The service
+     * declares `canRetrieveWindowContent="false"`, which is a promise on the
+     * grant screen that Headway injects and never observes, and knowing where a
+     * window is would mean breaking it. This costs nothing and reads nothing.
+     */
+    @Volatile
+    var sourceOriginX: Int = 0
+        private set
+
+    @Volatile
+    var sourceOriginY: Int = 0
         private set
 
     /** True when there is a grant to render with at all. */
@@ -214,13 +255,19 @@ object AppPaneHost {
                      */
                     override fun onCapturedContentResize(width: Int, height: Int) {
                         if (width <= 0 || height <= 0) return
+                        val origin = captureOrigin(context, width, height)
                         synchronized(lock) {
                             if (sourceWidth == width && sourceHeight == height) return
                             sourceWidth = width
                             sourceHeight = height
                             sourceMeasured = true
+                            sourceOriginX = origin.first
+                            sourceOriginY = origin.second
                         }
-                        onStep("app pane: the shared content is ${width}x$height")
+                        onStep(
+                            "app pane: the shared content is ${width}x$height at " +
+                                "${origin.first},${origin.second} on the phone",
+                        )
                         announce("the captured content resized")
                     }
 
@@ -396,6 +443,8 @@ object AppPaneHost {
             sourceWidth = 0
             sourceHeight = 0
             sourceMeasured = false
+            sourceOriginX = 0
+            sourceOriginY = 0
             contentVisible = true
             pictureRect = PaneRect(0, 0, 0, 0)
             onStep = {}
@@ -471,6 +520,36 @@ object AppPaneHost {
         val mode = display?.mode
         return (mode?.physicalWidth?.takeIf { it > 0 } ?: 1080) to
             (mode?.physicalHeight?.takeIf { it > 0 } ?: 1920)
+    }
+
+    /**
+     * Where a capture of [width]x[height] starts on the phone's screen.
+     *
+     * See [sourceOriginX] for why this is needed at all. Deliberately forgiving:
+     * every failure path returns (0, 0), which is exactly right for a
+     * whole-display capture and no worse than the behaviour this replaced for
+     * anything else.
+     */
+    private fun captureOrigin(context: Context, width: Int, height: Int): Pair<Int, Int> {
+        // A simulated display is captured whole, so its capture starts at its
+        // own origin and there are no system bars in the way.
+        if (CarAppDisplay.active != null) return 0 to 0
+        val display = sourceGeometry(context)
+        val displayWidth = display.first
+        val displayHeight = display.second
+        if (displayWidth <= 0 || displayHeight <= 0) return 0 to 0
+        val insets = runCatching {
+            val windows = context.getSystemService(WindowManager::class.java)
+            windows?.currentWindowMetrics?.windowInsets
+                ?.getInsets(WindowInsets.Type.systemBars())
+        }.getOrNull()
+        val statusBar = insets?.top ?: 0
+        val left = ((displayWidth - width) / 2).coerceAtLeast(0)
+        // Only when the capture is genuinely short of the display by at least a
+        // status bar. An edge-to-edge app fills the height and starts at the top,
+        // and giving that one an offset would break what currently works.
+        val top = if (statusBar > 0 && displayHeight - height >= statusBar) statusBar else 0
+        return left to top
     }
 
     private const val DISPLAY_NAME = "headway-app-pane"

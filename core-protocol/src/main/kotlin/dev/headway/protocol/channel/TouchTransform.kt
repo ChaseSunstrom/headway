@@ -129,6 +129,36 @@ class TouchTransform(
      * and unaffected.
      */
     explicitContent: CarRect? = null,
+    /**
+     * Where the captured region's top-left corner sits on the phone's own
+     * screen, in phone pixels.
+     *
+     * ## Why a capture is not always at the origin
+     *
+     * App screen sharing. When the driver shares *one app* rather than the whole
+     * display -- which is what an app pane wants, and what
+     * `ProjectionRequestActivity` steers them to -- the frames contain that app's
+     * window and nothing else: no status bar, no navigation bar, no
+     * notifications. So [phoneWidth]x[phoneHeight] is the *window's* size, and
+     * pixel (0, 0) of the capture is the window's top-left corner, which sits
+     * below the status bar rather than at the top of the screen.
+     *
+     * A gesture, though, is dispatched in **screen** coordinates:
+     * `GestureDescription` paths are absolute on the display. Mapping into
+     * window space and dispatching as though it were screen space puts every
+     * touch high by the height of the status bar and left by whatever inset the
+     * window has -- enough, on a modern phone, to miss a list row entirely and
+     * to make the pane read as "I cannot do anything on it".
+     *
+     * So the window's on-screen origin is added back after the map. It is read
+     * from the accessibility service, which is the only unprivileged thing that
+     * knows where another app's window is: `AccessibilityWindowInfo` reports
+     * bounds in screen coordinates.
+     *
+     * Zero for a whole-display capture, where the two spaces are the same.
+     */
+    val phoneOriginX: Double = 0.0,
+    val phoneOriginY: Double = 0.0,
 ) {
     init {
         require(carWidth > 0 && carHeight > 0) { "car size must be positive: ${carWidth}x$carHeight" }
@@ -190,8 +220,8 @@ class TouchTransform(
         // is the rounding fix described above and not the edge-clamping that the
         // class doc rules out.
         return PhonePoint(
-            x.coerceIn(0.0, phoneWidth.toDouble()),
-            y.coerceIn(0.0, phoneHeight.toDouble()),
+            x.coerceIn(0.0, phoneWidth.toDouble()) + phoneOriginX,
+            y.coerceIn(0.0, phoneHeight.toDouble()) + phoneOriginY,
         )
     }
 
@@ -266,14 +296,15 @@ class TouchTransform(
      * where the exact pixel does not matter but the event must be delivered.
      */
     private fun clampToPhone(carX: Int, carY: Int): PhonePoint = PhonePoint(
-        ((carX - contentRect.left) / scale).coerceIn(0.0, phoneWidth.toDouble()),
-        ((carY - contentRect.top) / scale).coerceIn(0.0, phoneHeight.toDouble()),
+        ((carX - contentRect.left) / scale).coerceIn(0.0, phoneWidth.toDouble()) + phoneOriginX,
+        ((carY - contentRect.top) / scale).coerceIn(0.0, phoneHeight.toDouble()) + phoneOriginY,
     )
 
     override fun toString(): String =
         "TouchTransform(car=${carWidth}x$carHeight phone=${phoneWidth}x$phoneHeight " +
-            "scale=%.4f content=%.1f,%.1f %.1fx%.1f)".format(
+            "scale=%.4f content=%.1f,%.1f %.1fx%.1f origin=%.1f,%.1f)".format(
                 scale, contentRect.left, contentRect.top, contentRect.width, contentRect.height,
+                phoneOriginX, phoneOriginY,
             )
 
     private companion object {
