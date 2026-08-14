@@ -1249,6 +1249,7 @@ open class HeadwayService : Service() {
                     densityDpi = video.negotiated?.densityDpi ?: 160,
                     onStep = ::step,
                 )
+                if (projection == null) offerScreenSharing()
             } else {
                 step(
                     "no car display, so the car is being sent a raw capture of the phone " +
@@ -1504,6 +1505,40 @@ open class HeadwayService : Service() {
                 onStep = ::step,
             )
         }.onSuccess { step("app panes can now show a running app") }
+    }
+
+    /**
+     * Offers the one tap that turns app panes on, from the notification shade.
+     *
+     * A session that came up on its own has no screen-capture grant, because
+     * consent needs an activity and nothing started one. The car screen says so
+     * in the app pane, but the driver is holding a locked phone and the fix is
+     * on it — so it is offered where their thumb already is.
+     *
+     * Deliberately not high priority and deliberately not repeated: the car
+     * works without it, and a driver who does not use app panes should not be
+     * asked twice.
+     */
+    private fun offerScreenSharing() {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        val tap = android.app.PendingIntent.getActivity(
+            this,
+            PROJECTION_REQUEST_CODE,
+            Intent(this, dev.headway.app.video.ProjectionRequestActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            android.app.PendingIntent.FLAG_IMMUTABLE or
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle("Show apps on the car screen")
+            .setContentText("Tap to allow screen sharing")
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(tap)
+            .build()
+        runCatching { manager.notify(PROJECTION_NOTIFICATION_ID, notification) }
+        step("no screen-sharing grant this session; offered it in the notification shade")
     }
 
     private fun startForegroundNow() {
@@ -1932,6 +1967,15 @@ open class HeadwayService : Service() {
 
         const val CHANNEL_ID: String = "headway.link"
         const val NOTIFICATION_ID: Int = 1
+
+        /**
+         * The "allow screen sharing" offer. Distinct from the service's own
+         * notification and from the presence receiver's, so none of the three
+         * ever replaces another -- a driver watching one vanish would read it as
+         * having worked.
+         */
+        const val PROJECTION_NOTIFICATION_ID: Int = 3
+        private const val PROJECTION_REQUEST_CODE: Int = 3
 
         private val mutableLinkState = MutableStateFlow<LinkState>(LinkState.Idle)
 
