@@ -150,12 +150,6 @@ jobs:
       # aosp_atd carries zero Google Play Services, which matches the project's
       # no-GMS constraint rather than merely tolerating it.
       - name: Instrumented tests
-        # The emulator is x86_64 and the published APK is arm64-only, so the
-        # test APK has to carry both — otherwise libvosk is absent and any test
-        # that touches the recognizer dies on UnsatisfiedLinkError. The model
-        # itself is skipped here; nothing instrumented needs 41 MB of it.
-        env:
-          GRADLE_OPTS: -Dorg.gradle.project.headway.abis=arm64-v8a,x86_64 -Dorg.gradle.project.headway.model=none
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -163,7 +157,21 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          script: ./gradlew connectedDebugAndroidTest
+          # Two properties, both load-bearing.
+          #
+          # headway.abis: published APKs are arm64-only, because Vosk's
+          # libvosk.so is ~9 MB per ABI and minSdk 33 stores it uncompressed.
+          # This emulator is x86_64, and an APK with no matching ABI is rejected
+          # outright — "Found 1 connected device(s), 0 of which were compatible"
+          # — before a single test runs. The library modules pass on the same
+          # emulator because they carry no native code; only :app does.
+          #
+          # headway.model: nothing instrumented needs the speech model, and
+          # skipping it saves a 41 MB download on every run.
+          script: >-
+            ./gradlew connectedDebugAndroidTest
+            -Pheadway.abis=arm64-v8a,x86_64
+            -Pheadway.model=none
 
       - uses: actions/upload-artifact@v4
         if: always()

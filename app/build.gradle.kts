@@ -183,6 +183,17 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // JNA arrives with vosk-android and carries its dispatcher for every
+        // platform it has ever supported — AIX on PowerPC, macOS, both Windows
+        // architectures. On Android the dispatcher comes from the AAR's own
+        // jniLibs, so these are 1.7 MB that can never be loaded. The Android
+        // and Linux entries are deliberately not excluded.
+        resources.excludes += "com/sun/jna/aix-*/**"
+        resources.excludes += "com/sun/jna/darwin*/**"
+        resources.excludes += "com/sun/jna/win32-*/**"
+        resources.excludes += "com/sun/jna/freebsd-*/**"
+        resources.excludes += "com/sun/jna/openbsd-*/**"
+        resources.excludes += "com/sun/jna/sunos-*/**"
     }
 
     // Reproducible release builds are a Definition-of-Done item. Deterministic
@@ -196,8 +207,14 @@ android {
         noCompress += listOf("wav", "zip")
     }
 
-    sourceSets.named("main") {
-        assets.srcDir(voskAssetsDir)
+    // Registered only when bundling. Skipping the fetch task alone is not
+    // enough — the generated directory survives in build/, so a slim build
+    // straight after a bundled one would package the leftover model and be
+    // 41 MB heavier than it claims.
+    if (bundleVoskModel) {
+        sourceSets.named("main") {
+            assets.srcDir(voskAssetsDir)
+        }
     }
 }
 
