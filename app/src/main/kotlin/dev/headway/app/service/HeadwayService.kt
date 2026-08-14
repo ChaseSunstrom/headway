@@ -1316,6 +1316,21 @@ open class HeadwayService : Service() {
         if (!HeadwaySettings.of(this).getBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, false)) {
             return
         }
+        // Not while apps are rendering from the phone's own screen. The blackout
+        // is a window *on display 0*, so a capture of display 0 captures the
+        // blackout -- the app pane would show a perfectly black rectangle and
+        // every diagnostic would say the picture was arriving. Two settings that
+        // cannot both be honoured, and this is the one whose purpose (hide the
+        // simulated display's preview) does not apply when there is no simulated
+        // display.
+        if (!CarAppDisplay.native) {
+            step(
+                "\"blank the phone screen\" is on, but apps are rendering from the phone's own " +
+                    "screen this session -- covering it would black out the app pane, so it is " +
+                    "left alone",
+            )
+            return
+        }
         val service = HeadwayAccessibilityService.instance.value
         if (service == null) {
             step(
