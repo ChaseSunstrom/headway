@@ -400,12 +400,12 @@ class DashLayoutStoreTest {
     fun `delete clears the active pointer and save appends an unknown name`() {
         val store = DashLayoutStore(FakeStorage())
         store.replaceAll(DashLayoutStore.DEFAULT_TABS)
-        store.setActive("Maps")
-        assertEquals("Maps", store.active().name)
+        store.setActive("Drive")
+        assertEquals("Drive", store.active().name)
 
-        store.delete("Maps")
+        store.delete("Drive")
         assertNotEquals(
-            "Maps",
+            "Drive",
             store.active().name,
             "delete must drop the pointer it invalidated",
         )
@@ -425,7 +425,7 @@ class DashLayoutStoreTest {
     fun `replaceAll can rename in place without moving the tab`() {
         val store = DashLayoutStore(FakeStorage())
         store.replaceAll(DashLayoutStore.DEFAULT_TABS)
-        store.setActive("Maps")
+        store.setActive("Drive")
 
         val updated = DashLayoutStore.DEFAULT_TABS.toMutableList()
         updated[0] = DashLayout("Navigation", updated[0].root)
@@ -451,12 +451,12 @@ class DashLayoutStoreTest {
         store.replaceAll(DashLayoutStore.DEFAULT_TABS)
         val before = store.list().size
 
-        store.save(DashLayout("Maps", DashNode.Leaf(PaneKind.PHONE)))
+        store.save(DashLayout("Drive", DashNode.Leaf(PaneKind.PHONE)))
 
         assertEquals(before, store.list().size, "save is keyed on the name")
         assertEquals(
             DashNode.Leaf(PaneKind.PHONE),
-            store.list().first { it.name == "Maps" }.root,
+            store.list().first { it.name == "Drive" }.root,
             "the existing Maps layout should have been overwritten in place",
         )
     }
