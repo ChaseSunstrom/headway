@@ -144,7 +144,14 @@ class ChannelDemultiplexer(
             throw (cause as? EOFException)
                 ?: EOFException(
                     "channel ${ChannelId.describe(channelId)} closed: " +
-                        (cause?.message ?: "link ended")
+                        // "link ended" was a lie in the one case it mattered.
+                        // A genuine hang-up arrives here as the peer's own
+                        // EOFException ("peer closed after N of M bytes") and
+                        // takes the branch above; reaching this fallback with no
+                        // cause means *Headway* closed the channels, and the old
+                        // wording made its own teardown read as the head unit
+                        // dropping the link. A drive was spent on that.
+                        (cause?.message ?: "closed by Headway, not by the head unit")
                 )
         }
     }

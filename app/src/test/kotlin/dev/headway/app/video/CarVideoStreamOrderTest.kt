@@ -43,18 +43,22 @@ import org.junit.jupiter.api.Test
  *
  * ## The drive this comes from
  *
- * A 2021 Chevrolet Infotainment 3 unit closed the TCP connection **464 ms**
- * after Headway sent `Start`, twice in one drive, having received no video
- * frame. The order was: negotiate the configuration, send `Start`, and only then
- * build the picture source — which for the car-display route goes through
- * `Dialog.show`, which must run on the main thread, which `CarSurface` waits up
- * to three seconds for. The head unit was told video was beginning and then
- * heard nothing while the session thread sat on a `CountDownLatch`.
+ * On 2026-08-14 a session came fully up against a 2021 Chevrolet Infotainment 3
+ * unit — TLS, authentication, all thirteen channels — and was gone 21 ms after
+ * `Start`, twice, with no video frame ever sent.
  *
- * So the rule this test exists to keep is narrow and absolute: **nothing may
- * send `Start` until a source of pixels exists.** Getting that wrong again costs
- * a drive to find out, which is the most expensive unit of debugging this
- * project has.
+ * The cause turned out to be one line elsewhere: `CarSurface.create` built a
+ * `Presentation` on a `Dispatchers.Default` thread, `Dialog`'s constructor made
+ * a `Handler` with no `Looper`, and the resulting exception escaped an unguarded
+ * `video?.start(this)` and tore the whole AAP session down. Both of those are
+ * fixed where they live.
+ *
+ * This test is about the thing that made the failure *look* like the head unit
+ * hanging up: `Start` had already gone out. The rule it keeps is narrow and
+ * absolute — **nothing may send `Start` until a source of pixels exists** — so
+ * that a subsystem that cannot start is reported as itself rather than as a car
+ * that dropped the link. Getting it wrong costs a drive to find out, which is
+ * the most expensive unit of debugging this project has.
  *
  * ## What is and is not covered
  *
@@ -100,8 +104,9 @@ class CarVideoStreamOrderTest {
         )
         assertFalse(
             sentWhenFactoryRan!!.contains(AvMessageId.START),
-            "Start was sent before the picture source existed — this is the 464 ms " +
-                "disconnect. sent=$sentWhenFactoryRan",
+            "Start was sent before the picture source existed, so a source that fails " +
+                "leaves the head unit waiting for video that was promised. " +
+                "sent=$sentWhenFactoryRan",
         )
         assertFalse(started, "no source, so the stream cannot have started")
     }

@@ -219,21 +219,26 @@ class CarVideoStream(
 
         // Build the picture source BEFORE telling the head unit to start.
         //
-        // This ordering is not a preference, it is the bug. A real 2021
-        // Chevrolet Infotainment 3 unit closed the TCP connection 464 ms after
-        // Start, twice in one drive, having received no frame — because
-        // creating the car surface goes through `Dialog.show`, which must run on
-        // the main thread, which `CarSurface.showOnMainThread` waits up to three
-        // seconds for. Start had already gone out. The unit was told "video is
-        // beginning", heard nothing, and hung up while the session thread was
-        // still parked on a `CountDownLatch`.
+        // Start is the last thing before pixels rather than the first thing
+        // after a promise: by the time it is sent, either a surface exists and
+        // is drawing, or the encoder is already capturing, or we have returned
+        // false without claiming a stream at all. The pump job is launched after
+        // Start so nothing is transmitted before the head unit has been told the
+        // session id it belongs to.
         //
-        // Doing it this way means Start is the last thing before pixels rather
-        // than the first thing after a promise: by the time it is sent, either a
-        // surface exists and is drawing, or the encoder is already capturing, or
-        // we have returned false without claiming a stream at all. The pump job
-        // is launched after Start so nothing is transmitted before the head unit
-        // has been told the session id it belongs to.
+        // A correction, because the first version of this comment stated the
+        // wrong cause as fact and a reader would have inherited it. On the
+        // 2026-08-14 drive the session died 21 ms after Start, and the reason
+        // was **not** that Start had been promised too early — it was that
+        // `CarSurface.create` threw immediately, from a `Presentation`
+        // constructed off the main thread, and the exception tore down the whole
+        // AAP session. Nor did the head unit hang up: "channel CONTROL closed"
+        // was Headway's own teardown message. That is fixed in `CarSurface` and
+        // in `HeadwayService.startSubsystem`.
+        //
+        // This ordering stays because it is right on its own terms — a head unit
+        // told to expect video should get video — and because it is what makes
+        // the "no source, so nothing was claimed" path honest.
         val source = openSource(encoderConfiguration, videoPump)
         if (source == null) {
             onStep(
@@ -306,7 +311,19 @@ class CarVideoStream(
         encoderConfiguration: EncoderConfiguration,
         videoPump: VideoPump,
     ): SourceKind? {
-        val native = surfaceFactory?.invoke(encoderConfiguration, videoPump)
+        // Both attempts are wrapped, and neither used to be. `CarSurface.create`
+        // threw from a `Presentation` constructed off the main thread and said
+        // nothing on the way out; `ScreenEncoder.startCapture` throws
+        // `ScreenEncoderException` for four separate reasons and narrates none
+        // of them. In both cases the exception left this function, left
+        // `start`, and ended the AAP session — so the loudest symptom of "no
+        // video" was "no car". Falling back, or returning null, is always
+        // better than that.
+        val native = runCatching { surfaceFactory?.invoke(encoderConfiguration, videoPump) }
+            .getOrElse {
+                onStep("the car display could not be built, so falling back to mirroring: $it")
+                null
+            }
         if (native != null) {
             surface = native
             mode = CarSurfaceMode.DASHBOARD
@@ -318,7 +335,13 @@ class CarVideoStream(
         encoder = screenEncoder
         // The order matters: the encoder must have a sink before it produces
         // anything, and startCapture begins producing immediately.
-        screenEncoder.startCapture(token, videoPump)
+        val capturing = runCatching { screenEncoder.startCapture(token, videoPump) }
+        if (capturing.isFailure) {
+            onStep("screen capture would not start: ${capturing.exceptionOrNull()}")
+            encoder = null
+            runCatching { screenEncoder.stop() }
+            return null
+        }
         mode = CarSurfaceMode.MIRROR
         return SourceKind.MIRROR
     }
@@ -435,7 +458,16 @@ class CarVideoStream(
         // "the car drew it": a session can acknowledge every frame and still
         // never leave its connecting screen, which is exactly what a real
         // Chevrolet did before Headway asked for focus.
-        val focus = channel.videoFocus?.name ?: "never reported by the head unit"
+        //
+        // Worded carefully, because the old phrasing — "never reported by the
+        // head unit" — was read as evidence the car had ignored a focus request
+        // when in fact nothing had read the video channel yet. The field is only
+        // ever populated by a read, and the first read happens when the pump
+        // waits for credit on the first frame. With zero frames sent it cannot
+        // be anything but null, so saying the head unit failed to answer is an
+        // accusation the log has no basis for.
+        val focus = channel.videoFocus?.name
+            ?: if (p.sentFrames == 0L) "not yet read (no frame has been sent)" else "no answer yet"
         return "video: ${p.sentFrames} frame(s) sent, ${p.droppedFrames} dropped, focus $focus"
     }
 

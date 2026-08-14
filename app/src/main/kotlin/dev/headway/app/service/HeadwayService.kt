@@ -1223,7 +1223,17 @@ open class HeadwayService : Service() {
 
             // Video is started first and inline; see the KDoc. The other three
             // return as soon as they have launched their own coroutines.
-            video?.start(this)
+            //
+            // Every one of them is wrapped, and that is not defensive
+            // boilerplate — it is the amplifier that turned a one-line bug into
+            // a dead link. On 2026-08-14 building the car surface threw
+            // (a `Presentation` constructed off the main thread; see
+            // `CarSurface`), the exception escaped this bare call, unwound
+            // straight past everything below to the `finally`, and took the
+            // session down 21 ms after it came up. Video is optional; the
+            // session is not. A subsystem that will not start must cost only
+            // itself, and must say so.
+            startSubsystem("video") { video?.start(this) }
             if (video?.surface != null) {
                 // The car has its own display and its own UI on it, so nothing
                 // is put on the phone: a dashboard mirrored there as well would
@@ -1239,12 +1249,22 @@ open class HeadwayService : Service() {
             // both needed and impossible to add, since adding a window is
             // main-thread work and that switch happens under the driver's
             // finger.
-            overlay.show(voiceButtonSizePx(video?.negotiated))
-            audio?.start(this)
-            input?.start(this)
-            voice?.start(this)
+            runCatching { overlay.show(voiceButtonSizePx(video?.negotiated)) }
+                .onFailure { step("the voice button could not be shown: $it") }
+            startSubsystem("audio") { audio?.start(this) }
+            startSubsystem("input") { input?.start(this) }
+            startSubsystem("voice") { voice?.start(this) }
 
             pump.join()
+        } catch (t: Throwable) {
+            // Kept so the teardown can name the real reason. Without it
+            // `closeAll()` closes every channel with a null cause, the
+            // demultiplexer synthesises "channel CONTROL closed: link ended",
+            // and that invented sentence is what the log and the reconnect
+            // banner report — indistinguishable from the head unit hanging up,
+            // which is exactly how the last drive was misread.
+            sessionFailure = t
+            throw t
         } finally {
             // Every describe() before every stop(): the counts are what a log
             // from a real drive is read for, and one of these throwing must not
@@ -1258,9 +1278,26 @@ open class HeadwayService : Service() {
             runCatching { audio?.stop() }
             runCatching { input?.stop() }
             runCatching { voice?.stop() }
-            demux.closeAll()
+            demux.closeAll(sessionFailure)
+            sessionFailure = null
         }
     }
+
+    /**
+     * Starts one optional subsystem, and lets it fail alone.
+     *
+     * Returns whether it started. The failure is narrated rather than thrown:
+     * the session is worth more than any one of these, and a driver whose
+     * microphone will not open should still have a car screen.
+     */
+    private inline fun startSubsystem(name: String, start: () -> Unit): Boolean =
+        runCatching { start() }.fold(
+            onSuccess = { true },
+            onFailure = { failure ->
+                step("$name did not start, and the session continues without it: $failure")
+                false
+            },
+        )
 
     /**
      * What a recognised voice command actually does.
@@ -1595,6 +1632,14 @@ open class HeadwayService : Service() {
     /** The quirks in force for the current session; see where it is set. */
     @Volatile
     private var sessionQuirks: HeadUnitQuirks = HeadUnitQuirks.DEFAULT
+
+    /**
+     * Why the current session is ending, when Headway is the one ending it.
+     *
+     * Read only by `runChannels`'s `finally`, to hand the real cause to
+     * `demux.closeAll` instead of letting it invent one.
+     */
+    private var sessionFailure: Throwable? = null
 
     /**
      * Channels logged as a byte count rather than as hex, for the same reason

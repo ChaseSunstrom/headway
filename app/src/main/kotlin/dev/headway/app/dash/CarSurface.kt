@@ -21,6 +21,7 @@ import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
+import java.util.concurrent.atomic.AtomicReference
 import android.os.SystemClock
 import android.view.MotionEvent
 import dev.headway.app.ui.theme.CarMetrics
@@ -226,6 +227,13 @@ class CarSurface private constructor(
                     width = metrics.widthPx,
                     height = metrics.heightPx,
                     densityDpi = metrics.densityDpi,
+                    // Without this the whole of CarDisplay's narration is
+                    // discarded -- creation, release, and the pause/resume
+                    // lifecycle -- and the export contains no line saying the car
+                    // display was ever made. That absence cost a drive: the
+                    // failure below looked like it happened a step earlier than
+                    // it did, because the step that succeeded said nothing.
+                    onStep = onStep,
                 )
             }.getOrElse {
                 onStep("car surface: the system refused a car display ($it)")
@@ -239,9 +247,8 @@ class CarSurface private constructor(
                 return null
             }
 
-            val presentation = DashboardPresentation(context, virtual.display, metrics, onStep)
-            val shown = showOnMainThread(presentation, onStep)
-            if (!shown) {
+            val presentation = buildAndShowOnMainThread(context, virtual.display, metrics, onStep)
+            if (presentation == null) {
                 runCatching { display.release() }
                 return null
             }
@@ -260,30 +267,54 @@ class CarSurface private constructor(
         }
 
         /**
-         * Shows the window and waits for it, because the caller needs to know.
+         * Builds the window **and** shows it, both on the main thread.
          *
-         * `Dialog.show` must run on the main thread and the session is not on it.
-         * Blocking briefly here is the honest option: the alternative is
-         * returning a `CarSurface` whose window may or may not exist, and every
-         * later call having to cope with both.
+         * ## Why construction has to be here too
+         *
+         * This is the bug that cost the 2026-08-14 drive, and it is entirely
+         * invisible in a diff: the construction used to sit one line above the
+         * call to this function, on the caller's thread.
+         *
+         * `Presentation` extends `Dialog`, and `Dialog`'s constructor builds a
+         * `Handler` for its listeners. A `Handler` created on a thread with no
+         * `Looper` throws `RuntimeException: Can't create handler inside thread
+         * … that has not called Looper.prepare()` — from the *constructor*, not
+         * from `show()`. `HeadwayService`'s scope is
+         * `Dispatchers.Default`, a pool thread with no looper, so
+         * `DashboardPresentation(...)` threw before `show` was ever reached.
+         *
+         * What made it expensive to find is that it threw *silently*. Nothing
+         * caught it, so no "car surface:" line was written; the last thing in
+         * the log was the step before, and the exception went on to tear the
+         * whole AAP session down 21 ms later. From the log it looked exactly
+         * like the head unit hanging up.
+         *
+         * So: nothing about the window is touched off the main thread, and the
+         * hop returns the object rather than a boolean about it.
+         *
+         * Blocking briefly is still the honest option — the alternative is
+         * returning a `CarSurface` whose window may or may not exist and making
+         * every later call cope with both.
          */
-        private fun showOnMainThread(
-            presentation: DashboardPresentation,
+        private fun buildAndShowOnMainThread(
+            context: Context,
+            display: android.view.Display,
+            metrics: CarMetrics,
             onStep: (String) -> Unit,
-        ): Boolean {
-            if (Looper.myLooper() == Looper.getMainLooper()) {
-                return runCatching { presentation.show(); true }.getOrElse {
-                    onStep("car surface: the dashboard window was refused ($it)")
-                    false
-                }
+        ): DashboardPresentation? {
+            fun build(): DashboardPresentation? = runCatching {
+                DashboardPresentation(context, display, metrics, onStep).also { it.show() }
+            }.getOrElse {
+                onStep("car surface: the dashboard window was refused ($it)")
+                null
             }
+
+            if (Looper.myLooper() == Looper.getMainLooper()) return build()
+
             val done = java.util.concurrent.CountDownLatch(1)
-            var ok = false
+            val built = AtomicReference<DashboardPresentation?>(null)
             Handler(Looper.getMainLooper()).post {
-                ok = runCatching { presentation.show(); true }.getOrElse {
-                    onStep("car surface: the dashboard window was refused ($it)")
-                    false
-                }
+                built.set(build())
                 done.countDown()
             }
             // Bounded: a main thread this busy has worse problems, and hanging
@@ -291,9 +322,9 @@ class CarSurface private constructor(
             // deadline.
             if (!done.await(SHOW_TIMEOUT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
                 onStep("car surface: the dashboard window did not appear within $SHOW_TIMEOUT_MILLIS ms")
-                return false
+                return null
             }
-            return ok
+            return built.get()
         }
 
         /** Shown in `dumpsys display`, so make it recognisable. */
