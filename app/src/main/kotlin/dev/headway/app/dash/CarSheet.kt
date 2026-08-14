@@ -113,7 +113,7 @@ class CarSheet(
         val scroller = ScrollView(context).apply {
             isFillViewport = true
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
-            addView(body, ScrollView.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(body, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
         panel.addView(scroller)
         scrim.addView(panel)

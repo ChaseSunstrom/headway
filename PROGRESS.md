@@ -28,57 +28,54 @@ audio, input and voice from a live session, and a real 2021 Malibu displayed the
 result on 2026-08-13. What remains unverified on hardware is listed under
 "What is not verified" below, phase by phase.
 
-## What the car screen is, as of build 90
+## What the car screen is, as of this build
 
-Six tabs, switched from a bar across the top, each a saved layout of panes:
-**Maps · Media · Phone · Car apps · Messages · Apps**. Every one except the last
-draws a *model* another app already publishes, at the head unit's own resolution
-and density — nothing is captured and nothing is scaled.
+A **rail** across the top and a **tree of panels** under it.
 
-| Tab | Source of the content |
+The rail holds exactly three kinds of thing: a settings button, a microphone
+button, and whatever the driver pinned — their own layouts and their own apps,
+in their own order. The six hardcoded tabs are gone; a pinned layout *is* a tab,
+and a driver who only uses two of them now has two buttons rather than six.
+
+A layout is a binary split tree of any depth, so "any number of panels" is true
+without a limit anywhere. It is **editable on the car screen** — split a pane,
+drag a divider, choose what a pane shows, remove one — and **locked by default**,
+because the failure that matters is a layout rearranged by a thumb steadying
+itself on a dashboard at speed. Settings → *Edit this layout* unlocks; saving
+re-locks.
+
+| Pane kind | Source of the content |
 |---|---|
+| App | **a real third-party app, rendered into the pane** |
 | Maps | the ongoing notification every navigator publishes, or a car app's `Trip` |
-| Media | `MediaBrowserService` for the library, `MediaSessionManager` for now playing |
+| Now playing / Music | `MediaSessionManager`, and `MediaBrowserService` for the library |
 | Phone | the dialer's own call notification, and `CallLog.Calls` |
-| Car apps | `androidx.car.app` templates, drawn by Headway (ADR 0007) |
+| Car app | `androidx.car.app` templates, drawn by Headway (ADR 0007) |
 | Messages | `NotificationListenerService` + the app's own `RemoteInput` |
-| Apps | the pinned grid, and the door to full-screen app rendering |
+| Widget | the app's own `RemoteViews`, through `AppWidgetHost` |
+| All apps / Clock | Headway's own |
 
-**Car apps** is the one that answers "why can't we run apps like Android Auto
-does?". It is the same mechanism: the app exports a `CarAppService`, hands over
-templates, and the host draws every pixel. Headway is accepted as a host by
-declaring and holding `android.car.permission.TEMPLATE_RENDERER`, which is the
-fourth and last branch `HostValidator` accepts — the derivation and the two
-install-time risks are in ADR 0007 and B-012 to B-014.
+**The App pane is the change that answers "why doesn't opening an app work?".**
+It used to: tapping an app called `showOnCar(MIRROR)`, which stopped the car
+surface and released the display, so the panels ceased to exist for as long as
+the app was open. Now the session's one `MediaProjection` renders into a
+`SurfaceView` that lives *in a pane*, and the car display, the window and the
+tree survive the whole drive. `VirtualDisplay.setSurface` moves the picture
+between panes for nothing, which is what makes several app panes affordable
+given that a projection may own exactly one virtual display. ADR 0010 has the
+derivation and the four costs.
 
-For an app with no model at all — a map, a browser — ADR 0008 adds native
-rendering on a *simulated secondary display*, created by the driver in Developer
-options. It is trusted, so any app may be launched onto it; it is recordable, so
-Headway captures it instead of the phone; and the app lays itself out for
-720x480, which pillarboxes into the panel at 1:1 pixels using **720 of 800
-columns** against mirroring's 216. Costs: a 40-pixel bar each side, and the
-phone's screen has to stay on. Off by default, B-015 tracks the one thing no
-source read can settle.
+Everything else about the surface follows from that: there is no full-screen
+mode left (`CarSurfaceMode` is deleted), no floating mic-and-Home overlay (it
+existed only because opening an app was a one-way trip, and `SYSTEM_ALERT_WINDOW`
+went with it), and no activity of Headway's own on the phone when a session
+comes up — which is what lets the link come up automatically without taking the
+driver's screen.
 
-## What the car screen was, as of build 84
-
-Mirroring was the default until a real drive showed how badly it fits. The phone
-is 1080x2404 and the panel is 800x480, so the image occupied **216 of 800
-columns** and the other 73% was a black bar; every touch was scaled by 0.1997,
-and the driver's own notifications were on the dashboard.
-
-Headway now composes for the car instead. A `DisplayManager` virtual display is
-created at the resolution and density the head unit advertised, a `Presentation`
-draws the dashboard on it, and the encoder takes that display — so nothing is
-scaled, touch is 1:1 into Headway's own view tree, and the dashboard needs
-neither the accessibility grant nor screen-capture consent to work.
-
-Mirroring is kept as a **mode**: tapping an app in the grid hands the whole car
-screen to it, and the floating Home button brings the dashboard back. Switching
-renegotiates nothing with the head unit — same resolution, same session id, only
-the source of the pixels moves. ADR 0006 has the reasoning and the two
-implementation traps (one projection display per grant, and the codec-config
-reset on every switch).
+Themes are three bases (dark, true black, light) times six accents, one of which
+is *no* accent. Eighteen combinations, composed rather than hand-written, with
+`CarThemeTest` measuring WCAG contrast on all of them; it caught two real
+defects the first time it ran.
 
 ## What is genuinely verified
 

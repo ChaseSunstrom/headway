@@ -388,6 +388,14 @@ it.
 
 ## B-008 — Nothing unprivileged can create a split-screen, so panes must be drawn rather than hosted
 
+> **Amended 2026-08-14 by [ADR 0010](docs/adr/0010-the-car-screen-is-panels-and-one-of-them-is-a-real-app.md).**
+> The finding stands: no app's *window* can be placed in a pane. What has
+> changed is that one pane can now contain another app's *pixels*, by pointing
+> the session's single `MediaProjection` at that pane's `SurfaceView`. That is
+> still not hosting a window — Headway owns the geometry and the app never
+> learns it is in a pane — and it is why "panels don't work when I open an app"
+> is no longer true.
+
 **Status:** Closed by design change; recorded so the question is not re-opened.
 
 **Blocked:** Putting two *third-party* apps on the car screen side by side.
@@ -834,3 +842,41 @@ repacking the AAR. In the meantime the load failure should be logged with its
 own `UnsatisfiedLinkError` text instead of collapsing into the generic "no
 on-device speech model" message, so a 16 KB device is diagnosable from one
 exported log rather than mistaken for a missing model.
+
+---
+
+## B-018 — A background service may be refused permission to start an app on the car display
+
+**Status:** Open. Mitigated, and the mitigation is honest rather than complete.
+
+**Blocked:** Nothing, most of the time. This is the failure mode of one action —
+opening a third-party app into the app pane — in one situation: a session that
+came up on its own, with Headway holding no visible activity.
+
+**Why:** ADR 0010 removed the last activity Headway put on the phone when a
+session starts, because a link that comes up automatically must not take the
+driver's screen over. That is the right behaviour and it costs this: Android 10's
+background-activity-start restrictions gate `startActivity` from a service on the
+app having a visible window, a recent one, or one of a list of exemptions. With
+no activity at all, `ActivityOptions.setLaunchDisplayId` may be silently ignored
+— the call reports success either way, and there is no unprivileged API that
+reports otherwise.
+
+What is *not* affected: everything the panes draw themselves. Now playing, the
+map's next turn, messages, calls, a car app's templates and the whole rail keep
+working, because none of them starts an activity. Only "put this app's own
+pixels in the pane" needs one.
+
+**Workaround shipped:** the failure is visible rather than silent. The app pane
+says what it is waiting for, and the session log records the launch attempt and
+its display id, so a drive where nothing appeared in the pane is diagnosable from
+the export. A driver who opens Headway on the phone once during the drive
+restores the exemption for the rest of it.
+
+**How to close it:** measure it. The exemption list is long and several entries
+plausibly apply to a `CompanionDeviceManager`-associated app started from a
+Bluetooth broadcast; whether they do on a real GrapheneOS build is a
+device-and-version question that no amount of source reading settles. One drive
+with the log exported answers it. If the answer is "refused", the fallback is a
+notification the driver taps once per drive, which is worse than automatic and
+better than a pane that never fills.

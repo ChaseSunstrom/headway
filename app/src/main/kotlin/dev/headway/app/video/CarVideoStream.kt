@@ -345,10 +345,9 @@ class CarVideoStream(
         return SourceKind.FALLBACK_CAPTURE
     }
 
-    }
-
     /**
-     * Makes [show] reachable from a tile or a floating button.
+     * Publishes this stream, so anything that needs the negotiated geometry can
+     * find it.
      *
      * A static handle rather than an injected dependency because the callers are
      * views inside a `Presentation`, which is not constructed by anything that
