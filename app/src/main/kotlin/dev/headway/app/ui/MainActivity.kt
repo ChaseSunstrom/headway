@@ -129,6 +129,20 @@ object HeadwaySettings {
      */
     const val KEY_NATIVE_APP_DISPLAY: String = "native_app_display"
 
+    /**
+     * Cover the phone screen, and the simulated display's preview, while driving.
+     *
+     * Off by default. It is the only way to hide the preview window Developer
+     * options puts on the phone — Android has no setting for it and the window
+     * cannot be closed, because it *is* the simulated display's output surface.
+     * Covering needs a `TYPE_ACCESSIBILITY_OVERLAY`, which only the
+     * accessibility service can add, so this does nothing until that is granted.
+     *
+     * Default off because it covers the status bar too, and a black screen the
+     * driver did not ask for looks exactly like a phone that has crashed.
+     */
+    const val KEY_BLANK_PHONE_SCREEN: String = "blank_phone_screen"
+
     fun of(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -730,10 +744,41 @@ class MainActivity : AppCompatActivity() {
                     "Android and has no 800x480, so there is a 40-pixel black bar down " +
                     "each side. And your phone's screen has to stay on for the whole " +
                     "drive, because Android switches the simulated display off with it " +
-                    "— turn the brightness right down. A half-size preview window of " +
-                    "the car screen also sits on your phone the whole time; that is " +
-                    "Android's, not Headway's, and it cannot be hidden.",
+                    "— turn the brightness right down. A half-size preview window also " +
+                    "sits on your phone the whole time; Android offers no setting that " +
+                    "hides it, but the switch above covers it.",
             ),
+        )
+        card.addView(
+            SwitchCompat(this).apply {
+                text = "Blank the phone screen while driving"
+                setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
+                minHeight = dp(MIN_TOUCH_TARGET_DP)
+                isChecked = HeadwaySettings.of(this@MainActivity)
+                    .getBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, false)
+                setOnCheckedChangeListener { _, checked ->
+                    HeadwaySettings.of(this@MainActivity).edit()
+                        .putBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, checked)
+                        .apply()
+                    SessionLog.shared.info(
+                        TAG,
+                        "blank phone screen ${if (checked) "on" else "off"}",
+                    )
+                }
+                layoutParams = Phone.spaced(this@MainActivity, 12f)
+            },
+        )
+        card.addView(
+            Phone.note(
+                this,
+                "This is how you get rid of the preview window. Android has no setting " +
+                    "that hides it and it cannot be closed — it is not a preview, it is the " +
+                    "simulated display's actual output surface, and destroying it destroys " +
+                    "the display. What Headway can do is cover it, which needs the " +
+                    "accessibility service. Tap the black screen to bring the phone back. " +
+                    "The screen still has to stay on, and your notification shade still " +
+                    "shows that recording is happening.",
+            ).apply { layoutParams = Phone.spaced(this@MainActivity, 8f) },
         )
         card.addView(
             Phone.note(

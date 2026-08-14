@@ -23,6 +23,8 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import android.text.TextUtils
+import android.view.View
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import dev.headway.app.log.SessionLog
 import dev.headway.input.CarGestureDispatcher
@@ -149,8 +151,97 @@ class HeadwayAccessibilityService : AccessibilityService() {
 
     private fun teardown() {
         connected.compareAndSet(this, null)
+        hideBlackout()
         gestures?.close()
         gestures = null
+    }
+
+    // --- covering the simulated display's preview window ----------------------
+
+    /** The blackout view, or null when the phone screen is its normal self. */
+    private var blackout: View? = null
+
+    /**
+     * Covers the phone screen, including the Developer-options preview window.
+     *
+     * ## Why this needs the accessibility service
+     *
+     * The window that appears when "Simulate secondary displays" is on is not a
+     * preview of the car screen — it *is* the display's output surface. Its
+     * `TextureView`'s `SurfaceTexture` is what the platform hands to
+     * SurfaceFlinger as display 17's device surface, and destroying the window
+     * destroys the display with it. So it cannot be closed, and Android offers
+     * no setting that hides it: `OverlayDisplayAdapter.parseFlags` recognises
+     * `secure`, `own_content_only`, `should_show_system_decorations`,
+     * `fixed_content_mode`, `disable_window_interaction`, `unique_id=` and the
+     * display-type and gravity tokens, and not one of them affects visibility.
+     * It also cannot be shrunk away: `MIN_SCALE` is 0.3.
+     *
+     * What is left is covering it, and that turns entirely on z-order.
+     * `WindowManagerPolicy.getWindowLayerFromTypeLw` puts
+     * `TYPE_DISPLAY_OVERLAY` — the preview — at layer **29**.
+     * `TYPE_APPLICATION_OVERLAY`, the only type `SYSTEM_ALERT_WINDOW` buys an
+     * ordinary app, is layer **11**, so Headway's voice button can never cover
+     * it. `TYPE_ACCESSIBILITY_OVERLAY` is layer **31**, and
+     * `WindowManagerService.sanitizeWindowType` allows it only from a bound
+     * accessibility service. This service is one.
+     *
+     * ## What it deliberately does not do
+     *
+     * The screen stays *on*. The simulated display takes its power state
+     * verbatim from display 0 — `OverlayDisplayWindow` forwards it and
+     * `DisplayContent` puts a non-default display's activities to sleep when it
+     * is off — so letting the phone sleep would stop the car picture. This is a
+     * black view over a live screen, not a way to turn the screen off.
+     *
+     * It is also not a privacy-indicator bypass. The preview exists because the
+     * user turned on a developer setting; it says "a simulated display exists",
+     * not "you are being recorded". Recording is signalled by the projection's
+     * own notification and the status-bar chip, and Headway suppresses neither
+     * — its foreground-service notification stays exactly as loud as it was.
+     * The honest cost is that a full-screen overlay does cover the status bar,
+     * which is why one tap removes it.
+     */
+    fun showBlackout(onDismissed: () -> Unit = {}) {
+        if (blackout != null) return
+        val windows = getSystemService(WindowManager::class.java) ?: run {
+            SessionLog.shared.warn(TAG, "no WindowManager, so the phone screen cannot be covered")
+            return
+        }
+        val view = View(this).apply {
+            setBackgroundColor(android.graphics.Color.BLACK)
+            contentDescription = "Headway is projecting. Tap to show the phone screen."
+            setOnClickListener {
+                hideBlackout()
+                onDismissed()
+            }
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            // Not FLAG_NOT_TOUCHABLE: the tap is the way back out, and a cover
+            // the driver cannot remove would be a trap rather than a feature.
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            android.graphics.PixelFormat.OPAQUE,
+        )
+        val added = runCatching { windows.addView(view, params) }
+        if (added.isFailure) {
+            SessionLog.shared.warn(TAG, "the phone screen could not be covered: ${added.exceptionOrNull()}")
+            return
+        }
+        blackout = view
+        SessionLog.shared.info(TAG, "phone screen covered; tap it to bring the phone back")
+    }
+
+    /** Removes the cover. Idempotent, and safe from any thread the service uses. */
+    fun hideBlackout() {
+        val view = blackout ?: return
+        blackout = null
+        runCatching { getSystemService(WindowManager::class.java)?.removeView(view) }
+        SessionLog.shared.info(TAG, "phone screen uncovered")
     }
 
     companion object {

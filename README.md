@@ -159,11 +159,55 @@ The car gets **720 of its 800 columns** at 1:1 pixels, with a 40-pixel bar each
 side. [ADR 0008](docs/adr/0008-native-app-rendering-on-a-simulated-display.md)
 has the derivation and the source citations.
 
-Two costs, both real and neither removable: the size list is fixed by Android and
-has no 800×480, hence the bars; and the phone's screen must stay on for the whole
-drive, because Android switches the simulated display off with it. Turn the
-brightness down. A half-size preview of the car screen also sits on the phone the
-whole time — that is Android's, not Headway's, and it cannot be hidden.
+Two costs, both real: the size list is fixed by Android and has no 800×480, hence
+the bars; and the phone's screen must stay on for the whole drive, because the
+simulated display takes its power state verbatim from display 0 and
+`DisplayContent` puts a non-default display's activities to sleep when it is off.
+Turn the brightness down.
+
+### The preview window, and how to get rid of it
+
+A half-size window showing the car screen sits on the phone the whole time.
+
+It is worth knowing what it actually is, because it explains why every obvious
+remedy fails: **it is not a preview, it is the simulated display's output
+surface.** `OverlayDisplayWindow` inflates a `TextureView` and hands its
+`SurfaceTexture` to SurfaceFlinger as display 17's device surface. Close the
+window and the display goes with it, and so does the car picture.
+
+So, in order of what does not work:
+
+- **No setting hides it.** `OverlayDisplayAdapter.parseFlags` accepts exactly
+  `secure`, `own_content_only`, `should_show_system_decorations`,
+  `fixed_content_mode`, `disable_window_interaction`, `unique_id=`, three
+  display-type tokens and four gravity tokens. None affects visibility.
+- **It cannot be shrunk away.** `MIN_SCALE` is `0.3`, so the 720×480 entry
+  bottoms out at 216×144. You *can* pinch it to that minimum and drag it into a
+  corner, which is free and helps — but the position and scale are plain
+  instance fields and reset on reboot.
+- **Headway's floating voice button cannot cover it.**
+  `SYSTEM_ALERT_WINDOW` buys `TYPE_APPLICATION_OVERLAY`, which is window layer
+  **11**. The preview is `TYPE_DISPLAY_OVERLAY`, layer **29**.
+
+What does work: **Blank the phone screen while driving**, on the "How apps reach
+the car" card. `TYPE_ACCESSIBILITY_OVERLAY` is layer **31**, and
+`WindowManagerService.sanitizeWindowType` allows it from a bound accessibility
+service — which Headway already is, for touch injection. Tap the black screen to
+bring the phone back.
+
+It is off by default because it covers the status bar too. It does not suppress
+any recording indicator: the preview says "a simulated display exists", not "you
+are being recorded", and Headway's own foreground-service notification and the
+system's recording chip in the shade are untouched.
+
+**If you are willing to use adb or Shizuku once** — outside Headway's no-adb
+promise, and entirely optional — Android 17 will also let you make the window
+click-through and pick an exact size, which removes the 40-pixel bars as well:
+
+```
+adb shell settings put global overlay_display_devices \
+  '800x480/160,disable_window_interaction,gravity_bottom_right'
+```
 
 Full-screen mirroring is still there, as the fallback when none of the above
 applies. It is one tap from the Apps tab and it is no longer the default.

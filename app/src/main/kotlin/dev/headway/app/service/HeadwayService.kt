@@ -39,6 +39,7 @@ import dev.headway.app.BuildConfig
 import dev.headway.app.R
 import dev.headway.app.audio.CarAudioStream
 import dev.headway.app.input.CarInputStream
+import dev.headway.app.input.HeadwayAccessibilityService
 import dev.headway.app.link.BluetoothCarLink
 import dev.headway.app.log.SessionLog
 import dev.headway.app.link.CarWifiException
@@ -1251,6 +1252,8 @@ open class HeadwayService : Service() {
             // finger.
             runCatching { overlay.show(voiceButtonSizePx(video?.negotiated)) }
                 .onFailure { step("the voice button could not be shown: $it") }
+            runCatching { coverPhoneScreen() }
+                .onFailure { step("the phone screen could not be covered: $it") }
             startSubsystem("audio") { audio?.start(this) }
             startSubsystem("input") { input?.start(this) }
             startSubsystem("voice") { voice?.start(this) }
@@ -1274,6 +1277,7 @@ open class HeadwayService : Service() {
             input?.let { runCatching { step(it.describe()) } }
             voice?.let { runCatching { step(it.describe()) } }
             runCatching { overlay.hide() }
+            runCatching { HeadwayAccessibilityService.instance.value?.hideBlackout() }
             runCatching { video?.stop() }
             runCatching { audio?.stop() }
             runCatching { input?.stop() }
@@ -1290,6 +1294,34 @@ open class HeadwayService : Service() {
      * the session is worth more than any one of these, and a driver whose
      * microphone will not open should still have a car screen.
      */
+    /**
+     * Covers the phone screen for the drive, if the driver asked for it.
+     *
+     * Answers "can I hide the preview window Developer options puts up?" — yes,
+     * but only by covering it, and only from the accessibility service, whose
+     * `TYPE_ACCESSIBILITY_OVERLAY` outranks the preview's `TYPE_DISPLAY_OVERLAY`
+     * in the window layer table. `SYSTEM_ALERT_WINDOW` does not: it is eleven
+     * layers below. See `HeadwayAccessibilityService.showBlackout`.
+     *
+     * Silent when the switch is off, which is the default. When it is on but
+     * accessibility is not granted, it says so — the alternative is a switch
+     * that appears to do nothing.
+     */
+    private fun coverPhoneScreen() {
+        if (!HeadwaySettings.of(this).getBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, false)) {
+            return
+        }
+        val service = HeadwayAccessibilityService.instance.value
+        if (service == null) {
+            step(
+                "\"blank the phone screen\" is on, but it needs the accessibility service and " +
+                    "that is not granted, so the phone screen is left alone"
+            )
+            return
+        }
+        service.showBlackout()
+    }
+
     private inline fun startSubsystem(name: String, start: () -> Unit): Boolean =
         runCatching { start() }.fold(
             onSuccess = { true },
