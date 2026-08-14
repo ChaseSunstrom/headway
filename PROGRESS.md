@@ -23,26 +23,30 @@ Each phase carries the **tier of evidence** behind it, defined in
 
 ## The gap between "module done" and "the app does it"
 
-Phases 2 to 5 build and test real code, and none of it runs in the shipped app.
-`HeadwayService.runChannels` — the loop that owns a live session — receives
-frames, answers control keepalives, and logs everything else as unhandled.
-There is no subclass and no override. So on a phone that reaches a session
-today: no screen is captured, no video is encoded, no touch arrives, no audio
-is sent, and no voice is recognised.
+**Closed.** `HeadwayService.runChannels` now builds the demux and drives video,
+audio, input and voice from a live session, and a real 2021 Malibu displayed the
+result on 2026-08-13. What remains unverified on hardware is listed under
+"What is not verified" below, phase by phase.
 
-The modules themselves are real and tested, so this is integration rather than
-implementation: obtain a `MediaProjection` from `MainActivity`, feed
-`ScreenEncoder` into `VideoChannel`, route `InputChannel` events into
-`CarGestureDispatcher`, and drive `MicrophoneChannel` into the voice pipeline.
-Two things have to land with it: `core-voice` declares Vosk `compileOnly` and
-the app adds no `vosk-android` runtime, so speech recognition would throw
-`NoClassDefFoundError` on device; and the ~41 MB model is not shipped as an
-asset.
+## What the car screen is, as of build 84
 
-This is stated here because the phase table above says "Done" for those phases
-and would otherwise be read as "the app does this". It does not, yet — and
-until the Wi-Fi join succeeds on a real car, none of it can be exercised
-against one anyway.
+Mirroring was the default until a real drive showed how badly it fits. The phone
+is 1080x2404 and the panel is 800x480, so the image occupied **216 of 800
+columns** and the other 73% was a black bar; every touch was scaled by 0.1997,
+and the driver's own notifications were on the dashboard.
+
+Headway now composes for the car instead. A `DisplayManager` virtual display is
+created at the resolution and density the head unit advertised, a `Presentation`
+draws the dashboard on it, and the encoder takes that display — so nothing is
+scaled, touch is 1:1 into Headway's own view tree, and the dashboard needs
+neither the accessibility grant nor screen-capture consent to work.
+
+Mirroring is kept as a **mode**: tapping an app in the grid hands the whole car
+screen to it, and the floating Home button brings the dashboard back. Switching
+renegotiates nothing with the head unit — same resolution, same session id, only
+the source of the pixels moves. ADR 0006 has the reasoning and the two
+implementation traps (one projection display per grant, and the codec-config
+reset on every switch).
 
 ## What is genuinely verified
 

@@ -2,20 +2,28 @@
 
 An open-source Android app that replaces Google's Android Auto phone app
 entirely. It speaks the reverse-engineered Android Auto Protocol (AAP) directly
-to a factory head unit — wirelessly — and puts the phone on the car screen, with
-touch input coming back from the car and the car's microphone driven by fully
-on-device speech recognition.
+to a factory head unit — wirelessly — with touch input coming back from the car
+and the car's microphone driven by fully on-device speech recognition.
 
-Any app on the phone can appear on the car screen, by mirroring the phone
-display. What an unprivileged app *cannot* do is host someone else's app on a
-display of its own — so multi-pane layouts are drawn by Headway rather than
-hosted, and mirroring cannot survive the phone screen turning off. Both limits
-are the OS's, and both are derived from AOSP source in
+The car gets **its own screen**, not a copy of the phone's. Headway creates a
+display at exactly the resolution and density the head unit advertised and draws
+a dashboard on it: what is playing, with working transport controls for any app;
+messages, with inline replies; the clock; your pinned apps. Nothing is scaled,
+touch lands 1:1, and your notifications and lock screen stay on your phone where
+they belong.
+
+**Any app on the phone can still take the whole car screen.** Tap it in the grid
+and Headway hands the display over; the floating Home button brings the
+dashboard back. What an unprivileged app *cannot* do is put someone else's app
+in one pane of a layout of its own — that limit is the OS's, and it is derived
+from AOSP source in
 [ADR 0004](docs/adr/0004-what-headway-can-put-on-the-car-screen.md).
+[ADR 0006](docs/adr/0006-the-car-gets-its-own-screen.md) is why mirroring stopped
+being the default.
 
 No Google services. No network. No root. No system privileges.
 
-> **Status: in development. A real car is showing the phone screen.** On
+> **Status: in development. A real car is showing Headway.** On
 > 2026-08-13 a 2021 Chevrolet Infotainment 3 unit completed the Bluetooth
 > handshake, the Wi-Fi join, TCP, the AAP version exchange, TLS, authentication
 > and service discovery, opened all 13 of its channels, and then — once Headway

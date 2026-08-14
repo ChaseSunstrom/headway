@@ -574,7 +574,22 @@ class QuirkStore(
         const val FILE_NAME: String = "head-unit-quirks.json"
 
         /** Schema version, so a future format change can be detected rather than misread. */
-        const val SCHEMA_VERSION: Int = 1
+        const val SCHEMA_VERSION: Int = 2
+
+        /**
+         * The version in which `mediaAudioOverAap` still defaulted to false.
+         *
+         * A version-1 file was written by Headway itself, from the defaults of
+         * the build that wrote it, and every one of them therefore pins
+         * `mediaAudioOverAap: false`. That was a default nobody chose, and ADR
+         * 0005 reversed it after a real car proved A2DP goes silent while
+         * projecting — so honouring the stored value means the driver's music
+         * stays broken until they hand-edit a JSON file they have never seen.
+         *
+         * So on a version-1 file that one key is ignored and the new default
+         * applies. Every other key is a real choice and is honoured.
+         */
+        const val MEDIA_ROUTE_DEFAULT_CHANGED_IN: Int = 2
 
         private const val KEY_VERSION = "version"
         private const val KEY_PROFILES = "profiles"
@@ -654,6 +669,10 @@ class QuirkStore(
             }
 
             val version = root.optInt(KEY_VERSION, SCHEMA_VERSION)
+            if (version < MEDIA_ROUTE_DEFAULT_CHANGED_IN) {
+                warnings += "file predates ADR 0005; ignoring its '$KEY_MEDIA_AUDIO_OVER_AAP' " +
+                    "so media audio takes this build's default (${HeadUnitQuirks.DEFAULT.mediaAudioOverAap})"
+            }
             if (version != SCHEMA_VERSION) {
                 // Parsed anyway: refusing outright would strand a user whose file
                 // is fine apart from a number they typed from an old README.
@@ -668,6 +687,7 @@ class QuirkStore(
             val array: JSONArray = root.optJSONArray(KEY_PROFILES)
                 ?: return QuirkLoad(emptyList(), warnings + "no '$KEY_PROFILES' array")
 
+            val honourMediaRoute = version >= MEDIA_ROUTE_DEFAULT_CHANGED_IN
             val profiles = mutableListOf<QuirkProfile>()
             for (index in 0 until array.length()) {
                 val entry = array.optJSONObject(index)
@@ -675,7 +695,7 @@ class QuirkStore(
                     warnings += "profile #$index is not an object"
                     continue
                 }
-                profiles += parseProfile(entry, index, warnings)
+                profiles += parseProfile(entry, index, warnings, honourMediaRoute)
             }
             return QuirkLoad(profiles, warnings)
         }
@@ -732,6 +752,7 @@ class QuirkStore(
             json: JSONObject,
             index: Int,
             warnings: MutableList<String>,
+            honourMediaRoute: Boolean = true,
         ): QuirkProfile {
             for (key in json.keys()) {
                 if (key !in PROFILE_KEYS) warnings += "profile #$index: ignored unknown key '$key'"
@@ -797,9 +818,13 @@ class QuirkStore(
                     maxFragmentSize = fragment,
                     announcedVersionMajor = major,
                     announcedVersionMinor = minor,
-                    mediaAudioOverAap = json.optBoolean(
-                        KEY_MEDIA_AUDIO_OVER_AAP, defaults.mediaAudioOverAap,
-                    ),
+                    mediaAudioOverAap =
+                        if (honourMediaRoute) {
+                            json.optBoolean(KEY_MEDIA_AUDIO_OVER_AAP, defaults.mediaAudioOverAap)
+                        } else {
+                            // See MEDIA_ROUTE_DEFAULT_CHANGED_IN.
+                            defaults.mediaAudioOverAap
+                        },
                     keyframeIntervalFrames = keyframe,
                     hiddenSsid = json.optBoolean(KEY_HIDDEN_SSID, defaults.hiddenSsid),
                     announceWifiChannel = json.optBoolean(

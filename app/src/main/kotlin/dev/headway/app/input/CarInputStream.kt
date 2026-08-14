@@ -159,6 +159,17 @@ class CarInputStream(
      * closing over the later one keeps the ordering harmless.
      */
     private val onVoiceKey: () -> Unit = {},
+    /**
+     * Where a touch goes when Headway owns the car display.
+     *
+     * Returns true when it took the touch, in which case none of the transform,
+     * gesture-building or accessibility machinery below runs. That whole chain
+     * exists to aim a synthetic gesture at *somebody else's* window on the
+     * phone's display; when the target is Headway's own window on a display the
+     * size of the car's panel, the car's coordinates are already the right
+     * coordinates and the event can simply be dispatched. See `CarSurface`.
+     */
+    private val deliverDirect: (CarInputEvent.Touch) -> Boolean = { false },
     private val onStep: (String) -> Unit = {},
 ) {
 
@@ -217,6 +228,10 @@ class CarInputStream(
     /** Reports hex-dumped so far; the first few only. */
     @Volatile
     private var reportsDumped: Int = 0
+
+    /** Touches handed straight to the car surface. Diagnostics. */
+    @Volatile
+    private var directTouches: Long = 0L
 
     private var announcedTouchpad = false
 
@@ -305,6 +320,7 @@ class CarInputStream(
     /** Gestures injected and touches discarded, for the log. */
     fun describe(): String = "input: $reportsReceived report(s) received, " +
         "$touchEventsSeen touch event(s) in them, " +
+        (if (directTouches > 0) "$directTouches delivered to the car display, " else "") +
         "$gesturesSubmitted gesture(s) injected, " +
         "$gesturesDropped dropped with no accessibility grant, " +
         "$barTouches touch(es) in the letterbox bar, " +
@@ -440,6 +456,12 @@ class CarInputStream(
 
     private fun onTouch(touch: CarInputEvent.Touch) {
         touchEventsSeen++
+        // The car-native path, when there is one. No transform, no letterbox,
+        // no accessibility grant: 1:1 into Headway's own view tree.
+        if (deliverDirect(touch)) {
+            directTouches++
+            return
+        }
         if (touch.surface != TouchSurface.TOUCHSCREEN && !announcedTouchpad) {
             announcedTouchpad = true
             // GestureBuilder drops these itself; without this line the driver of
@@ -605,6 +627,7 @@ class CarInputStream(
             connectionFor: (Int) -> MessageChannel,
             context: Context,
             onVoiceKey: () -> Unit = {},
+            deliverDirect: (CarInputEvent.Touch) -> Boolean = { false },
             onStep: (String) -> Unit = {},
         ): CarInputStream? {
             val service = inputServiceOf(profile) ?: return null
@@ -654,6 +677,7 @@ class CarInputStream(
                 keycodes = input.keycodesSupportedList.toList(),
                 builder = GestureBuilder(GestureConfig.forDevice(context)),
                 onVoiceKey = onVoiceKey,
+                deliverDirect = deliverDirect,
                 onStep = onStep,
             )
         }

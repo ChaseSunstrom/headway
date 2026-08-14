@@ -24,12 +24,44 @@ import aap_protobuf.service.media.video.message.VideoFocusReasonOuterClass.Video
 import android.media.projection.MediaProjection
 import dev.headway.protocol.channel.VideoChannel
 import dev.headway.protocol.io.MessageChannel
+import dev.headway.app.dash.CarSurface
 import dev.headway.protocol.session.HeadUnitProfile
 import dev.headway.video.EncoderConfiguration
 import dev.headway.video.ScreenEncoder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * What the car screen is showing.
+ *
+ * These are the two things Headway can put on a head unit, and the platform
+ * decides that there are exactly two. [DASHBOARD] is content Headway draws
+ * itself onto a display it created at the car's own resolution — beautiful,
+ * correctly sized, and unable to contain another app's window, because
+ * `ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay` refuses that
+ * (ADR 0004). [MIRROR] is display 0 as it stands, which is the only way another
+ * app's own pixels reach the car, and which is the wrong shape because a phone
+ * is portrait and a dashboard is not.
+ *
+ * Android Auto resolves this by having apps write a second UI against a template
+ * library whose host is locked to six hardcoded certificates. Headway cannot be
+ * that host, so it does the next thing: draw its own home screen, and hand the
+ * whole screen over when the driver asks for a real app.
+ */
+enum class CarSurfaceMode {
+    /** Headway's own dashboard, drawn at the head unit's resolution. */
+    DASHBOARD,
+
+    /** The phone's display 0, whatever is on it. */
+    MIRROR;
+
+    fun describe(): String = when (this) {
+        DASHBOARD -> "the Headway dashboard"
+        MIRROR -> "the phone screen"
+    }
+}
 
 /**
  * Everything between "the car opened a video channel" and "the car is showing
@@ -63,13 +95,61 @@ import kotlinx.coroutines.launch
 class CarVideoStream(
     private val channel: VideoChannel,
     private val service: ServiceOuterClass.Service,
-    private val projection: MediaProjection,
+    /**
+     * The screen-capture grant, for the mirroring path only.
+     *
+     * Null in dashboard mode, which needs no projection to draw: it renders onto
+     * a display Headway creates. Audio capture still wants a projection, but
+     * that is the audio stream's business, not this one's.
+     */
+    private val projection: MediaProjection?,
+    /**
+     * Builds the car-native surface, or returns null to fall back to mirroring.
+     *
+     * A factory rather than a `CarSurface` because the surface cannot exist
+     * until the head unit has said which configuration it wants — the display
+     * has to be created at the car's resolution, and that number arrives in the
+     * `Config` reply partway through [start].
+     */
+    private val surfaceFactory: ((EncoderConfiguration, ScreenEncoder.Sink) -> CarSurface?)? = null,
     private val onStep: (String) -> Unit = {},
 ) {
 
+    /** The car-native surface, once built. Null while mirroring. */
+    var surface: CarSurface? = null
+        private set
+
+    /**
+     * The mirroring encoder, created once and reused for the whole session.
+     *
+     * Not rebuilt on every switch back to mirroring, and this is not an
+     * optimisation. Since Android 14 `MediaProjection.createVirtualDisplay`
+     * throws `SecurityException` on a projection that has already produced a
+     * display, so a second `ScreenEncoder` handed the same projection would take
+     * `startCapture`'s create branch — its own `virtualDisplay` field being
+     * null — and fail. The same instance takes the *reuse* branch instead,
+     * re-pointing the display it already owns at the new codec's surface, which
+     * is exactly what `ScreenEncoder.heldProjection` was written for.
+     *
+     * Released rather than merely stopped in [stop], because that is the point
+     * at which the projection really is going away.
+     */
     private var encoder: ScreenEncoder? = null
     private var pump: VideoPump? = null
-    private var jobs: MutableList<Job> = mutableListOf()
+
+    /** The pump's job, which outlives every source change. */
+    private var pumpJob: Job? = null
+
+    /** The current source's job, cancelled and replaced by [show]. */
+    private var sourceJob: Job? = null
+
+    /** Held so [show] can start a new source after the initial bring-up. */
+    private var streamScope: CoroutineScope? = null
+
+    /** What the car is showing now. */
+    @Volatile
+    var mode: CarSurfaceMode = CarSurfaceMode.DASHBOARD
+        private set
 
     /**
      * The geometry the head unit actually chose, once it has.
@@ -145,19 +225,152 @@ class CarVideoStream(
 
         channel.sendStart(sessionId = sessionId, configurationIndex = index)
 
-        val screenEncoder = ScreenEncoder(encoderConfiguration, onStep = onStep)
         val videoPump = VideoPump(channel, onStep)
-        encoder = screenEncoder
         pump = videoPump
+
+        // The car-native surface first. It draws the dashboard at the head
+        // unit's own resolution, so nothing is scaled and the phone's screen is
+        // not in the picture; mirroring is the fallback, not the plan. See
+        // CarSurface for why that inversion happened.
+        streamScope = scope
+
+        val native = surfaceFactory?.invoke(encoderConfiguration, videoPump)
+        if (native != null) {
+            surface = native
+            mode = CarSurfaceMode.DASHBOARD
+            pumpJob = scope.launch { videoPump.pump() }
+            publishSwitch()
+            onStep("video stream started from the car display")
+            return true
+        }
+
+        val token = projection
+        if (token == null) {
+            onStep(
+                "no car display and no screen capture grant, so there is nothing to send. " +
+                    "The car will stay on its connecting screen"
+            )
+            return false
+        }
+
+        val screenEncoder = ScreenEncoder(encoderConfiguration, onStep = onStep)
+        encoder = screenEncoder
 
         // The order matters: the encoder must have a sink before it produces
         // anything, and startCapture begins producing immediately.
-        screenEncoder.startCapture(projection, videoPump)
+        screenEncoder.startCapture(token, videoPump)
 
-        jobs += scope.launch { screenEncoder.encodeUntilStopped() }
-        jobs += scope.launch { videoPump.pump() }
-        onStep("video stream started")
+        mode = CarSurfaceMode.MIRROR
+        sourceJob = scope.launch { screenEncoder.encodeUntilStopped() }
+        pumpJob = scope.launch { videoPump.pump() }
+        publishSwitch()
+        onStep("video stream started by mirroring the phone screen")
         return true
+    }
+
+    /**
+     * Changes what the car is showing, without touching the AAP stream.
+     *
+     * The head unit is not told anything. It negotiated one resolution, one
+     * frame rate and one session id, and all three are unchanged — only the
+     * source of the pixels moves. What the car does see is a fresh SPS/PPS and
+     * a keyframe, which is ordinary mid-stream H.264 and is exactly what
+     * [VideoPump.resetForNewStream] exists to arrange; without that reset the
+     * pump would consider the codec config already sent and the decoder would
+     * be handed frames it has no parameter sets for.
+     *
+     * Callable from any thread. [CarSurface.create] posts its own window work to
+     * the main looper and waits for it, and everything else here is either a
+     * coroutine launch or a `MediaCodec` call that does not care.
+     *
+     * @return false when the mode is unreachable — mirroring with no projection
+     *   grant, or a dashboard the platform refused — in which case the car keeps
+     *   showing what it was showing and the log says why.
+     */
+    fun show(wanted: CarSurfaceMode): Boolean {
+        if (wanted == mode) return true
+        val configuration = negotiated
+        val videoPump = pump
+        val scope = streamScope
+        if (configuration == null || videoPump == null || scope == null) {
+            onStep("car surface: cannot switch to ${wanted.describe()} before video has started")
+            return false
+        }
+
+        when (wanted) {
+            CarSurfaceMode.MIRROR -> {
+                val token = projection
+                if (token == null) {
+                    onStep(
+                        "car surface: showing an app needs the screen-capture grant, and this " +
+                            "session started without one. Press Connect again and accept it"
+                    )
+                    return false
+                }
+                // The dashboard goes first. Its encoder holds the only surface
+                // on the virtual display, and a second encoder feeding the same
+                // pump would interleave two streams of frames into one decoder.
+                runCatching { surface?.stop() }
+                surface = null
+                sourceJob?.cancel()
+                sourceJob = null
+                videoPump.resetForNewStream()
+
+                val screenEncoder = encoder ?: ScreenEncoder(configuration, onStep = onStep)
+                val started = runCatching { screenEncoder.startCapture(token, videoPump) }
+                if (started.isFailure) {
+                    onStep("car surface: screen capture would not start (${started.exceptionOrNull()})")
+                    // Nothing is producing frames now, so go back rather than
+                    // leave the car on a frozen last frame for the drive.
+                    return recoverDashboard(configuration, videoPump)
+                }
+                encoder = screenEncoder
+                sourceJob = scope.launch { screenEncoder.encodeUntilStopped() }
+            }
+
+            CarSurfaceMode.DASHBOARD -> {
+                sourceJob?.cancel()
+                sourceJob = null
+                // stop(), not release(): the encoder keeps its virtual display
+                // so the next switch back to mirroring can reuse it. See the
+                // field's KDoc for why that is load-bearing rather than tidy.
+                runCatching { encoder?.stop() }
+                videoPump.resetForNewStream()
+                val native = surfaceFactory?.invoke(configuration, videoPump)
+                if (native == null) {
+                    onStep("car surface: the dashboard is unavailable, staying on the phone screen")
+                    return false
+                }
+                surface = native
+            }
+        }
+        mode = wanted
+        onStep("car surface: now showing ${wanted.describe()}")
+        return true
+    }
+
+    /** Puts the dashboard back after a failed switch to mirroring. */
+    private fun recoverDashboard(
+        configuration: EncoderConfiguration,
+        videoPump: VideoPump,
+    ): Boolean {
+        videoPump.resetForNewStream()
+        surface = surfaceFactory?.invoke(configuration, videoPump)
+        mode = CarSurfaceMode.DASHBOARD
+        return false
+    }
+
+    /**
+     * Makes [show] reachable from a tile or a floating button.
+     *
+     * A static handle rather than an injected dependency because the callers are
+     * views: a `LauncherTile` inside a `Presentation` and an overlay window on
+     * display 0, neither of which is constructed by anything that has the
+     * session's object graph. It is the same shape, and for the same reason, as
+     * `HeadwayService.linkState`.
+     */
+    private fun publishSwitch() {
+        switcher.set(this)
     }
 
     /** Frames sent and dropped, and whether the car ever took the screen. */
@@ -179,13 +392,42 @@ class CarVideoStream(
      * a reconnect must not put a dialog in front of a driver.
      */
     fun stop() {
-        jobs.forEach { it.cancel() }
-        jobs.clear()
-        runCatching { encoder?.stop() }
+        switcher.compareAndSet(this, null)
+        pumpJob?.cancel()
+        pumpJob = null
+        sourceJob?.cancel()
+        sourceJob = null
+        streamScope = null
+        runCatching { surface?.stop() }
+        surface = null
+        // release(), not stop(): the session is over, so the virtual display the
+        // encoder has been holding across mode switches has to go with it.
+        runCatching { encoder?.release() }
+        encoder = null
         runCatching { pump?.close() }
     }
 
     companion object {
+
+        /**
+         * The live stream, for anything that wants to change what the car shows.
+         *
+         * Null between sessions. Cleared by [stop] with a compare-and-set so a
+         * new session that has already published cannot be unpublished by the
+         * old one's teardown arriving late.
+         */
+        private val switcher = AtomicReference<CarVideoStream?>(null)
+
+        /** What the car is showing, or null when no session is up. */
+        val currentMode: CarSurfaceMode? get() = switcher.get()?.mode
+
+        /**
+         * Asks the car to show something else.
+         *
+         * @return false when there is no session, or the mode is unreachable.
+         */
+        fun showOnCar(mode: CarSurfaceMode): Boolean = switcher.get()?.show(mode) ?: false
+
         /**
          * Any non-zero value works; the head unit echoes it back on every
          * acknowledgement so the two sides can tell streams apart.
@@ -211,12 +453,13 @@ class CarVideoStream(
         fun of(
             profile: HeadUnitProfile,
             connectionFor: (Int) -> MessageChannel,
-            projection: MediaProjection,
+            projection: MediaProjection?,
+            surfaceFactory: ((EncoderConfiguration, ScreenEncoder.Sink) -> CarSurface?)? = null,
             onStep: (String) -> Unit = {},
         ): CarVideoStream? {
             val service = videoServiceOf(profile) ?: return null
             val channel = VideoChannel(connectionFor(service.id), service.id, onStep)
-            return CarVideoStream(channel, service, projection, onStep)
+            return CarVideoStream(channel, service, projection, surfaceFactory, onStep)
         }
     }
 }

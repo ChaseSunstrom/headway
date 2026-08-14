@@ -51,7 +51,9 @@ import dev.headway.protocol.control.ControlKeepalive
 import dev.headway.protocol.control.ControlMessageType
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.framing.MessageFragmenter
+import dev.headway.app.video.CarSurfaceMode
 import dev.headway.app.video.CarVideoStream
+import dev.headway.app.dash.CarSurface
 import dev.headway.app.dash.DashboardActivity
 import dev.headway.app.ui.CarLauncherActivity
 import dev.headway.app.ui.HeadwaySettings
@@ -66,6 +68,7 @@ import dev.headway.protocol.session.AuthenticationRejectedException
 import dev.headway.protocol.session.HeadUnitProfile
 import dev.headway.protocol.session.PhoneIdentity
 import dev.headway.video.EncoderConfiguration
+import dev.headway.video.ScreenEncoder
 import dev.headway.transport.LinkState
 import dev.headway.transport.SessionSupervisor
 import dev.headway.transport.TcpTransport
@@ -996,17 +999,34 @@ open class HeadwayService : Service() {
         )
         val control = demux.channel(ChannelId.CONTROL.id)
 
-        val video = projection?.let { token ->
-            CarVideoStream.of(profile, { id -> demux.channel(id) }, token, ::step)
-        }
-        if (video == null) {
-            step(
-                if (projection == null) {
-                    "no screen capture grant, so no video will be sent. The car will stay on " +
-                        "its connecting screen and will close the session in about 15 seconds"
-                } else {
-                    "the head unit advertised no H.264 video sink, so there is nothing to send"
+        // The car screen is Headway's own display now, not a mirror of the
+        // phone. A real drive showed why: a 1080x2404 phone shown on an 800x480
+        // panel used 216 of 800 columns and left the rest black. The surface is
+        // built at the head unit's own resolution the moment it says what that
+        // is; mirroring stays as a fallback and as a setting.
+        val wantDashboard = HeadwaySettings.dashboardOnCarScreen(this@HeadwayService)
+        val surfaceFactory: ((EncoderConfiguration, ScreenEncoder.Sink) -> CarSurface?)? =
+            if (wantDashboard) {
+                { configuration, sink ->
+                    CarSurface.create(this@HeadwayService, configuration, sink, ::step)
                 }
+            } else {
+                null
+            }
+
+        val video = CarVideoStream.of(
+            profile = profile,
+            connectionFor = { id -> demux.channel(id) },
+            projection = projection,
+            surfaceFactory = surfaceFactory,
+            onStep = ::step,
+        )
+        if (video == null) {
+            step("the head unit advertised no H.264 video sink, so there is nothing to send")
+        } else if (!wantDashboard && projection == null) {
+            step(
+                "mirroring is selected but there is no screen capture grant, so no video will " +
+                    "be sent. The car will stay on its connecting screen"
             )
         }
 
@@ -1037,6 +1057,19 @@ open class HeadwayService : Service() {
             connectionFor = connectionFor,
             context = applicationContext,
             onVoiceKey = { startListening() },
+            // When the dashboard owns the car display, a touch is dispatched
+            // straight into its view tree at the car's own coordinates. The
+            // transform, the gesture builder and the accessibility grant are
+            // all only needed to aim at somebody else's window.
+            deliverDirect = { touch ->
+                val surface = video?.surface
+                if (surface != null && surface.isShowing) {
+                    surface.deliver(touch)
+                    true
+                } else {
+                    false
+                }
+            },
             onStep = ::step,
         )
         if (input == null) {
@@ -1062,9 +1095,22 @@ open class HeadwayService : Service() {
         // own screen, which is not where anyone is when they want it.
         // Constructed here, shown after video negotiates: its size depends on
         // the geometry the head unit chooses, which is not known until then.
-        val overlay = voice?.let {
-            VoiceOverlay(applicationContext, onPressed = { it.requestListening() }, onStep = ::step)
-        }
+        // Home is offered whenever the dashboard is the car's default surface,
+        // because that is exactly when there is somewhere to go back *to*. It is
+        // the only control that exists once the car is showing a real app: an
+        // overlay is the sole surface Headway may draw over somebody else's
+        // window, so without this, opening Maps would be a one-way trip.
+        val homeAvailable = HeadwaySettings.dashboardOnCarScreen(this@HeadwayService)
+        val overlay = VoiceOverlay(
+            context = applicationContext,
+            onPressed = { voice?.requestListening() },
+            onHome = if (homeAvailable) {
+                { CarVideoStream.showOnCar(CarSurfaceMode.DASHBOARD) }
+            } else {
+                null
+            },
+            onStep = ::step,
+        )
 
         val pump = launch { demux.pump() }
         try {
@@ -1092,8 +1138,22 @@ open class HeadwayService : Service() {
             // Video is started first and inline; see the KDoc. The other three
             // return as soon as they have launched their own coroutines.
             video?.start(this)
-            showCarLauncher(video?.negotiated)
-            overlay?.show(voiceButtonSizePx(video?.negotiated))
+            if (video?.surface != null) {
+                // The car has its own display and its own UI on it, so nothing
+                // is put on the phone: a dashboard mirrored there as well would
+                // be a second copy nobody is looking at.
+                step("car screen is Headway's own display; the phone screen is left alone")
+            } else {
+                showCarLauncher(video?.negotiated)
+            }
+            // Shown either way. While the dashboard is up this window is on
+            // display 0, which the car is not looking at, so it costs nothing
+            // and is already in place the instant the driver taps an app and
+            // the car switches to mirroring — which is the one moment it is
+            // both needed and impossible to add, since adding a window is
+            // main-thread work and that switch happens under the driver's
+            // finger.
+            overlay.show(voiceButtonSizePx(video?.negotiated))
             audio?.start(this)
             input?.start(this)
             voice?.start(this)
@@ -1107,7 +1167,7 @@ open class HeadwayService : Service() {
             audio?.let { runCatching { step(it.describe()) } }
             input?.let { runCatching { step(it.describe()) } }
             voice?.let { runCatching { step(it.describe()) } }
-            runCatching { overlay?.hide() }
+            runCatching { overlay.hide() }
             runCatching { video?.stop() }
             runCatching { audio?.stop() }
             runCatching { input?.stop() }

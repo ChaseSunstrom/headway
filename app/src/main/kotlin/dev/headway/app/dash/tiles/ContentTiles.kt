@@ -45,8 +45,8 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -54,12 +54,27 @@ import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import dev.headway.app.dash.DashTile
 import dev.headway.app.log.SessionLog
+import dev.headway.app.ui.theme.Headway
+import dev.headway.app.ui.theme.HeadwayMark
+import dev.headway.app.ui.theme.ProgressRule
+import dev.headway.app.ui.theme.TransportButton
 import dev.headway.app.service.HeadwayService
 import dev.headway.transport.LinkState
 import java.util.Date
 import java.util.concurrent.CopyOnWriteArrayList
 
 private const val TAG = "HeadwayDashTiles"
+
+/**
+ * An app's launcher icon, or null for one uninstalled since it was named.
+ *
+ * File-level because two tiles need it: [MessagesTile] draws it beside every
+ * conversation, and [NowPlayingTile] falls back to it when a session publishes
+ * no album art.
+ */
+private fun appIcon(context: Context, packageName: String): Drawable? = runCatching {
+    context.packageManager.getApplicationIcon(packageName)
+}.getOrNull()
 
 /**
  * The look every tile shares, and the reason the numbers here are plain dp.
@@ -72,20 +87,29 @@ private const val TAG = "HeadwayDashTiles"
  * any `Context` derived from that display already speak in car pixels. 48 dp
  * here is 48 dp on the panel, with no correction needed and none applied.
  *
- * The palette is `CarLauncherActivity`'s, deliberately: the launcher and the
- * dashboard are seen in the same glance and must not look like two products.
- * [SURFACE] is the one addition — messages need visible row boundaries, and it is
- * dark enough (contrast against [TEXT] is roughly nineteen to one) that it does
- * not break the "no mid-greys" rule the launcher's KDoc sets out.
+ * ## The palette is not this file's any more
+ *
+ * It used to be: a private set of six ARGB literals, copied from
+ * `CarLauncherActivity`'s own private set of six ARGB literals, with
+ * `MainActivity` holding a third that had already drifted a shade. Three copies
+ * of one palette is three chances to change two of them. Everything here now
+ * defers to [Headway], which derives from the launcher icon, and the only thing
+ * this object still owns is the geometry.
+ *
+ * The visible change beyond the colours is that a pane is a *panel* — rounded,
+ * lifted a little off the ground, with a hairline — rather than a black
+ * rectangle. `DashboardPresentation` draws that background; this object stops
+ * painting over it, which the old [panel] did, corners and all.
  */
 private object CarStyle {
 
-    val BACKGROUND: Int = 0xFF000000.toInt()
-    val SURFACE: Int = 0xFF141414.toInt()
-    val TEXT: Int = 0xFFFFFFFF.toInt()
-    val DIM: Int = 0xFFB0BEC5.toInt()
-    val GOOD: Int = 0xFF7BE38B.toInt()
-    val BAD: Int = 0xFFFF7A7A.toInt()
+    val BACKGROUND: Int = Headway.GROUND
+    val SURFACE: Int = Headway.SURFACE_RAISED
+    val TEXT: Int = Headway.TEXT
+    val DIM: Int = Headway.TEXT_MUTED
+    val ACCENT: Int = Headway.ACCENT
+    val GOOD: Int = Headway.GOOD
+    val BAD: Int = Headway.FAULT
 
     /**
      * The size of anything a driver taps.
@@ -107,9 +131,18 @@ private object CarStyle {
     /** The outer padding and inter-row gap; one number so panes stay aligned. */
     fun gutter(context: Context): Int = dp(context, 12f)
 
+    fun radius(context: Context): Float = dp(context, 14f).toFloat()
+
+    /**
+     * A tile's own root.
+     *
+     * Transparent, deliberately. The pane behind it already carries the rounded
+     * panel `DashboardPresentation.buildLeaf` gave it, and the opaque rectangle
+     * this used to paint covered exactly the corners that made it look like a
+     * panel rather than a hole.
+     */
     fun panel(context: Context): LinearLayout = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
-        setBackgroundColor(BACKGROUND)
         val pad = gutter(context)
         setPadding(pad, pad, pad, pad)
     }
@@ -130,22 +163,82 @@ private object CarStyle {
         ellipsize = TextUtils.TruncateAt.END
     }
 
-    // The parameter is `caption` and not `text` because inside `apply` an
-    // unqualified `text` finds the Button's own property, so a parameter of that
-    // name would read as though it were assigning to itself.
+    /**
+     * A pill, built on `TextView` rather than `Button`.
+     *
+     * A Material `Button` arrives with its own tint, elevation and 8 dp inset,
+     * all of which have to be undone before a custom background is visible, and
+     * its default surface is a mid-grey that is exactly what the car palette
+     * avoids. There is nothing left of a `Button` worth keeping once those are
+     * gone but the click listener.
+     *
+     * The parameter is `caption` and not `text` because inside `apply` an
+     * unqualified `text` finds the view's own property, so a parameter of that
+     * name would read as though it were assigning to itself.
+     */
     fun button(
         context: Context,
         caption: String,
+        emphasised: Boolean = false,
         onClick: () -> Unit,
-    ): Button = Button(context).apply {
+    ): TextView = TextView(context).apply {
         text = caption
-        setTextSize(TypedValue.COMPLEX_UNIT_PX, sp(context, 16f))
+        gravity = Gravity.CENTER
+        setTextColor(if (emphasised) Headway.GROUND else TEXT)
+        setTextSize(TypedValue.COMPLEX_UNIT_PX, sp(context, 15f))
+        if (emphasised) setTypeface(Typeface.DEFAULT_BOLD)
         minHeight = dp(context, PRIMARY_TARGET_DP)
-        minWidth = dp(context, PRIMARY_TARGET_DP * 1.5f)
+        minWidth = dp(context, PRIMARY_TARGET_DP * 1.4f)
+        val side = gutter(context)
+        setPadding(side, 0, side, 0)
+        background = Headway.panel(
+            radiusPx = dp(context, PRIMARY_TARGET_DP / 2f).toFloat(),
+            fill = if (emphasised) Headway.ACCENT else Headway.SURFACE_RAISED,
+            stroke = if (emphasised) null else Headway.OUTLINE,
+        )
+        isClickable = true
+        isFocusable = true
         // The caption is also the accessibility name; TalkBack on the phone reads
         // the dashboard when a user is setting it up there.
         contentDescription = caption
         setOnClickListener { onClick() }
+    }
+
+    /**
+     * The state a pane shows when it has nothing to show.
+     *
+     * Centred, with the mark above it. An empty pane that is simply blank reads
+     * as a broken pane — which is exactly how the driver read the empty Now
+     * playing pane, and they were half right: it was empty because a grant was
+     * missing and nothing on either screen said so.
+     */
+    fun emptyState(context: Context, message: String): View {
+        val holder = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            val pad = gutter(context) * 2
+            setPadding(pad, pad, pad, pad)
+        }
+        val markSize = dp(context, 40f)
+        holder.addView(
+            HeadwayMark(context).apply {
+                alpha = 0.5f
+                layoutParams = LinearLayout.LayoutParams(markSize * 2, markSize)
+            },
+        )
+        holder.addView(
+            label(context, 15f, DIM).apply {
+                text = message
+                gravity = Gravity.CENTER
+                maxLines = 4
+                ellipsize = null
+                setLineSpacing(0f, 1.25f)
+                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                    topMargin = gutter(context)
+                }
+            },
+        )
+        return holder
     }
 }
 
@@ -201,9 +294,13 @@ class NowPlayingTile(context: Context) : DashTile {
     private var art: ImageView? = null
     private var titleText: TextView? = null
     private var artistText: TextView? = null
-    private var hintText: TextView? = null
+    private var sourceText: TextView? = null
+    private var progress: ProgressRule? = null
+    private var content: View? = null
+    private var empty: View? = null
+    private var emptyMessage: TextView? = null
     private var transport: LinearLayout? = null
-    private var playPause: Button? = null
+    private var playPause: TransportButton? = null
 
     private var running = false
 
@@ -237,7 +334,16 @@ class NowPlayingTile(context: Context) : DashTile {
         }
     }
 
+    /**
+     * Album art, the track, a progress rule, and three drawn controls.
+     *
+     * Laid out as two mutually exclusive children of one frame — the content and
+     * the empty state — rather than by hiding four views individually, which is
+     * what the first version did and which produced a pane containing one
+     * left-aligned grey sentence and nothing else.
+     */
     override fun createView(context: Context): View {
+        val root = FrameLayout(context)
         val panel = CarStyle.panel(context)
         val gap = CarStyle.gutter(context)
 
@@ -245,34 +351,43 @@ class NowPlayingTile(context: Context) : DashTile {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val artSize = CarStyle.dp(context, 88f)
+        val artSize = CarStyle.dp(context, 84f)
         val artView = ImageView(context).apply {
             // FIT_CENTER rather than CENTER_CROP: album art is square by
             // convention but not by rule, and cropping a podcast's wide cover
             // art removes the part with the wordmark on it.
             scaleType = ImageView.ScaleType.FIT_CENTER
+            clipToOutline = true
+            background = Headway.panel(CarStyle.radius(context), Headway.SURFACE_RAISED)
             layoutParams = LinearLayout.LayoutParams(artSize, artSize).apply {
                 marginEnd = gap
             }
         }
-        val titleView = CarStyle.label(context, 20f, CarStyle.TEXT, bold = true)
+        val titleView = CarStyle.label(context, 21f, CarStyle.TEXT, bold = true)
         val artistView = CarStyle.label(context, 16f, CarStyle.DIM)
+        // The app the audio is coming from, in the accent and small. A driver
+        // with a podcast paused and music playing needs to know which one these
+        // buttons are about, and the artist line is not it.
+        val sourceView = CarStyle.label(context, 13f, CarStyle.ACCENT).apply {
+            letterSpacing = 0.06f
+        }
         val textColumn = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
+            addView(sourceView)
             addView(titleView)
             addView(artistView)
         }
         header.addView(artView)
         header.addView(textColumn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
-        val hintView = CarStyle.label(context, 16f, CarStyle.DIM).apply {
-            // The one label allowed to wrap: it carries sentences, not names,
-            // and it is never on screen at the same time as the rows whose
-            // height it would disturb.
-            maxLines = 3
-            ellipsize = null
+        val progressView = ProgressRule(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                MATCH_PARENT,
+                CarStyle.dp(context, 4f),
+            ).apply { topMargin = gap }
         }
 
+        val controlSize = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
         val controls = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -280,24 +395,44 @@ class NowPlayingTile(context: Context) : DashTile {
                 topMargin = gap
             }
         }
-        controls.addView(CarStyle.button(context, "Previous") { command { it.skipToPrevious() } })
-        val playPauseView = CarStyle.button(context, "Play") { togglePlayback() }
+        fun control(kind: Int, emphasis: Boolean, onPress: () -> Unit) =
+            TransportButton(context, kind, onPress).apply {
+                emphasised = emphasis
+                layoutParams = LinearLayout.LayoutParams(controlSize, controlSize).apply {
+                    marginStart = gap / 2
+                    marginEnd = gap / 2
+                }
+            }
+        controls.addView(
+            control(TransportButton.PREVIOUS, false) { command { it.skipToPrevious() } },
+        )
+        val playPauseView = control(TransportButton.PLAY, true) { togglePlayback() }
         controls.addView(playPauseView)
-        controls.addView(CarStyle.button(context, "Next") { command { it.skipToNext() } })
+        controls.addView(control(TransportButton.NEXT, false) { command { it.skipToNext() } })
 
         panel.addView(header)
-        panel.addView(hintView)
+        panel.addView(progressView)
         panel.addView(controls)
+
+        val emptyView = CarStyle.emptyState(context, NO_ACCESS_HINT)
+        emptyView.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+        panel.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+        root.addView(panel)
+        root.addView(emptyView)
 
         art = artView
         titleText = titleView
         artistText = artistView
-        hintText = hintView
+        sourceText = sourceView
+        progress = progressView
         transport = controls
         playPause = playPauseView
+        content = panel
+        empty = emptyView
+        emptyMessage = (emptyView as? LinearLayout)?.getChildAt(1) as? TextView
 
         render()
-        return panel
+        return root
     }
 
     override fun start() {
@@ -409,43 +544,45 @@ class NowPlayingTile(context: Context) : DashTile {
         val artView = art ?: return
         val titleView = titleText ?: return
         val artistView = artistText ?: return
-        val hintView = hintText ?: return
-        val controls = transport ?: return
-
-        if (!notificationAccessGranted(appContext)) {
-            artView.visibility = View.GONE
-            titleView.visibility = View.GONE
-            artistView.visibility = View.GONE
-            controls.visibility = View.GONE
-            hintView.visibility = View.VISIBLE
-            hintView.text = NO_ACCESS_HINT
-            return
-        }
+        val sourceView = sourceText ?: return
+        val panel = content ?: return
+        val blank = empty ?: return
 
         val current = controller
-        if (current == null) {
-            artView.visibility = View.GONE
-            titleView.visibility = View.GONE
-            artistView.visibility = View.GONE
-            controls.visibility = View.GONE
-            hintView.visibility = View.VISIBLE
-            hintView.text = "Nothing is playing."
+        val message = when {
+            !notificationAccessGranted(appContext) -> NO_ACCESS_HINT
+            current == null -> NOTHING_PLAYING_HINT
+            else -> null
+        }
+        if (message != null) {
+            emptyMessage?.text = message
+            if (blank.visibility != View.VISIBLE) {
+                blank.visibility = View.VISIBLE
+                Headway.revealIn(blank)
+            }
+            panel.visibility = View.GONE
             return
         }
+        blank.visibility = View.GONE
+        if (panel.visibility != View.VISIBLE) {
+            panel.visibility = View.VISIBLE
+            Headway.revealIn(panel)
+        }
+        // Smart-cast does not survive the null check above, because `controller`
+        // is a mutable field a callback can change between the two reads.
+        val session = current ?: return
 
-        hintView.visibility = View.GONE
-        titleView.visibility = View.VISIBLE
-        artistView.visibility = View.VISIBLE
-        controls.visibility = View.VISIBLE
-
-        val metadata = current.metadata
+        val metadata = session.metadata
         titleView.text = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
             ?: "Playing"
         artistView.text = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST)
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE)
-            ?: current.packageName
+            ?: ""
+        artistView.visibility =
+            if (artistView.text.isNullOrBlank()) View.GONE else View.VISIBLE
+        sourceView.text = appLabel(session.packageName).uppercase()
 
         // Three keys because apps disagree about which one is the cover: music
         // players fill ALBUM_ART, podcast and radio apps often fill only
@@ -454,19 +591,38 @@ class NowPlayingTile(context: Context) : DashTile {
             ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
             ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
         if (bitmap == null) {
-            artView.setImageDrawable(null)
-            artView.visibility = View.GONE
+            // The app's own icon rather than an empty square: a radio stream
+            // with no cover art still has a recognisable source, and a hole
+            // where the art goes makes the pane look half-loaded.
+            artView.setImageDrawable(appIcon(appContext, session.packageName))
+            artView.setPadding(
+                CarStyle.gutter(artView.context),
+                CarStyle.gutter(artView.context),
+                CarStyle.gutter(artView.context),
+                CarStyle.gutter(artView.context),
+            )
         } else {
             artView.setImageBitmap(bitmap)
-            artView.visibility = View.VISIBLE
+            artView.setPadding(0, 0, 0, 0)
         }
 
-        val playing = isActive(current.playbackState?.state)
-        playPause?.let {
-            it.text = if (playing) "Pause" else "Play"
-            it.contentDescription = it.text
-        }
+        val state = session.playbackState
+        progress?.set(
+            state?.position ?: 0L,
+            metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L,
+        )
+
+        val playing = isActive(state?.state)
+        playPause?.kind = if (playing) TransportButton.PAUSE else TransportButton.PLAY
     }
+
+    /** The posting app's display name, or its package when it has none. */
+    private fun appLabel(packageName: String): String = runCatching {
+        val packages = appContext.packageManager
+        packages.getApplicationLabel(
+            packages.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0L)),
+        ).toString()
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: packageName
 
     private fun isActive(state: Int?): Boolean =
         state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING
@@ -481,9 +637,20 @@ class NowPlayingTile(context: Context) : DashTile {
 
     companion object {
 
+        /**
+         * Names the exact toggle, because the old wording did not.
+         *
+         * It said "open Headway on the phone and turn it on there", and Headway
+         * on the phone had no such control — the setup screen never mentioned
+         * notification access at all. A driver following that instruction found
+         * nothing, which is how this pane came to be reported as broken. The
+         * phone screen now carries the row and the button; this says which one.
+         */
         private const val NO_ACCESS_HINT =
-            "Grant notification access to show what is playing. " +
-                "Open Headway on the phone and turn it on there."
+            "Turn on \"Now playing and messages\" in Headway on the phone " +
+                "to control any app's music from here."
+
+        private const val NOTHING_PLAYING_HINT = "Nothing is playing."
 
         /**
          * The component whose enablement is the grant.
@@ -752,21 +919,24 @@ class MessagesTile(context: Context) : DashTile {
         shown.forEach { list.addView(buildRow(context, it)) }
     }
 
-    // `line` and not `text`, for the reason CarStyle.button's parameter is
-    // `label`: inside `apply` the receiver's own `text` is what an unqualified
-    // name would find.
+    /**
+     * The pane with nothing in it.
+     *
+     * Centred under the mark rather than a grey sentence pinned to the top-left
+     * corner, which is what a pane with no messages used to look like and which
+     * reads as a rendering failure rather than as an empty inbox.
+     */
     private fun hint(context: Context, line: String): View =
-        CarStyle.label(context, 16f, CarStyle.DIM).apply {
-            text = line
-            maxLines = 3
-            ellipsize = null
-        }
+        CarStyle.emptyState(context, line)
 
     private fun buildRow(context: Context, message: CarMessage): View {
         val gap = CarStyle.gutter(context)
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(CarStyle.SURFACE)
+            // A rounded panel rather than a flat grey block: the rows are the
+            // only repeated element on the dashboard, so square edges here are
+            // what would make the whole surface look unfinished.
+            background = Headway.panel(CarStyle.radius(context), CarStyle.SURFACE)
             setPadding(gap, gap, gap, gap)
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
                 bottomMargin = gap / 2
@@ -929,15 +1099,12 @@ class MessagesTile(context: Context) : DashTile {
         collapseReply()
     }
 
-    /** Null for an app uninstalled between the notification and the draw. */
-    private fun appIcon(context: Context, packageName: String): Drawable? = runCatching {
-        context.packageManager.getApplicationIcon(packageName)
-    }.getOrNull()
-
     private companion object {
+        // Names the toggle. The old wording sent the driver to a phone screen
+        // that had no such control on it; see NowPlayingTile.NO_ACCESS_HINT.
         private const val NO_ACCESS_HINT =
-            "Grant notification access to show messages. " +
-                "Open Headway on the phone and turn it on there."
+            "Turn on \"Now playing and messages\" in Headway on the phone " +
+                "to read and reply from here."
 
         /**
          * Apps offer up to about five suggestions; three is what fits beside a
@@ -1233,6 +1400,7 @@ class ClockTile(context: Context) : DashTile {
     private var clockText: TextView? = null
     private var dateText: TextView? = null
     private var statusText: TextView? = null
+    private var linkMark: HeadwayMark? = null
 
     private var running = false
 
@@ -1250,20 +1418,48 @@ class ClockTile(context: Context) : DashTile {
         }
     }
 
+    /**
+     * Time, big; date, small; the link, with the mark beside it.
+     *
+     * The mark travels while the link is coming back up, which is the one thing
+     * on the dashboard that can change without the driver having touched
+     * anything. A pane that says "Reconnecting in 4s" in static grey and a pane
+     * that says it under a moving mark are read at different speeds, and this
+     * one is read at a glance from a moving car.
+     */
     override fun createView(context: Context): View {
         val panel = CarStyle.panel(context).apply { gravity = Gravity.CENTER_VERTICAL }
-        val clock = CarStyle.label(context, 44f, CarStyle.TEXT).apply {
+        val clock = CarStyle.label(context, 46f, CarStyle.TEXT, bold = true).apply {
             includeFontPadding = false
+            letterSpacing = -0.02f
         }
         val date = CarStyle.label(context, 15f, CarStyle.DIM)
+
+        val markSize = CarStyle.dp(context, 22f)
+        val markView = HeadwayMark(context).apply {
+            layoutParams = LinearLayout.LayoutParams(markSize * 2, markSize).apply {
+                marginEnd = CarStyle.gutter(context) / 2
+            }
+        }
         val status = CarStyle.label(context, 15f, CarStyle.DIM)
+        val statusRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                topMargin = CarStyle.gutter(context) / 2
+            }
+            addView(markView)
+            addView(status)
+        }
+
         panel.addView(clock)
         panel.addView(date)
-        panel.addView(status)
+        panel.addView(statusRow)
 
         clockText = clock
         dateText = date
         statusText = status
+        markView.also { linkMark = it }
 
         render()
         return panel
@@ -1305,6 +1501,11 @@ class ClockTile(context: Context) : DashTile {
                 },
             )
         }
+        // Setting this every tick is free — the property returns early when the
+        // value has not changed, which it has not for all but one tick in a
+        // session.
+        linkMark?.travelling =
+            state is LinkState.Connecting || state is LinkState.WaitingToRetry
     }
 
     private fun statusOf(state: LinkState): String = when (state) {

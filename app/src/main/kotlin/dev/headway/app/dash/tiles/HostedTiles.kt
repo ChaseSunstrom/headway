@@ -50,6 +50,9 @@ import android.widget.TextView
 import dev.headway.app.dash.DashNode
 import dev.headway.app.dash.DashTile
 import dev.headway.app.ui.HeadwaySettings
+import dev.headway.app.ui.theme.Headway
+import dev.headway.app.video.CarSurfaceMode
+import dev.headway.app.video.CarVideoStream
 import kotlin.math.max
 
 /**
@@ -713,7 +716,9 @@ class LauncherTile(
         }
         val view = ScrollView(context).apply {
             isFillViewport = true
-            setBackgroundColor(TILE_BACKGROUND)
+            // Transparent: `DashboardPresentation` already gave the pane a
+            // rounded panel, and painting an opaque rectangle on top of it
+            // covered exactly the corners that made it look like one.
             addView(cells, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
         // The column count depends on the pane's width, which the dashboard
@@ -789,12 +794,13 @@ class LauncherTile(
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(gutter / 2, gutter / 2, gutter / 2, gutter / 2)
-            isClickable = true
             isFocusable = true
             minimumWidth = size
             minimumHeight = size
             contentDescription = entry.label
-            setOnClickListener { launch(context, entry) }
+            // The panel background and the press dip come together; see
+            // `Headway.pressable` for why a car tile needs the dip at all.
+            Headway.pressable(this, radiusPx = size * TILE_RADIUS) { launch(context, entry) }
         }
         val iconSize = (size * ICON_FRACTION).toInt()
         cell.addView(
@@ -832,8 +838,20 @@ class LauncherTile(
         // not an activity, and RESET_TASK_IF_NEEDED so returning to a running app
         // lands on what the driver last saw rather than a fresh copy.
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-        if (startOnPhoneDisplay(context, intent, onStep)) {
-            onStep("launched ${entry.packageName} from the dashboard grid")
+        if (!startOnPhoneDisplay(context, intent, onStep)) return
+        onStep("launched ${entry.packageName} from the dashboard grid")
+
+        // And hand the car screen to it. Without this the app opens on the
+        // phone, out of sight, and the dashboard sits there looking as though
+        // the tap did nothing — which is exactly what the first drive with a
+        // drawn dashboard felt like. The app cannot be placed *on* the
+        // dashboard's display (ADR 0004), so the whole screen goes to it and
+        // the floating Home button brings the dashboard back.
+        //
+        // Ordered after the launch so the mirror's first frame already has the
+        // app in it rather than the launcher it is leaving.
+        if (!CarVideoStream.showOnCar(CarSurfaceMode.MIRROR)) {
+            onStep("could not give the car screen to ${entry.packageName}; it is open on the phone")
         }
     }
 
@@ -896,6 +914,7 @@ class LauncherTile(
 
         /** Matches `CarLauncherActivity` so the two grids look like one product. */
         const val TILE_MULTIPLIER = 2.4
+        const val TILE_RADIUS = 0.14f
         const val ICON_FRACTION = 0.45
         const val GUTTER_FRACTION = 0.25
         const val LABEL_SP = 14f
@@ -1047,10 +1066,11 @@ class MirrorTile(editMode: Boolean = false) : DashTile {
 
 // --- shared helpers ----------------------------------------------------------
 
-/** Pure black behind near-white text, the same contrast choice the launcher makes. */
-private val TILE_BACKGROUND: Int = 0xFF000000.toInt()
-private val TILE_TEXT: Int = 0xFFFFFFFF.toInt()
-private val TILE_DIM: Int = 0xFFB0BEC5.toInt()
+// The shared palette, not a fourth copy of it. See `CarStyle`'s note in
+// ContentTiles.kt for what having several copies had already cost.
+private val TILE_BACKGROUND: Int = Headway.GROUND
+private val TILE_TEXT: Int = Headway.TEXT
+private val TILE_DIM: Int = Headway.TEXT_MUTED
 private const val MESSAGE_SP = 16f
 private const val MESSAGE_PADDING_DP = 16f
 
@@ -1072,7 +1092,14 @@ private fun messageView(context: Context, message: String): TextView {
         setTextColor(TILE_DIM)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, MESSAGE_SP)
         gravity = Gravity.CENTER
+        setLineSpacing(0f, 1.25f)
         setPadding(padding, padding, padding, padding)
+        // Centred in whatever it is put into rather than pinned to the top of
+        // it: these appear alone in a pane, and a sentence in the corner of an
+        // otherwise empty panel reads as a half-drawn tile.
+        layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply {
+            gravity = Gravity.CENTER
+        }
     }
 }
 

@@ -32,7 +32,6 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.Button
 import android.widget.GridLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -43,6 +42,10 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import dev.headway.app.log.SessionLog
 import dev.headway.app.service.HeadwayService
+import dev.headway.app.ui.theme.Headway
+import dev.headway.app.ui.theme.HeadwayMark
+import dev.headway.app.video.CarSurfaceMode
+import dev.headway.app.video.CarVideoStream
 import dev.headway.transport.LinkState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -93,6 +96,9 @@ class CarLauncherActivity : AppCompatActivity() {
     private var uiScope: CoroutineScope? = null
 
     /** Re-posts itself on the next whole second rather than every 1000 ms of drift. */
+    /** Travels while the link is coming up. Null until the bar is built. */
+    private var linkMark: HeadwayMark? = null
+
     private val tick = object : Runnable {
         override fun run() {
             updateClock()
@@ -156,16 +162,33 @@ class CarLauncherActivity : AppCompatActivity() {
         return root
     }
 
+    /**
+     * The mark, the clock, the link, and the two controls.
+     *
+     * The mark is here for the same reason it is on the phone's hero and in the
+     * dashboard's clock pane: it is the one thing that moves, and while the link
+     * is coming up that motion is the whole message. Everything else on this bar
+     * is static text a driver has to actually read.
+     */
     private fun buildTopBar(): View {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
 
+        val markHeight = carMinimumTargetPx() / 2
+        linkMark = HeadwayMark(this).apply {
+            layoutParams = LinearLayout.LayoutParams(markHeight * 2, markHeight).apply {
+                marginEnd = gutter()
+            }
+        }
+        bar.addView(linkMark)
+
         val clockColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         clockText = TextView(this).apply {
             setTextColor(TEXT)
             setTextSize(TypedValue.COMPLEX_UNIT_PX, carTextSizePx(34f))
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
             includeFontPadding = false
         }
         dateText = TextView(this).apply {
@@ -185,7 +208,7 @@ class CarLauncherActivity : AppCompatActivity() {
         bar.addView(statusText, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
         bar.addView(carButton("Apps") { showAppPicker() })
-        bar.addView(carButton("Voice") { requestVoice() })
+        bar.addView(carButton("Voice", emphasised = true) { requestVoice() })
         return bar
     }
 
@@ -202,11 +225,13 @@ class CarLauncherActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(gutter() / 2, gutter() / 2, gutter() / 2, gutter() / 2)
-            isClickable = true
             isFocusable = true
             minimumWidth = size
             minimumHeight = size
-            setOnClickListener { launchApp(entry) }
+            contentDescription = entry.label
+            // pressable() gives it the panel background and the dip on tap; the
+            // long press is the only thing it does not cover.
+            Headway.pressable(this, radiusPx = size * TILE_RADIUS) { launchApp(entry) }
             setOnLongClickListener {
                 showTileOptions(entry)
                 true
@@ -237,11 +262,31 @@ class CarLauncherActivity : AppCompatActivity() {
         return tile
     }
 
-    private fun carButton(label: String, onClick: () -> Unit) = Button(this).apply {
+    /**
+     * A pill, for the reason `CarStyle.button` gives: a Material `Button`'s
+     * default surface is the mid-grey this palette exists to avoid, and undoing
+     * its tint, elevation and insets leaves nothing of it worth keeping.
+     */
+    private fun carButton(
+        label: String,
+        emphasised: Boolean = false,
+        onClick: () -> Unit,
+    ) = TextView(this).apply {
         text = label
+        gravity = Gravity.CENTER
+        setTextColor(if (emphasised) Headway.GROUND else TEXT)
         setTextSize(TypedValue.COMPLEX_UNIT_PX, carTextSizePx(16f))
+        if (emphasised) setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         minWidth = carMinimumTargetPx() * 2
         minHeight = carMinimumTargetPx()
+        contentDescription = label
+        background = Headway.panel(
+            radiusPx = carMinimumTargetPx() / 2f,
+            fill = if (emphasised) Headway.ACCENT else Headway.SURFACE_RAISED,
+            stroke = if (emphasised) null else Headway.OUTLINE,
+        )
+        isClickable = true
+        isFocusable = true
         setOnClickListener { onClick() }
         layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
             marginStart = gutter() / 2
@@ -260,6 +305,7 @@ class CarLauncherActivity : AppCompatActivity() {
                     text = "No apps pinned yet — tap Apps to choose some."
                     setTextColor(DIM)
                     setTextSize(TypedValue.COMPLEX_UNIT_PX, carTextSizePx(18f))
+                    setPadding(gutter(), gutter(), gutter(), gutter())
                 },
             )
             return
@@ -282,6 +328,8 @@ class CarLauncherActivity : AppCompatActivity() {
                 else -> DIM
             },
         )
+        linkMark?.travelling =
+            state is LinkState.Connecting || state is LinkState.WaitingToRetry
     }
 
     private fun updateClock() {
@@ -307,6 +355,11 @@ class CarLauncherActivity : AppCompatActivity() {
             toast("Could not open ${entry.label}")
         } else {
             SessionLog.shared.info(TAG, "launched ${entry.packageName} from the car launcher")
+            // Give the car screen to it if a session is up and currently drawing
+            // the dashboard. No-op when Headway is already mirroring — which is
+            // the case whenever this activity is the thing being mirrored — so
+            // the call is safe from either surface.
+            CarVideoStream.showOnCar(CarSurfaceMode.MIRROR)
         }
     }
 
@@ -477,11 +530,17 @@ class CarLauncherActivity : AppCompatActivity() {
         private const val ICON_FRACTION = 0.45
         private const val GUTTER_FRACTION = 0.25
 
-        private val BACKGROUND: Int = 0xFF000000.toInt()
-        private val TEXT: Int = 0xFFFFFFFF.toInt()
-        private val DIM: Int = 0xFFB0BEC5.toInt()
-        private val GOOD: Int = 0xFF7BE38B.toInt()
-        private val BAD: Int = 0xFFFF7A7A.toInt()
+        // Deferred to the shared palette rather than held as literals here.
+        // This file used to own one of three copies of the same six colours,
+        // and the three had already drifted apart by a shade.
+        private val BACKGROUND: Int = Headway.GROUND
+        private val TEXT: Int = Headway.TEXT
+        private val DIM: Int = Headway.TEXT_MUTED
+        private val GOOD: Int = Headway.GOOD
+        private val BAD: Int = Headway.FAULT
+
+        /** A tile's corner radius, as a fraction of its side. */
+        private const val TILE_RADIUS = 0.14f
 
         /**
          * Invoked when the driver presses Voice.

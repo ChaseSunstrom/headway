@@ -33,7 +33,6 @@ import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -50,9 +49,13 @@ import dev.headway.app.update.AppUpdater
 import dev.headway.app.update.AvailableRelease
 import dev.headway.app.update.ReleaseCatalog
 import dev.headway.app.update.UpdateException
+import dev.headway.app.dash.tiles.NowPlayingTile
 import dev.headway.app.quirks.QuirkStore
 import dev.headway.app.service.HeadwayService
+import dev.headway.app.ui.theme.HeadwayMark
+import dev.headway.app.ui.theme.Phone
 import dev.headway.app.voice.SpeechModelInstaller
+import dev.headway.app.voice.VoiceOverlay
 import dev.headway.transport.LinkState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -135,14 +138,21 @@ object HeadwaySettings {
 class MainActivity : AppCompatActivity() {
 
     private lateinit var statusValue: TextView
-    private lateinit var permissionRows: LinearLayout
-    private lateinit var accessibilityValue: TextView
-    private lateinit var connectButton: Button
+    private lateinit var mark: HeadwayMark
+    private lateinit var connectButton: TextView
     private lateinit var parkedOnlySwitch: SwitchCompat
+    private lateinit var dashboardSwitch: SwitchCompat
     private lateinit var updateValue: TextView
     private lateinit var certificateValue: TextView
     private lateinit var carWifiValue: TextView
-    private lateinit var updateButton: Button
+    private lateinit var updateButton: TextView
+
+    /** The readiness checklist, one row per thing a user has to grant once. */
+    private lateinit var permissionStatus: Phone.StatusRow
+    private lateinit var accessibilityStatus: Phone.StatusRow
+    private lateinit var notificationStatus: Phone.StatusRow
+    private lateinit var overlayStatus: Phone.StatusRow
+    private lateinit var speechStatus: Phone.StatusRow
 
     private var uiScope: CoroutineScope? = null
 
@@ -359,74 +369,341 @@ class MainActivity : AppCompatActivity() {
 
     // --- layout -------------------------------------------------------------
 
+    /**
+     * The page.
+     *
+     * Ordered by when a user needs each part rather than by how the code is
+     * organised: what the link is doing and the one button that changes it,
+     * then the things that have to be granted once, then the car-specific
+     * settings, then the things that only matter when something is wrong.
+     *
+     * Every card's explanation is folded away behind a [Phone.disclosure]. The
+     * text is unchanged and it is all still here — it is simply no longer
+     * between the reader and the button.
+     */
     private fun buildContent(): View {
-        val column = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(24), dp(20), dp(32))
+        val column = Phone.page(this)
+
+        column.addView(buildHero())
+        column.addView(Phone.sectionLabel(this, "Before the first drive"))
+        column.addView(buildChecklist())
+        column.addView(Phone.sectionLabel(this, "The car"))
+        column.addView(buildCarScreenCard())
+        column.addView(buildCarWifiCard())
+        column.addView(buildQuirksCard())
+        column.addView(buildCertificateCard())
+        column.addView(Phone.sectionLabel(this, "Your choice"))
+        column.addView(buildDrivingCard())
+        column.addView(Phone.sectionLabel(this, "If something is wrong"))
+        column.addView(buildDiagnosticsCard())
+        column.addView(buildUpdatesCard())
+
+        Phone.stagger(column)
+
+        return ScrollView(this).apply {
+            setBackgroundColor(dev.headway.app.ui.theme.Headway.GROUND)
+            isFillViewport = true
+            addView(column, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
+    }
 
-        column.addView(heading("Headway"))
-        column.addView(
-            body(
-                "Casts this phone to a wireless Android Auto head unit. " +
-                    "Nothing leaves the device and nothing needs the internet.",
+    /**
+     * The mark, the link state, and Connect.
+     *
+     * This is the only part of the screen a user who has already set the phone
+     * up ever looks at, so it is the only part above the fold. The mark
+     * animates while the link is coming up — see [HeadwayMark] for why that is
+     * a travelling sweep rather than a spinner.
+     */
+    private fun buildHero(): View {
+        val card = Phone.card(this)
+
+        val markRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val markView = HeadwayMark(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(30)).apply {
+                marginEnd = dp(14)
+            }
+        }
+        markRow.addView(markView)
+        markRow.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(
+                    TextView(this@MainActivity).apply {
+                        text = "Headway"
+                        setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+                        setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+                        letterSpacing = 0.01f
+                    },
+                )
+                addView(
+                    Phone.note(
+                        this@MainActivity,
+                        "Build ${BuildConfig.VERSION_CODE} · nothing leaves this phone",
+                    ).apply { setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f) },
+                )
+            },
+        )
+        card.addView(markRow)
+
+        statusValue = TextView(this).apply {
+            setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+            text = "Not connected"
+            layoutParams = Phone.spaced(this@MainActivity, 16f)
+        }
+        card.addView(statusValue)
+
+        connectButton = Phone.button(this, "Connect to the car", primary = true) {
+            toggleConnection()
+        }
+        card.addView(connectButton)
+
+        mark = markView
+        return card
+    }
+
+    /**
+     * Everything that has to be granted once, and whether it has been.
+     *
+     * A checklist rather than five paragraphs because the question a user
+     * actually has is "is this phone ready", and that is a question about
+     * state, not about explanations. Each row carries its own remedy, and the
+     * remedy disappears once the row is green.
+     *
+     * The last three rows are new to this screen and their absence was a real
+     * bug rather than an omission: notification access is what makes the Now
+     * playing and Messages panes work at all, and there was no way to discover
+     * that from inside Headway.
+     */
+    private fun buildChecklist(): View {
+        val card = Phone.card(this, "Ready to connect?")
+
+        permissionStatus = Phone.StatusRow(this, "Bluetooth, Wi-Fi and notifications")
+            .withAction("Grant") { requestMissingPermissions() }
+        card.addView(permissionStatus.view)
+
+        accessibilityStatus = Phone.StatusRow(this, "Car touchscreen")
+            .withAction("Open") { openAccessibilitySettings() }
+        card.addView(accessibilityStatus.view)
+
+        notificationStatus = Phone.StatusRow(this, "Now playing and messages")
+            .withAction("Turn on") { openNotificationAccess() }
+        card.addView(notificationStatus.view)
+
+        overlayStatus = Phone.StatusRow(this, "Voice button over other apps")
+            .withAction("Allow") { openOverlaySettings() }
+        card.addView(overlayStatus.view)
+
+        // No remedy button: this one installs itself and there is nothing for a
+        // user to press. It is on the list because a driver whose voice
+        // commands do nothing deserves to be able to see why.
+        speechStatus = Phone.StatusRow(this, "Offline speech model")
+        card.addView(speechStatus.view)
+
+        card.addView(Phone.divider(this))
+        card.addView(
+            Phone.disclosure(
+                this,
+                "What each of these is for",
+                "Bluetooth finds the car and collects its Wi-Fi details; nearby " +
+                    "devices lets Headway join that network; notifications keep the " +
+                    "connection alive while the screen is off. Location is never " +
+                    "requested.\n\n" +
+                    "The car touchscreen needs Android's accessibility grant, and no " +
+                    "app is allowed to give itself that one — a service that could " +
+                    "would be a keylogger. The system's wording covers every " +
+                    "accessibility service; Headway's is registered without " +
+                    "permission to read screen content, so it can inject the taps the " +
+                    "car sends and nothing else. If it switches itself off, that is " +
+                    "Android: uninstalling clears the grant and force-stopping can " +
+                    "too.\n\n" +
+                    "Now playing and messages read the same feed the lock screen " +
+                    "does. Without this grant those two panes on the car screen have " +
+                    "nothing to show, which is the single most common reason the " +
+                    "dashboard looks empty.\n\n" +
+                    "The voice button is drawn over whatever app is on screen, so it " +
+                    "is reachable from the car even when Headway is not the " +
+                    "foreground app.\n\n" +
+                    "The speech model is bundled in the app and unpacks itself the " +
+                    "first time Headway runs. Nothing is downloaded and no audio " +
+                    "leaves the phone.",
             ),
         )
+        card.addView(
+            Phone.button(this, "Open Headway's system settings") { openAppSettings() },
+        )
+        return card
+    }
 
-        column.addView(sectionTitle("Connection"))
-        statusValue = body("Idle")
-        column.addView(statusValue)
-        connectButton = button("Connect to the car") { toggleConnection() }
-        column.addView(connectButton)
-
-        column.addView(sectionTitle("Permissions"))
-        column.addView(
-            body(
-                "Headway asks for the minimum: Bluetooth to find the car and " +
-                    "collect its Wi-Fi details, nearby devices to join that Wi-Fi, " +
-                    "and notifications so the connection can stay alive while the " +
-                    "screen is off. It never asks for location.",
+    /**
+     * What the car shows, which is the choice this build exists to offer.
+     *
+     * Mirroring was the default until a real drive proved how badly it fits: a
+     * 1080x2404 phone inside an 800x480 panel uses 216 of 800 columns and
+     * leaves the rest black. The dashboard is drawn at the car's own size
+     * instead. The switch is here because the mirror is still the only way to
+     * put a third-party app's own pixels on the screen, and that is a trade
+     * only the driver can make.
+     */
+    private fun buildCarScreenCard(): View {
+        val card = Phone.card(this, "What the car shows")
+        card.addView(
+            Phone.body(
+                this,
+                "Headway draws a dashboard at the car's own resolution: what is " +
+                    "playing, messages, the clock, and your pinned apps.",
             ),
         )
-        permissionRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        column.addView(permissionRows)
-        column.addView(button("Grant the missing permissions") { requestMissingPermissions() })
-        column.addView(
-            button("Open Headway's system settings") { openAppSettings() },
-        )
-
-        column.addView(sectionTitle("Car touchscreen"))
-        column.addView(
-            body(
-                "To let the car's touchscreen control this phone, Android requires " +
-                    "you to switch Headway on yourself under Settings > Accessibility. " +
-                    "No app is allowed to grant this to itself.\n\n" +
-                    "The system dialog is worded in general terms because it covers " +
-                    "every accessibility service. Headway's is registered without " +
-                    "permission to read your screen content: it can inject the taps " +
-                    "and swipes the car sends, and nothing else.\n\n" +
-                    "If it switches itself off, that is Android, not a bug. " +
-                    "Uninstalling clears the grant, and force-stopping the app can " +
-                    "too. Nothing here can turn it back on — a service able to " +
-                    "re-enable itself would be a keylogger, which is the whole reason " +
-                    "the platform forbids it. Ordinary updates should keep it.",
+        dashboardSwitch = SwitchCompat(this).apply {
+            text = "Draw a dashboard instead of mirroring the phone"
+            setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
+            minHeight = dp(MIN_TOUCH_TARGET_DP)
+            isChecked = HeadwaySettings.dashboardOnCarScreen(this@MainActivity)
+            setOnCheckedChangeListener { _, checked ->
+                HeadwaySettings.of(this@MainActivity).edit()
+                    .putBoolean(HeadwaySettings.KEY_CAR_SURFACE_DASHBOARD, checked)
+                    .apply()
+                SessionLog.shared.info(TAG, "car surface set to ${if (checked) "dashboard" else "mirror"}")
+            }
+            layoutParams = Phone.spaced(this@MainActivity, 12f)
+        }
+        card.addView(dashboardSwitch)
+        card.addView(
+            Phone.disclosure(
+                this,
+                "Why not just mirror the phone?",
+                "Because the shapes do not match. This phone is 1080 by 2404 and " +
+                    "the car panel is 800 by 480, so a mirrored image fills 216 of " +
+                    "the car's 800 columns and the other three quarters are a black " +
+                    "bar. Every touch has to be scaled by a fifth, every phone " +
+                    "notification lands on the dashboard, and your own screen is on " +
+                    "show in the car.\n\n" +
+                    "Android Auto does not mirror either, and this is why: the head " +
+                    "unit is a display, not a window onto the phone.\n\n" +
+                    "Turn this off and Headway goes back to mirroring, which is still " +
+                    "the only way to put another app's own screen on the car — " +
+                    "Android does not let an app place another app's window on a " +
+                    "display it created.",
             ),
         )
-        accessibilityValue = body("Checking...")
-        column.addView(accessibilityValue)
-        column.addView(button("Open Accessibility settings") { openAccessibilitySettings() })
+        return card
+    }
 
-        column.addView(sectionTitle("Video while driving"))
-        column.addView(
-            body(
+    private fun buildCarWifiCard(): View {
+        val card = Phone.card(this, "Car Wi-Fi")
+        carWifiValue = Phone.body(this, describeCarWifi())
+        card.addView(carWifiValue)
+        card.addView(
+            Phone.disclosure(
+                this,
+                "The car joins but never gives an address",
+                "GrapheneOS gives every network Headway joins a brand new MAC " +
+                    "address each time, so the car sees an unfamiliar device on every " +
+                    "attempt — and GrapheneOS already turns that off for Google's " +
+                    "Android Auto, keyed to that app, which Headway cannot reach.\n\n" +
+                    "Saving the car's network puts the two controls that fix it in " +
+                    "front of you: Privacy → \"Use per-network randomized MAC\", and " +
+                    "\"Send device name to network\". The button below fills in the " +
+                    "network name and password so you do not have to type them.",
+            ),
+        )
+        card.addView(Phone.button(this, "Set up this car's Wi-Fi") { setUpCarWifi() })
+        return card
+    }
+
+    private fun buildQuirksCard(): View {
+        val card = Phone.card(this, "If the car's Wi-Fi is never joined")
+        card.addView(
+            Phone.note(
+                this,
+                "Two things differ between head units and there is no way to tell " +
+                    "from the phone which yours needs. Change one at a time and press " +
+                    "Connect again; the log says which combination was used.",
+            ),
+        )
+        card.addView(
+            quirkSwitch(
+                "Probe for a hidden network name",
+                "For a head unit that does not broadcast its SSID. It fails " +
+                    "exactly like a car that is not there.",
+                { it.hiddenSsid },
+            ) { q, on -> q.copy(hiddenSsid = on) },
+        )
+        card.addView(
+            quirkSwitch(
+                "Tell the car which Wi-Fi channel we accept",
+                "For a head unit that hands over credentials and then never " +
+                    "brings its Wi-Fi up.",
+                { it.announceWifiChannel },
+            ) { q, on -> q.copy(announceWifiChannel = on) },
+        )
+        card.addView(
+            Phone.note(
+                this,
+                "Matching the car's exact radio is alternated automatically on each " +
+                    "attempt, because both settings have been needed on real hardware.",
+            ).apply { layoutParams = Phone.spaced(this@MainActivity, 10f) },
+        )
+        card.addView(
+            Phone.button(this, "Create the head unit quirk file") { createQuirkTemplate() },
+        )
+        return card
+    }
+
+    private fun buildCertificateCard(): View {
+        val card = Phone.card(this, "Phone certificate")
+        certificateValue = Phone.body(
+            this,
+            dev.headway.app.link.PhoneCertificateStore.inAppStorage(this).describe(),
+        )
+        card.addView(certificateValue)
+        card.addView(
+            Phone.disclosure(
+                this,
+                "The car says the clocks disagree",
+                "The certificate every open-source Android Auto implementation " +
+                    "ships expired in August 2022. A head unit that checks it lets " +
+                    "the session get all the way through TLS and then refuses to " +
+                    "authenticate — some describe it on screen as the phone and " +
+                    "vehicle clocks disagreeing. Import a valid certificate and key " +
+                    "once and every session after that uses them.",
+            ),
+        )
+        card.addView(
+            Phone.button(this, "Import a certificate and key") {
+                toast("Pick the certificate (.pem) first")
+                runCatching { pickCertificate.launch(arrayOf("*/*")) }
+                    .onFailure { toast("No file picker available") }
+            },
+        )
+        card.addView(
+            Phone.button(this, "Go back to the bundled certificate") {
+                dev.headway.app.link.PhoneCertificateStore.inAppStorage(this).clear()
+                refresh()
+                toast("Using the bundled certificate again")
+            },
+        )
+        return card
+    }
+
+    private fun buildDrivingCard(): View {
+        val card = Phone.card(this, "Video while driving")
+        card.addView(
+            Phone.body(
+                this,
                 "What you show on the car screen is your responsibility, and " +
-                    "playing video while driving is illegal in many places. " +
-                    "Headway does not decide for you.",
+                    "playing video while driving is illegal in many places. Headway " +
+                    "does not decide for you.",
             ),
         )
         parkedOnlySwitch = SwitchCompat(this).apply {
             text = "Only allow video apps while parked"
-            setTextColor(TEXT)
+            setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
             minHeight = dp(MIN_TOUCH_TARGET_DP)
             isChecked = HeadwaySettings.parkedOnlyVideo(this@MainActivity)
             setOnCheckedChangeListener { _, checked ->
@@ -435,126 +712,44 @@ class MainActivity : AppCompatActivity() {
                     .apply()
                 SessionLog.shared.info(TAG, "parked-only video set to $checked")
             }
+            layoutParams = Phone.spaced(this@MainActivity, 12f)
         }
-        column.addView(parkedOnlySwitch, marginParams())
-        column.addView(button("Show the safety notice again") { showSafetyNotice(firstRun = false) })
+        card.addView(parkedOnlySwitch)
+        card.addView(
+            Phone.button(this, "Show the safety notice again") { showSafetyNotice(firstRun = false) },
+        )
+        return card
+    }
 
-        column.addView(sectionTitle("Diagnostics"))
-        column.addView(
-            body(
-                "If the car refuses to connect, export the log and send it with " +
-                    "your report. Wi-Fi passwords are removed from it, and only " +
-                    "debug builds can write encryption keys.",
+    private fun buildDiagnosticsCard(): View {
+        val card = Phone.card(this, "Diagnostics")
+        card.addView(
+            Phone.note(
+                this,
+                "If the car refuses to connect, export the log and send it with your " +
+                    "report. Wi-Fi passwords are removed from it, and only debug " +
+                    "builds can write encryption keys.",
             ),
         )
-        column.addView(button("Export the session log") { exportLog() })
+        card.addView(Phone.button(this, "Export the session log") { exportLog() })
+        return card
+    }
 
-        column.addView(sectionTitle("If the car's Wi-Fi never gets joined"))
-        column.addView(
-            body(
-                "Three things are known to differ between head units, and there " +
-                    "is no way to tell from the phone which yours needs. Change " +
-                    "one at a time and press Connect again; the log says which " +
-                    "combination was used.",
-            ),
+    private fun buildUpdatesCard(): View {
+        val card = Phone.card(this, "Updates")
+        updateValue = Phone.body(this, "Build ${BuildConfig.VERSION_CODE} installed")
+        card.addView(updateValue)
+        card.addView(
+            Phone.note(
+                this,
+                "Headway is installed from GitHub releases, so it checks there. This " +
+                    "only ever happens when you press the button — nothing checks in " +
+                    "the background, and the car link never uses the internet.",
+            ).apply { layoutParams = Phone.spaced(this@MainActivity, 6f) },
         )
-        column.addView(
-            quirkSwitch(
-                "Probe for a hidden network name",
-                "For a head unit that does not broadcast its SSID. It fails " +
-                    "exactly like a car that is not there.",
-                { it.hiddenSsid },
-            ) { q, on -> q.copy(hiddenSsid = on) },
-        )
-        column.addView(
-            quirkSwitch(
-                "Tell the car which Wi-Fi channel we accept",
-                "For a head unit that hands over credentials and then never " +
-                    "brings its Wi-Fi up.",
-                { it.announceWifiChannel },
-            ) { q, on -> q.copy(announceWifiChannel = on) },
-        )
-        column.addView(
-            body(
-                "Matching the car's exact radio is alternated automatically on " +
-                    "each attempt, because both settings have been needed on real " +
-                    "hardware. Edit the quirk file to force one.",
-            ),
-        )
-        column.addView(
-            button("Create the head unit quirk file") { createQuirkTemplate() },
-        )
-
-        column.addView(sectionTitle("Car Wi-Fi"))
-        column.addView(
-            body(
-                "If the car accepts the phone onto its Wi-Fi and then never gives " +
-                    "it an address, this is the fix to try. GrapheneOS gives every " +
-                    "network Headway joins a brand new MAC address each time, so the " +
-                    "car sees an unfamiliar device on every attempt — and GrapheneOS " +
-                    "already turns that off for Google's Android Auto, keyed to that " +
-                    "app, which Headway cannot reach.\n\n" +
-                    "Saving the car's network puts the two controls that fix it in " +
-                    "front of you: Privacy → \"Use per-network randomized MAC\", and " +
-                    "\"Send device name to network\". This button fills in the network " +
-                    "name and password so you do not have to.",
-            ),
-        )
-        carWifiValue = body(describeCarWifi())
-        column.addView(carWifiValue)
-        column.addView(
-            button("Set up this car's Wi-Fi") { setUpCarWifi() },
-        )
-
-        column.addView(sectionTitle("Phone certificate"))
-        certificateValue = body(
-            dev.headway.app.link.PhoneCertificateStore.inAppStorage(this).describe(),
-        )
-        column.addView(certificateValue)
-        column.addView(
-            body(
-                "The certificate every open-source Android Auto implementation " +
-                    "ships expired in August 2022. A head unit that checks it lets " +
-                    "the session get all the way through TLS and then refuses to " +
-                    "authenticate — some describe it on screen as the phone and " +
-                    "vehicle clocks disagreeing. Import a valid certificate and " +
-                    "key once and every session after that uses them.",
-            ),
-        )
-        column.addView(
-            button("Import a certificate and key") {
-                toast("Pick the certificate (.pem) first")
-                runCatching { pickCertificate.launch(arrayOf("*/*")) }
-                    .onFailure { toast("No file picker available") }
-            },
-        )
-        column.addView(
-            button("Go back to the bundled certificate") {
-                dev.headway.app.link.PhoneCertificateStore.inAppStorage(this).clear()
-                refresh()
-                toast("Using the bundled certificate again")
-            },
-        )
-
-        column.addView(sectionTitle("Updates"))
-        column.addView(
-            body(
-                "Headway is installed from GitHub releases, so it checks for new " +
-                    "builds there. This only ever happens when you press the " +
-                    "button — nothing checks in the background, and the car link " +
-                    "never uses the internet.",
-            ),
-        )
-        updateValue = body("Build ${BuildConfig.VERSION_CODE} installed")
-        column.addView(updateValue)
-        updateButton = button("Check for updates") { checkForUpdate() }
-        column.addView(updateButton)
-
-        return ScrollView(this).apply {
-            setBackgroundColor(BACKGROUND)
-            isFillViewport = true
-            addView(column, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        }
+        updateButton = Phone.button(this, "Check for updates") { checkForUpdate() }
+        card.addView(updateButton)
+        return card
     }
 
     // --- state --------------------------------------------------------------
@@ -562,15 +757,56 @@ class MainActivity : AppCompatActivity() {
     private fun refresh() {
         refreshPermissions()
         refreshAccessibility()
-        // Re-read rather than trust the widget: the preference is shared with the
-        // car launcher and with anything else that may have changed it while this
-        // activity was stopped.
+        refreshGrants()
+        // Re-read rather than trust the widget: the preferences are shared with
+        // the car launcher and with anything else that may have changed them
+        // while this activity was stopped.
         parkedOnlySwitch.isChecked = HeadwaySettings.parkedOnlyVideo(this)
+        dashboardSwitch.isChecked = HeadwaySettings.dashboardOnCarScreen(this)
         if (::certificateValue.isInitialized) {
             certificateValue.text =
                 dev.headway.app.link.PhoneCertificateStore.inAppStorage(this).describe()
         }
         if (::carWifiValue.isInitialized) carWifiValue.text = describeCarWifi()
+    }
+
+    /**
+     * The three grants that are not runtime permissions.
+     *
+     * Each is a user-granted special access rather than anything privileged —
+     * the same class as the accessibility toggle — and none of them can be
+     * requested with a dialog. All Headway can do is report the state and open
+     * the right Settings page, which is what the rows' buttons do.
+     */
+    private fun refreshGrants() {
+        val notifications = NowPlayingTile.notificationAccessGranted(this)
+        notificationStatus.set(
+            if (notifications) Phone.Level.GOOD else Phone.Level.WARN,
+            if (notifications) {
+                "On — the car shows what is playing, and your messages"
+            } else {
+                "Off — the Now playing and Messages panes will be empty"
+            },
+        )
+
+        val overlay = VoiceOverlay.canDraw(this)
+        overlayStatus.set(
+            if (overlay) Phone.Level.GOOD else Phone.Level.WARN,
+            if (overlay) {
+                "On — the mic button is reachable from any app"
+            } else {
+                "Off — the voice button only appears on Headway's own screens"
+            },
+        )
+
+        // Checked on every resume rather than once: the unpack runs in the
+        // background from onCreate, so the first read of this is usually "not
+        // yet" and the true answer arrives seconds later.
+        val speech = SpeechModelInstaller.isInstalled(applicationContext)
+        speechStatus.set(
+            if (speech) Phone.Level.GOOD else Phone.Level.IDLE,
+            if (speech) "Installed — voice commands work with no network" else "Unpacking...",
+        )
     }
 
     /** What Headway knows about the car's network, for the settings screen. */
@@ -625,29 +861,43 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * The runtime permissions, as one line.
+     *
+     * A list of four rows saying "granted" was four rows of nothing on a phone
+     * where they are all granted, which is the usual case after the first run.
+     * The row names what is missing instead, and says nothing when nothing is.
+     */
     private fun refreshPermissions() {
-        permissionRows.removeAllViews()
-        for (need in requiredPermissions()) {
-            val ok = isGranted(need.permission)
-            permissionRows.addView(
-                body(
-                    "${if (ok) "granted" else "not granted"} — ${need.label}",
-                ).apply { setTextColor(if (ok) GOOD else WARN) },
-            )
-        }
+        val missing = requiredPermissions().filterNot { isGranted(it.permission) }
+        permissionStatus.set(
+            if (missing.isEmpty()) Phone.Level.GOOD else Phone.Level.WARN,
+            if (missing.isEmpty()) {
+                "All granted. Location is never requested."
+            } else {
+                "Missing: " + missing.joinToString(", ") { it.label.substringAfter(": ") }
+            },
+        )
     }
 
     private fun refreshAccessibility() {
         val enabled = HeadwayAccessibilityService.isEnabled(this)
         val bound = HeadwayAccessibilityService.instance.value != null
-        accessibilityValue.text = when {
-            enabled && bound -> "On — the car's touchscreen will work"
-            // Enabled in Settings but not yet bound is normal for a second or
-            // two after the toggle, and permanent if the service crashed.
-            enabled -> "Switched on, waiting for Android to start it"
-            else -> "Off — the car screen will show the phone but touches will do nothing"
-        }
-        accessibilityValue.setTextColor(if (enabled && bound) GOOD else WARN)
+        accessibilityStatus.set(
+            when {
+                enabled && bound -> Phone.Level.GOOD
+                // Enabled in Settings but not yet bound is normal for a second
+                // or two after the toggle, and permanent if the service
+                // crashed.
+                enabled -> Phone.Level.IDLE
+                else -> Phone.Level.WARN
+            },
+            when {
+                enabled && bound -> "On — the car's touchscreen controls the phone"
+                enabled -> "Switched on, waiting for Android to start it"
+                else -> "Off — touches on a mirrored app will do nothing"
+            },
+        )
     }
 
     private fun showLinkState(state: LinkState) {
@@ -661,17 +911,25 @@ class MainActivity : AppCompatActivity() {
         }
         statusValue.setTextColor(
             when (state) {
-                is LinkState.Connected -> GOOD
-                is LinkState.GaveUp -> BAD
-                else -> TEXT
+                is LinkState.Connected -> dev.headway.app.ui.theme.Headway.GOOD
+                is LinkState.GaveUp -> dev.headway.app.ui.theme.Headway.FAULT
+                else -> dev.headway.app.ui.theme.Headway.TEXT
             },
         )
-        connectButton.text =
-            if (state is LinkState.Idle || state is LinkState.GaveUp) {
-                "Connect to the car"
-            } else {
-                "Disconnect"
-            }
+
+        // The mark sweeps while the link is being brought up and rests once it
+        // is either up or given up on. It is the only moving thing on the
+        // screen, so it says "something is happening" without a label.
+        if (::mark.isInitialized) {
+            mark.travelling = state is LinkState.Connecting || state is LinkState.WaitingToRetry
+        }
+
+        val idle = state is LinkState.Idle || state is LinkState.GaveUp
+        connectButton.text = if (idle) "Connect to the car" else "Disconnect"
+        // Filled while there is something to start, outlined while the only
+        // thing it can do is stop: the accent is reserved for the action the
+        // user came here to take.
+        Phone.applyPill(connectButton, primary = idle)
 
         // Released as soon as the link settles either way. Keeping a phone
         // screen awake for a whole drive is not this screen's job -- the car
@@ -825,6 +1083,47 @@ class MainActivity : AppCompatActivity() {
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
                 .setData(Uri.fromParts("package", packageName, null)),
         )
+    }
+
+    /**
+     * Opens the notification-access list, which is what makes the media panes work.
+     *
+     * This grant is the answer to "the car shows an empty Now playing pane", and
+     * until this build there was no way to find that out from inside Headway:
+     * the tile said to turn it on "in Headway on the phone", and Headway on the
+     * phone did not mention it at all.
+     *
+     * `getActiveSessions` does not take a permission string — it takes the
+     * `ComponentName` of one of the caller's own enabled
+     * `NotificationListenerService`s. Headway has one, so this single toggle
+     * serves both the Now playing pane and the Messages pane.
+     */
+    private fun openNotificationAccess() {
+        val intent = NowPlayingTile.notificationAccessIntent().setFlags(0)
+        if (intent.resolveActivity(packageManager) == null) {
+            toast("This device has no notification access screen")
+            return
+        }
+        startActivity(intent)
+        toast("Find Headway in the list and switch it on")
+    }
+
+    /**
+     * Opens the draw-over-other-apps page for the voice button.
+     *
+     * `SYSTEM_ALERT_WINDOW` is a user-granted special access, not a privileged
+     * permission, and it is the only way the mic button survives the driver
+     * opening Maps — a button on Headway's own surface disappears the moment
+     * anything else is in front.
+     */
+    private fun openOverlaySettings() {
+        val intent = VoiceOverlay.permissionIntent(this).setFlags(0)
+        if (intent.resolveActivity(packageManager) == null) {
+            toast("This device has no overlay settings screen")
+            return
+        }
+        startActivity(intent)
+        toast("Allow Headway to display over other apps")
     }
 
     private fun exportLog() {
@@ -1011,8 +1310,9 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Before you drive")
             .setMessage(
-                "Headway shows this phone's screen on your car's display. What " +
-                    "you choose to show there is your responsibility.\n\n" +
+                "Headway puts content on your car's display, and can mirror this " +
+                    "phone's screen there. What you choose to show is your " +
+                    "responsibility.\n\n" +
                     "Playing video, or interacting with the phone, while the car " +
                     "is moving is illegal in many places and dangerous in all of " +
                     "them. Headway does not check what you are doing and does not " +
@@ -1088,41 +1388,6 @@ class MainActivity : AppCompatActivity() {
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
 
-    private fun marginParams(): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-            topMargin = dp(8)
-        }
-
-    private fun heading(text: String) = TextView(this).apply {
-        this.text = text
-        setTextColor(TEXT)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
-        setPadding(0, 0, 0, dp(8))
-    }
-
-    private fun sectionTitle(text: String) = TextView(this).apply {
-        this.text = text.uppercase()
-        setTextColor(ACCENT)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-        letterSpacing = 0.08f
-        setPadding(0, dp(24), 0, dp(6))
-    }
-
-    private fun body(text: String) = TextView(this).apply {
-        this.text = text
-        setTextColor(TEXT)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-        setPadding(0, dp(2), 0, dp(2))
-    }
-
-    private fun button(text: String, onClick: () -> Unit) = Button(this).apply {
-        this.text = text
-        minHeight = dp(MIN_TOUCH_TARGET_DP)
-        gravity = Gravity.CENTER
-        setOnClickListener { onClick() }
-        layoutParams = marginParams()
-    }
-
     /**
      * A switch bound to one boolean in the universal quirk profile.
      *
@@ -1142,7 +1407,7 @@ class MainActivity : AppCompatActivity() {
         row.addView(
             SwitchCompat(this).apply {
                 text = label
-                setTextColor(TEXT)
+                setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
                 minHeight = dp(MIN_TOUCH_TARGET_DP)
                 isChecked = runCatching { read(store.universalQuirks()) }.getOrDefault(false)
                 setOnCheckedChangeListener { _, checked ->
@@ -1156,9 +1421,9 @@ class MainActivity : AppCompatActivity() {
                         .onFailure { toast("Could not save that: ${it.message}") }
                 }
             },
-            marginParams(),
+            Phone.spaced(this, 12f),
         )
-        row.addView(body(explanation))
+        row.addView(Phone.note(this, explanation))
         return row
     }
 
@@ -1181,14 +1446,10 @@ class MainActivity : AppCompatActivity() {
         /** Android's own minimum, and the floor CLAUDE.md sets for the car screen. */
         private const val MIN_TOUCH_TARGET_DP = 48
 
-        // ARGB literals rather than Color.parseColor, which is deprecated on
-        // API 35, and rather than colour resources, which this screen avoids
-        // adding so it needs no res/ changes.
-        private val BACKGROUND: Int = 0xFF000000.toInt()
-        private val TEXT: Int = 0xFFECEFF1.toInt()
-        private val ACCENT: Int = 0xFF7EC8FF.toInt()
-        private val GOOD: Int = 0xFF7BE38B.toInt()
-        private val WARN: Int = 0xFFFFC46B.toInt()
-        private val BAD: Int = 0xFFFF7A7A.toInt()
+        // The palette lives in `dev.headway.app.ui.theme.Headway`, which is
+        // derived from the launcher icon and shared with every car surface. The
+        // ARGB literals that used to be here were a second, slightly different
+        // set of the same colours, and the two had already drifted: this
+        // screen's accent was #7EC8FF against the icon's #4FC3F7.
     }
 }
