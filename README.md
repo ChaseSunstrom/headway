@@ -89,19 +89,47 @@ core-voice/         Car mic -> on-device STT -> command engine              (JVM
 
 ## What the car screen actually shows
 
-Not the phone. Headway draws a dashboard at the head unit's own resolution and
-density, in tabs the driver switches between:
+Not the phone. Headway draws at the head unit's own resolution and density: a
+**rail** across the top and a **tree of panels** underneath it.
 
-| Tab | What it is |
+The rail holds three things and nothing else — a settings button, a microphone
+button, and whatever you pinned. A pinned item is either one of your layouts
+(what used to be a tab) or an app you open often. Both are your choice, in your
+order.
+
+A layout is any arrangement of panels, of any depth, and you edit it **on the car
+screen**: settings → *Edit this layout*, then split a panel, drag a divider,
+choose what each one shows, or take one away. Layouts are **locked by default**,
+so a thumb steadying itself on the dashboard cannot rearrange your car.
+
+| Panel | What it is |
 |---|---|
+| **App** | **A real app, running, inside the panel** |
 | **Maps** | The next instruction, large, from whichever app is navigating |
-| **Media** | Any media app's library, walked and drawn by Headway, plus now playing |
+| **Now playing / Music** | Any media app's library, walked and drawn by Headway, plus transport controls |
 | **Phone** | The live call, and the last twelve calls, from the call log |
-| **Car apps** | A third-party app's *own* interface, drawn by Headway |
+| **Car app** | A third-party app's *own* interface, drawn by Headway |
 | **Messages** | Conversations, with the app's own inline reply |
-| **Apps** | The pinned-app grid, and the door to full-screen mirroring |
+| **Widget** | An app's own home-screen widget |
+| **All apps / Clock** | Headway's own |
 
-Every one of those except the last is a **model** the app already publishes:
+**The App panel is the one that changed.** Opening an app used to hand the whole
+car screen to a capture of the phone, and the panels ceased to exist until you
+came back. Now the screen-capture grant renders into a `SurfaceView` that lives
+*inside a panel*: the app's own pixels appear in the panel you put it in, touch
+goes back to it, and everything around it keeps working. One panel shows a live
+app at a time — the platform allows one recording per grant — and tapping
+another app panel moves the picture there, instantly and without asking you
+anything. [ADR 0010](docs/adr/0010-the-car-screen-is-panels-and-one-of-them-is-a-real-app.md)
+has the derivation and the four things it costs.
+
+There is no full-screen *mode* any more; "full screen" is a layout with one
+panel in it, which you can make, pin and reach in one tap.
+
+**Themes**: three bases (dark, true black, light) and six accents, one of which
+is no accent at all. Changed from the car screen or from the phone.
+
+Every panel except **App** is a **model** the app already publishes:
 `MediaBrowserService` for a library, `NotificationListenerService` for messages
 and calls, and `androidx.car.app` templates for a car interface. Headway renders
 them itself. Nothing is captured, nothing is scaled, and none of it needs the
@@ -155,9 +183,19 @@ launched onto a trusted display. So:
 
 The app then lays itself out for 720×480 — its own fonts at that density, its own
 layout for that aspect — and Headway records that display rather than the phone.
-The car gets **720 of its 800 columns** at 1:1 pixels, with a 40-pixel bar each
-side. [ADR 0008](docs/adr/0008-native-app-rendering-on-a-simulated-display.md)
-has the derivation and the source citations.
+Its picture lands **inside an App panel**, fitted to that panel's shape with the
+dashboard's own background around it rather than black bars, and touches on it
+are mapped back to the app's display. Give the App panel the whole layout and you
+get essentially the full car screen at 1:1 pixels.
+[ADR 0008](docs/adr/0008-native-app-rendering-on-a-simulated-display.md) has the
+derivation and the source citations;
+[ADR 0010](docs/adr/0010-the-car-screen-is-panels-and-one-of-them-is-a-real-app.md)
+has how it reaches a panel instead of the whole screen.
+
+Without a simulated display none of this is fatal: the capture is then the
+phone's own screen, and the App panel shows it correctly fitted — a portrait
+strip in a landscape panel, which is honest and ugly, and exactly what the panel
+would have shown before.
 
 Two costs, both real: the size list is fixed by Android and has no 800×480, hence
 the bars; and the phone's screen must stay on for the whole drive, because the
