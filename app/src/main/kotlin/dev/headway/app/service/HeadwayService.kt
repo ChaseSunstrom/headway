@@ -33,8 +33,11 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaCodecType
 import dev.headway.app.BuildConfig
 import dev.headway.app.R
+import dev.headway.app.audio.CarAudioStream
+import dev.headway.app.input.CarInputStream
 import dev.headway.app.link.BluetoothCarLink
 import dev.headway.app.log.SessionLog
 import dev.headway.app.link.CarWifiException
@@ -48,8 +51,11 @@ import dev.headway.protocol.control.ControlMessageType
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.framing.MessageFragmenter
 import dev.headway.app.video.CarVideoStream
+import dev.headway.app.voice.CarVoiceStream
+import dev.headway.app.voice.PhoneMediaControl
 import dev.headway.protocol.io.ChannelDemultiplexer
 import dev.headway.protocol.io.FramedConnection
+import dev.headway.protocol.io.MessageChannel
 import dev.headway.protocol.session.AapSession
 import dev.headway.protocol.session.AuthenticationRejectedException
 import dev.headway.protocol.session.HeadUnitProfile
@@ -60,6 +66,7 @@ import dev.headway.transport.TcpTransport
 import dev.headway.transport.wireless.CarEndpoint
 import dev.headway.transport.tls.AapTls
 import dev.headway.transport.tls.TlsSession
+import dev.headway.voice.VoiceCommand
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -901,6 +908,9 @@ open class HeadwayService : Service() {
                     // live rather than at the moment it ends. Then a richer
                     // notification than describe(Connected) would give.
                     onUp()
+                    // Before the first line about the session, so everything
+                    // logged from here on names channels the way the car does.
+                    adoptChannelNames(profile)
                     updateNotification(
                         "Connected to ${profile.displayName ?: car.name ?: car.address}"
                     )
@@ -931,13 +941,28 @@ open class HeadwayService : Service() {
     }
 
     /**
-     * Runs for as long as the session is up.
+     * Runs for as long as the session is up: routes every channel to the thing
+     * that drives it, and does not return until the head unit goes away.
      *
-     * The default drains the connection and discards what it reads. That is not
-     * a placeholder for "do nothing": something must be reading the socket, or a
-     * head unit that disappears is never noticed and the supervisor never
-     * reconnects. Video, input and audio wiring replaces this by overriding it
-     * and dispatching each message to its channel.
+     * ## Order, and the deadline that fixes it
+     *
+     * Video first, and everything else after. A real 2021 Chevrolet
+     * Infotainment 3 unit closes the session about fifteen seconds after the
+     * last channel opens if no video has arrived — measured at 15 s, 16 s and
+     * 19 s across three sessions — so anything that could block in front of the
+     * encoder would spend that budget. Audio and voice bring themselves up in
+     * the background with their own bounded waits for exactly this reason; input
+     * has nothing to wait for.
+     *
+     * ## One reader per channel
+     *
+     * Everything below reads a [ChannelDemultiplexer] view, never the
+     * connection. Two readers on one channel steal each other's messages, and
+     * the failure is not obvious: half the keepalives land in the wrong place
+     * and the head unit concludes the phone has gone away. That is also why the
+     * control channel has exactly one reader here, and why audio focus
+     * notifications are *pushed* into [CarAudioStream.onControlMessage] from it
+     * rather than read by the audio stream itself.
      */
     protected open suspend fun runChannels(
         connection: FramedConnection,
@@ -974,17 +999,48 @@ open class HeadwayService : Service() {
             )
         }
 
+        val connectionFor: (Int) -> MessageChannel = { id -> demux.channel(id) }
+
+        // Built before the pump starts, so every view is registered first --
+        // the demultiplexer's documented contract, and the reason these are
+        // constructed here rather than inside the try below.
+        val audio = CarAudioStream.of(profile, connectionFor, applicationContext, ::step)
+        if (audio == null) {
+            step("the head unit advertised no PCM audio sink, so Headway cannot speak in the car")
+        }
+        val input = CarInputStream.of(profile, connectionFor, applicationContext, ::step)
+        if (input == null) {
+            step("the head unit advertised no touchscreen, so car touches will not be injected")
+        }
+        val voice = CarVoiceStream.of(
+            profile = profile,
+            connectionFor = connectionFor,
+            context = applicationContext,
+            // Media and volume are the phone's to carry out; launching an app
+            // and going home are the default executor's.
+            onCommand = voiceExecutor(),
+            onStep = ::step,
+        )
+        if (voice == null) {
+            step("the head unit advertised no microphone, so voice is unavailable this session")
+        }
+
         val pump = launch { demux.pump() }
         try {
             // Keepalives, on the control channel view rather than the raw
-            // connection -- the pump owns the socket now.
+            // connection -- the pump owns the socket now. This is also the only
+            // reader of the control channel, so audio focus notifications are
+            // handed sideways to the audio stream from here.
             launch {
                 while (true) {
                     val message = control.receive()
-                    if (ControlKeepalive.isPing(message)) {
-                        ControlKeepalive.answer(control, message, connection.cryptor != null)
-                    } else {
-                        step(
+                    when {
+                        ControlKeepalive.isPing(message) ->
+                            ControlKeepalive.answer(control, message, connection.cryptor != null)
+
+                        audio?.onControlMessage(message) == true -> Unit
+
+                        else -> step(
                             "control: ${ControlMessageType.describe(message.messageId)} " +
                                 "(${message.payload.size} bytes)"
                         )
@@ -992,12 +1048,53 @@ open class HeadwayService : Service() {
                 }
             }
 
+            // Video is started first and inline; see the KDoc. The other three
+            // return as soon as they have launched their own coroutines.
             video?.start(this)
+            audio?.start(this)
+            input?.start(this)
+            voice?.start(this)
+
             pump.join()
         } finally {
-            video?.let { step(it.describe()) }
-            video?.stop()
+            // Every describe() before every stop(): the counts are what a log
+            // from a real drive is read for, and one of these throwing must not
+            // cost the lines after it.
+            video?.let { runCatching { step(it.describe()) } }
+            audio?.let { runCatching { step(it.describe()) } }
+            input?.let { runCatching { step(it.describe()) } }
+            voice?.let { runCatching { step(it.describe()) } }
+            runCatching { video?.stop() }
+            runCatching { audio?.stop() }
+            runCatching { input?.stop() }
+            runCatching { voice?.stop() }
             demux.closeAll()
+        }
+    }
+
+    /**
+     * What a recognised voice command actually does.
+     *
+     * [CarVoiceStream.defaultExecutor] already launches apps and returns to the
+     * launcher, and logs the other three as needing a handler — correctly, since
+     * `core-voice` cannot depend on Android. This supplies two of the three.
+     *
+     * `Search` stays unhandled, and that is a real limitation rather than an
+     * oversight: typing into another app's field needs the focused node, which
+     * needs `canRetrieveWindowContent`, which
+     * `accessibility_service_config.xml` sets to false as a promise to the user
+     * that Headway injects input but never reads the screen. Honouring that
+     * promise costs dictation into third-party apps. Tracked in `BLOCKERS.md`.
+     */
+    private fun voiceExecutor(): (VoiceCommand) -> Unit {
+        val media = PhoneMediaControl(applicationContext, ::step)
+        val fallback = CarVoiceStream.defaultExecutor(applicationContext, ::step)
+        return { command ->
+            when (command) {
+                is VoiceCommand.Media -> media.perform(command.action)
+                is VoiceCommand.Volume -> media.adjust(command.direction, command.steps)
+                else -> fallback(command)
+            }
         }
     }
 
@@ -1174,6 +1271,82 @@ open class HeadwayService : Service() {
      * summary and everything else gets bytes — bring-up is where the unknowns
      * are, and bring-up is all low-rate control traffic.
      */
+    /**
+     * Channel names taken from what this head unit advertised, not from
+     * [ChannelId].
+     *
+     * [ChannelId] is Headway's own numbering convention, and a real car assigns
+     * its own. On a 2021 Chevrolet Infotainment 3 unit the video service is the
+     * id Headway's table calls `NAVIGATION_STATUS`, so an entire session's frame
+     * log read as if the phone were streaming H.264 into the navigation channel.
+     * That is not a cosmetic problem: the log is the only instrument that
+     * reaches a real car, and a log that names things wrong sends whoever reads
+     * it after the wrong bug.
+     *
+     * Empty until service discovery completes, which is correct — before that
+     * there is no advertisement and the constant table is the best guess
+     * available.
+     */
+    @Volatile
+    private var channelNames: Map<Int, String> = emptyMap()
+
+    /**
+     * Channels logged as a byte count rather than as hex, for the same reason
+     * and with the same fix.
+     *
+     * Keyed on the constants, this filter missed the car's real video channel
+     * entirely: fifteen seconds of streaming produced four thousand lines of
+     * hex, which pushed everything worth reading out of the export.
+     */
+    @Volatile
+    private var highRateChannels: Set<Int> = DEFAULT_HIGH_RATE_CHANNELS
+
+    /**
+     * Rebuilds both from a completed service discovery.
+     *
+     * Naming is by content, not by id, exactly as
+     * [CarVideoStream.videoServiceOf] and its siblings match: the advertisement
+     * says what each channel *is*, and that is the only authority.
+     */
+    private fun adoptChannelNames(profile: HeadUnitProfile) {
+        val names = mutableMapOf<Int, String>()
+        val highRate = mutableSetOf<Int>()
+        for (service in profile.services) {
+            val sink = service.mediaSinkService
+            when {
+                service.hasMediaSinkService() &&
+                    sink.availableType == MediaCodecType.MEDIA_CODEC_VIDEO_H264_BP -> {
+                    names[service.id] = "VIDEO"
+                    highRate += service.id
+                }
+
+                service.hasMediaSinkService() && sink.hasAudioType() -> {
+                    names[service.id] = sink.audioType.name
+                        .removePrefix("AUDIO_STREAM_")
+                        .let { "AUDIO_$it" }
+                    highRate += service.id
+                }
+
+                service.hasMediaSourceService() -> {
+                    names[service.id] = "MICROPHONE"
+                    highRate += service.id
+                }
+
+                service.hasInputSourceService() -> names[service.id] = "INPUT"
+                service.hasSensorSourceService() -> names[service.id] = "SENSOR"
+                // Everything else keeps whatever the constant table calls it,
+                // annotated with its real id so a log can be matched against the
+                // advertisement without guessing.
+                else -> names[service.id] =
+                    "${ChannelId.describe(service.id)}?id=${service.id}"
+            }
+        }
+        channelNames = names
+        highRateChannels = highRate
+        step("channels: " + names.entries.sortedBy { it.key }
+            .joinToString { "${it.key}=${it.value}" })
+    }
+
     private fun logFrame(
         direction: FramedConnection.Direction,
         header: dev.headway.protocol.framing.FrameHeader,
@@ -1181,13 +1354,13 @@ open class HeadwayService : Service() {
     ) {
         if (!BuildConfig.DEBUG) return
         val arrow = if (direction == FramedConnection.Direction.SENT) "tx" else "rx"
-        val channel = ChannelId.describe(header.channelId)
+        val channel = channelNames[header.channelId] ?: ChannelId.describe(header.channelId)
         val flags = buildString {
             append(header.frameType.name)
             if (header.control) append("|CONTROL")
             if (header.encrypted) append("|ENC")
         }
-        if (header.channelId in HIGH_RATE_CHANNELS) {
+        if (header.channelId in highRateChannels) {
             step("$arrow $channel [$flags] ${payload.size} bytes")
             return
         }
@@ -1284,7 +1457,14 @@ open class HeadwayService : Service() {
          * Everything involved in bring-up -- and therefore everything currently
          * unknown -- is control traffic on other channels.
          */
-        private val HIGH_RATE_CHANNELS: Set<Int> = setOf(
+        /**
+         * The fallback filter, used until service discovery says otherwise.
+         *
+         * Right for the emulator, which numbers its channels the way [ChannelId]
+         * does, and only a guess for a car — which is why [adoptChannelNames]
+         * replaces it wholesale the moment there is an advertisement to read.
+         */
+        private val DEFAULT_HIGH_RATE_CHANNELS: Set<Int> = setOf(
             ChannelId.MEDIA_SINK_VIDEO.id,
             ChannelId.MEDIA_SINK_MEDIA_AUDIO.id,
             ChannelId.MEDIA_SINK_GUIDANCE_AUDIO.id,

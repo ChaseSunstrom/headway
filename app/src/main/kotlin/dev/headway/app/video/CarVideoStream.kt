@@ -19,6 +19,8 @@ package dev.headway.app.video
 
 import aap_protobuf.service.ServiceOuterClass
 import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaCodecType
+import aap_protobuf.service.media.video.message.VideoFocusModeOuterClass.VideoFocusMode
+import aap_protobuf.service.media.video.message.VideoFocusReasonOuterClass.VideoFocusReason
 import android.media.projection.MediaProjection
 import dev.headway.protocol.channel.VideoChannel
 import dev.headway.protocol.io.MessageChannel
@@ -104,6 +106,28 @@ class CarVideoStream(
                 "window ${response.maxUnacked ?: 1}"
         )
 
+        // Asking for the screen. openauto volunteers a `VideoFocusNotification`
+        // by chaining it onto the Config response
+        // (`openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp`
+        // L120-L125), so against the emulator the projection appears without
+        // this and its absence was invisible. A real 2021 Chevrolet
+        // Infotainment 3 unit volunteers nothing: it answered Config, accepted
+        // Start, and acknowledged 1434 frames over fifteen seconds while its
+        // screen stayed on "Connecting Android Auto phone". Every one of those
+        // frames was decoded and thrown away, because nothing had asked the unit
+        // to put the projection on the display.
+        //
+        // Sent before Start, which is where the documented sequence puts the
+        // notification, and not waited for: nothing in the protocol obliges a
+        // head unit to answer, and blocking here would spend the ~15 s deadline
+        // on a reply that may never come. The answer, when it arrives, is
+        // recorded by the channel as it skips past it looking for
+        // acknowledgements.
+        channel.requestVideoFocus(
+            mode = VideoFocusMode.VIDEO_FOCUS_PROJECTED,
+            reason = VideoFocusReason.PHONE_SCREEN_OFF,
+        )
+
         channel.sendStart(sessionId = sessionId, configurationIndex = index)
 
         val screenEncoder = ScreenEncoder(encoderConfiguration, onStep = onStep)
@@ -121,10 +145,15 @@ class CarVideoStream(
         return true
     }
 
-    /** Frames sent and dropped, for the log. */
+    /** Frames sent and dropped, and whether the car ever took the screen. */
     fun describe(): String {
         val p = pump ?: return "video not started"
-        return "video: ${p.sentFrames} frame(s) sent, ${p.droppedFrames} dropped"
+        // The focus state is the line that separates "the car ignored us" from
+        // "the car drew it": a session can acknowledge every frame and still
+        // never leave its connecting screen, which is exactly what a real
+        // Chevrolet did before Headway asked for focus.
+        val focus = channel.videoFocus?.name ?: "never reported by the head unit"
+        return "video: ${p.sentFrames} frame(s) sent, ${p.droppedFrames} dropped, focus $focus"
     }
 
     /**

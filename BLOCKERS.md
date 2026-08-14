@@ -342,3 +342,101 @@ too. Do not write "the pool is exhausted" anywhere as fact.
 carve-out reachable by non-GMS Android Auto implementations — an app-level
 opt-in, or a widened predicate. That is upstream work in
 `os-issue-tracker#4139`, not something this project can ship.
+
+## B-007 — Screen-off operation depends on a display behaviour read from source, not observed
+
+**Status:** Open. Workaround shipped (keep-screen-on for the mirroring path);
+the fix it gates is ADR 0004's dashboard.
+
+**Blocked:** Confirming that a Headway activity on a virtual display created
+with `VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY` stays **resumed** — still drawing,
+still animating — while the phone's own screen is off and the device is locked.
+
+**Why it matters:** ADR 0004 establishes that mirroring the *default* display
+can never survive screen-off. `DisplayPolicy.screenTurnedOff` acquires a sleep
+token for display 0, `DisplayContent.shouldSleep()` becomes true, activities on
+it pause, and the mirror goes black. There is no unprivileged flag, wake lock or
+foreground-service type that changes this, because it is a property of the
+display being asleep rather than of the capture. So the Definition of Done item
+*"App survives: screen lock, 30 min continuous session…"* cannot be met by the
+mirroring path at all — it can only be met by rendering to a display Headway
+owns.
+
+**Why it is inferred:** the reasoning is drawn from AOSP `android15-release` and
+is sound as far as it goes:
+
+- `VirtualDisplayAdapter` derives display state from whether the `Surface` is
+  non-null, not from the physical screen.
+- Sleep tokens are per-display, so the token taken for display 0 does not reach
+  a virtual one.
+- `hasAwakeDisplay()` returning true for the virtual display keeps the global
+  `mSleeping` false, so its activity is not paused.
+
+Each step is verified in source. What is *not* verified is the composite claim
+on a real Pixel running GrapheneOS with the keyguard up — and GrapheneOS carries
+its own patches in this area. A behaviour this load-bearing should not be taken
+on inference.
+
+**Workaround shipped:** the mirroring path keeps the screen on and says so,
+rather than appearing to work and going black in the driver's face.
+
+**How to close it:** on device, create an `OWN_CONTENT_ONLY` virtual display,
+launch a Headway activity onto it with `setLaunchDisplayId`, lock the phone, and
+confirm from the activity's own lifecycle logging that it stays resumed and its
+frame callbacks keep arriving. One session with the in-app log export answers
+it.
+
+## B-008 — Nothing unprivileged can create a split-screen, so panes must be drawn rather than hosted
+
+**Status:** Closed by design change; recorded so the question is not re-opened.
+
+**Blocked:** Putting two *third-party* apps on the car screen side by side.
+
+**Why:** three independent routes, all closed (full citations in ADR 0004):
+
+1. `ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay` refuses to place
+   another app's activity on a display Headway owns without that app declaring
+   `android:allowEmbedded="true"` **and** Headway holding `ACTIVITY_EMBEDDING`
+   (`signature|privileged`). The check exists precisely to stop content
+   hijacking, so it will not be relaxed.
+2. `GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN` (=7) was removed from
+   `SystemActionPerformer` between `android11-release` and `android13-release`.
+   On Android 13+ it returns `false` silently.
+3. `FLAG_ACTIVITY_LAUNCH_ADJACENT` only places into a split that already
+   exists, and needs a source `Activity` — a foreground service has no
+   `mSourceRecord`.
+
+**Workaround shipped (this is the design, not a compromise):** Headway renders
+the panes itself from `MediaSessionManager`, a `NotificationListenerService` and
+`AppWidgetHost` — all user-granted, none privileged — and hosts only its *own*
+activities on its own display, where the `getOwnerUid() == callingUid` branch
+applies. This is the same model Android Auto uses for third-party apps, which
+send template models rather than pixels.
+
+## B-009 — The app-side video bring-up sequence has no automated test
+
+**Status:** Open. Partial guard shipped.
+
+**Blocked:** Testing `CarVideoStream.start` — the ordering of Setup, Config,
+video-focus request, Start, codec config and frames — in CI.
+
+**Why:** `CarVideoStream` takes a `MediaProjection` and constructs a
+`ScreenEncoder`, both of which need a device. `:app` has no unit-test source
+set, and the JVM acceptance suite cannot instantiate the class.
+
+**Why it matters:** this is where the video-focus bug lived. The phone streamed
+1434 acknowledged frames to a car that never displayed one, because nothing had
+asked for the screen. Nothing on the wire looked wrong; nothing in CI could see
+it.
+
+**Workaround shipped:** the same sequence is written out in
+`Phase2VideoAcceptanceTest.openStream`, and
+`a head unit that never volunteers focus is asked for it, and projects` fails
+if the focus request is removed from it (verified by removing it). That guards
+the *sequence*; it does not guard `CarVideoStream` itself, so the two can still
+drift apart. Both carry a comment saying so.
+
+**How to close it:** split the protocol negotiation out of `CarVideoStream`
+into a piece that takes no `MediaProjection` — it needs the channel and the
+advertised service and nothing else — and drive that from the emulator suite.
+The encoder construction stays behind the device boundary.

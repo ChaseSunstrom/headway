@@ -1,0 +1,649 @@
+/*
+ * This file is part of Headway.
+ * Copyright (C) 2026 The Headway Authors
+ *
+ * Headway is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * Headway is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+ * A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * Headway. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package dev.headway.app.input
+
+import aap_protobuf.service.ServiceOuterClass
+import aap_protobuf.service.inputsource.InputSourceServiceOuterClass.InputSourceService
+import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaCodecType
+import android.accessibilityservice.AccessibilityService
+import android.content.Context
+import android.view.WindowManager
+import dev.headway.input.CarGesture
+import dev.headway.input.GestureBuilder
+import dev.headway.input.GestureConfig
+import dev.headway.protocol.channel.CarInputEvent
+import dev.headway.protocol.channel.InputChannel
+import dev.headway.protocol.channel.InputChannelException
+import dev.headway.protocol.channel.InputChannelMessage
+import dev.headway.protocol.channel.InputKeyCodes
+import dev.headway.protocol.channel.TouchSurface
+import dev.headway.protocol.channel.TouchTransform
+import dev.headway.protocol.framing.ChannelId
+import dev.headway.protocol.io.MessageChannel
+import dev.headway.protocol.session.HeadUnitProfile
+import dev.headway.video.VideoResolution
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.io.EOFException
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * Everything between "the driver touched the car's screen" and "the phone
+ * behaved as though the driver had touched *its* screen".
+ *
+ * ## The chain, and where each link already lives
+ *
+ * ```text
+ *   InputReport on the wire
+ *     -> InputChannel.handle          decode: CarInputEvent, in car coordinates
+ *     -> TouchTransform.map           car coordinates -> phone coordinates
+ *     -> GestureBuilder.accept        a stream of points -> a dispatchable gesture
+ *     -> CarGestureDispatcher.submit  -> AccessibilityService.dispatchGesture
+ * ```
+ *
+ * Every link was already written and tested in isolation; none of them was
+ * connected to the live session. This class is only the wiring, which is why it
+ * holds no protocol knowledge of its own beyond choosing the right service and
+ * the right coordinate spaces. Both of those choices are easy to get wrong in a
+ * way that produces a car screen that *almost* works — touches landing a
+ * consistent distance from what the driver pointed at — so both are argued
+ * below rather than assumed.
+ *
+ * ## Reading: handle(), not receiveMessage()
+ *
+ * [InputChannel] offers both, and its KDoc is explicit that `receiveMessage()`
+ * reads the connection directly and is only correct when nothing else is
+ * reading it. In a live session the [dev.headway.protocol.io.ChannelDemultiplexer]
+ * owns the socket, so this class reads its *view* of the input channel and hands
+ * each message to [InputChannel.handle]. The two are not equivalent even though
+ * a view only ever yields messages for one channel: `handle()` throws if a
+ * message for another channel reaches it, which turns a demultiplexer routing
+ * bug into a loud failure instead of a message silently swallowed by
+ * `receiveMessage()`'s filter loop.
+ *
+ * ## Which service, and which coordinate space
+ *
+ * The service is found by content — an `input_source_service` that advertises at
+ * least one touchscreen — for the reason [dev.headway.app.video.CarVideoStream]
+ * gives: channel ids are the head unit's to assign, and matching on Headway's own
+ * [ChannelId] table would work against the emulator and fail against a car that
+ * numbers things differently.
+ *
+ * The *car* side of [TouchTransform] is the geometry the head unit rescales its
+ * panel coordinates into before sending, which is the projected video
+ * resolution rather than the `TouchScreen` width and height — see the transform's
+ * own KDoc, and `openauto/src/autoapp/Projection/InputDevice.cpp` L391-L392. So
+ * the advertised video resolution is preferred whenever every advertised
+ * configuration agrees on one size, and the touchscreen geometry is the fallback
+ * for a unit that offers several. On a 2021 Chevrolet Infotainment 3 unit both
+ * are 800x480 and the distinction is invisible; on a unit where they differ,
+ * using the panel size skews every touch, so the log always records which was
+ * used and says so when they disagree.
+ *
+ * The *phone* side is the full display, because that is what
+ * [dev.headway.video.ScreenEncoder] mirrors: the platform scales the default
+ * display uniformly into the virtual display's surface and pillarboxes the
+ * remainder, which is exactly the geometry [TouchTransform] models. The two must
+ * agree or every touch is offset by the difference.
+ *
+ * A rotation changes that geometry. The transform is built once at [start] and
+ * is not rebuilt, so casting from a phone that rotates mid-session puts the bars
+ * in the wrong place until the session restarts; Headway's own surfaces are
+ * portrait and the launcher holds the screen on, which is what makes this
+ * survivable rather than fixed.
+ *
+ * ## Keys are logged, not mapped
+ *
+ * The head unit advertises `keycodes_supported` and the phone binds a subset —
+ * and asking for one that was not advertised fails the *whole* request, so this
+ * binds exactly what was advertised. What arrives is then logged with its
+ * keycode, because the point of Phase 3 on a real car is to find out which
+ * physical steering-wheel button sends which code; a mapping invented here would
+ * be indistinguishable in the log from a verified one. The single exception is
+ * BACK, which the platform itself defines an equivalent for
+ * (`GLOBAL_ACTION_BACK`), so honouring it is reading the platform rather than
+ * guessing at the car. Media keys belong to a `MediaSession` (Phase 4) and the
+ * voice key to the command engine (Phase 5); neither is this class's to claim.
+ *
+ * The rotary knob is logged for the same reason and cannot do more: turning a
+ * detent into focus movement needs to know what is on screen, and
+ * `accessibility_service_config.xml` sets `canRetrieveWindowContent="false"` as
+ * a promise to the user that Headway injects but does not observe.
+ *
+ * ## Without the accessibility grant
+ *
+ * The user may never have enabled [HeadwayAccessibilityService], or may revoke
+ * it mid-drive. That is a supported state, not an error: the session stays up,
+ * video keeps streaming, and the log says once that touches cannot be injected.
+ * Gestures built while there is no dispatcher are dropped and the builder is
+ * cancelled with them, because a later slice of a drag is a `continueStroke` on
+ * a stroke the platform never saw.
+ */
+class CarInputStream(
+    private val channel: InputChannel,
+    /**
+     * The demultiplexer's view of the same channel. Held separately from
+     * [channel] because the reading strategy above needs the raw message before
+     * [InputChannel.handle] decodes it.
+     */
+    private val view: MessageChannel,
+    private val transform: TouchTransform,
+    /** Exactly the keycodes the head unit advertised. See the class KDoc. */
+    private val keycodes: List<Int>,
+    private val builder: GestureBuilder,
+    private val onStep: (String) -> Unit = {},
+) {
+
+    private val jobs: MutableList<Job> = mutableListOf()
+
+    /**
+     * Set from the platform's `onInterrupt` callback, which arrives on the main
+     * thread while this class's reader runs elsewhere.
+     *
+     * [GestureBuilder] is documented as not thread safe, so the callback cannot
+     * cancel it directly; it raises this flag instead and the reader acts on it
+     * before the next event. Input arrives continuously during a gesture, so the
+     * delay is one event, and the alternative — touching the builder from two
+     * threads — corrupts the very chain the cancellation exists to protect.
+     */
+    private val interrupted = AtomicBoolean(false)
+
+    @Volatile
+    private var accessibilityAvailable: Boolean = false
+
+    @Volatile
+    private var gesturesSubmitted: Long = 0L
+
+    @Volatile
+    private var gesturesDropped: Long = 0L
+
+    @Volatile
+    private var barTouches: Long = 0L
+
+    @Volatile
+    private var keyEvents: Long = 0L
+
+    @Volatile
+    private var knobEvents: Long = 0L
+
+    private var announcedTouchpad = false
+
+    /**
+     * Binds the advertised keycodes, then reads the channel until [scope] is
+     * cancelled or the head unit goes away.
+     *
+     * @return true, always. The Boolean mirrors
+     *   [dev.headway.app.video.CarVideoStream.start], where the head unit can
+     *   refuse the stream outright and the session must carry on without it.
+     *   Input has no such step: the head unit never refuses the channel, and the
+     *   one thing it can refuse — a key binding — is answered asynchronously on
+     *   the channel itself and reported to the log there. Reporting a refusal
+     *   here would mean waiting for that answer before touch could start, which
+     *   would cost the driver the first seconds of the session for nothing.
+     */
+    suspend fun start(scope: CoroutineScope): Boolean {
+        onStep("input: $transform")
+        if (transform.pillarboxed || transform.letterboxed) {
+            // Worth stating outright: on a portrait phone and a landscape panel
+            // most of the car's screen is inert bar, and a driver who has not
+            // read that will report the far side of the screen as broken.
+            onStep(
+                ("input: the mirrored image occupies %.0fx%.0f of the car's %dx%d screen; " +
+                    "touches outside it do nothing").format(
+                    transform.contentRect.width,
+                    transform.contentRect.height,
+                    transform.carWidth,
+                    transform.carHeight,
+                )
+            )
+        }
+
+        // Sent unconditionally, empty list included. `KeyBindingRequest` is not
+        // a key-only negotiation: openauto reaches `inputDevice_->start()` from
+        // nowhere but its binding handler
+        // (`openauto/openauto/Service/InputService.cpp` L118-L121), so a phone
+        // that never asks receives no `InputReport` at all -- touch included.
+        // An empty list still answers OK, because the validation loop at L103-L113
+        // iterates `scan_codes_size()` and never runs.
+        //
+        // The list is exactly what was advertised: openauto rejects the whole
+        // request on the first keycode it never offered, so a superset binds
+        // nothing.
+        channel.requestKeyBinding(keycodes)
+        onStep(
+            if (keycodes.isEmpty()) {
+                "input: the head unit advertised no keycodes; binding an empty set, which is " +
+                    "what starts the input device sending touches"
+            } else {
+                "input: asked to bind ${keycodes.size} advertised keycode(s)"
+            }
+        )
+
+        jobs += scope.launch { watchAccessibility() }
+        jobs += scope.launch { read() }
+        onStep("input stream started")
+        return true
+    }
+
+    /** Gestures injected and touches discarded, for the log. */
+    fun describe(): String = "input: $gesturesSubmitted gesture(s) injected, " +
+        "$gesturesDropped dropped with no accessibility grant, " +
+        "$barTouches touch(es) in the letterbox bar, " +
+        "$keyEvents key event(s), $knobEvents knob event(s); accessibility " +
+        (if (accessibilityAvailable) "available" else "not available")
+
+    /**
+     * Stops reading and lifts whatever finger the platform still believes is
+     * down.
+     *
+     * The flush matters more than it looks: a session that ends mid-drag leaves
+     * the last stroke marked `willContinue`, and the platform holds that finger
+     * on whatever app is in front until something else injects. The final
+     * gesture is submitted rather than dropped for exactly that reason, and it
+     * can be — the dispatcher's worker lives on the accessibility service's own
+     * scope, which outlives this session.
+     */
+    fun stop() {
+        jobs.forEach { it.cancel() }
+        jobs.clear()
+        runCatching { builder.flush() }.getOrNull()?.let { submit(it) }
+        // Leaving a callback pointing at a dead session would raise the
+        // interrupt flag of a stream nobody is reading.
+        HeadwayAccessibilityService.instance.value?.onInterrupted = {}
+    }
+
+    // --- reading -------------------------------------------------------------
+
+    private suspend fun read() {
+        try {
+            while (currentCoroutineContext().isActive) {
+                val message = view.receive()
+                // Raised by the platform, consumed here: see [interrupted].
+                if (interrupted.compareAndSet(true, false)) {
+                    builder.cancel()
+                    onStep("input: gesture in progress abandoned after an accessibility interrupt")
+                }
+                try {
+                    dispatch(channel.handle(message))
+                } catch (e: InputChannelException) {
+                    // One malformed report is not a reason to stop reading the
+                    // channel: the next one is very likely fine, and a dead input
+                    // channel is indistinguishable to the driver from a dead app.
+                    onStep("input: ${e.message}")
+                } catch (e: RuntimeException) {
+                    // Nothing inside that block suspends, so this cannot be a
+                    // coroutine cancellation being swallowed — it is a malformed
+                    // event, or a platform object refusing to be built from one.
+                    // Input must not take the session down with it: video and
+                    // audio remain useful without touch, and a crash here reads
+                    // to the driver as the car screen going black.
+                    onStep("input: ${e.javaClass.simpleName} handling a report: ${e.message}")
+                    builder.cancel()
+                }
+            }
+        } catch (e: EOFException) {
+            // The ordinary end of a session. The supervisor reconnects; this is
+            // not an error and must not be reported as one.
+            onStep("input: channel closed (${e.message})")
+        }
+    }
+
+    private fun dispatch(message: InputChannelMessage) {
+        when (message) {
+            is InputChannelMessage.Report -> message.events.forEach(::onEvent)
+
+            is InputChannelMessage.KeyBindingResult -> onStep(
+                if (message.bound) {
+                    "input: the head unit bound every requested keycode"
+                } else {
+                    // STATUS_KEYCODE_NOT_BOUND here would mean the unit refused a
+                    // code it had itself advertised, which no reference does.
+                    "input: key binding refused with status ${message.status}; " +
+                        "steering-wheel buttons will not arrive"
+                }
+            )
+
+            // The phone originates this one, so receiving it means the peer is
+            // behaving as a phone. Worth seeing rather than ignoring.
+            is InputChannelMessage.KeyBinding -> onStep(
+                "input: the peer sent a KeyBindingRequest for ${message.keycodes.size} " +
+                    "keycode(s); Headway is the phone and does not answer it"
+            )
+
+            is InputChannelMessage.Feedback -> onStep("input: feedback event ${message.event}")
+
+            is InputChannelMessage.Unhandled -> onStep(
+                "input: unhandled message 0x%04x (%d bytes)".format(
+                    message.messageId, message.payloadSize,
+                )
+            )
+        }
+    }
+
+    private fun onEvent(event: CarInputEvent) {
+        when (event) {
+            is CarInputEvent.Touch -> onTouch(event)
+            is CarInputEvent.Key -> onKey(event)
+            is CarInputEvent.Relative -> onRelative(event)
+            is CarInputEvent.Absolute -> onStep(
+                "input: absolute axis ${describeKeycode(event.keycode)} = ${event.value}"
+            )
+        }
+    }
+
+    // --- touch ---------------------------------------------------------------
+
+    private fun onTouch(touch: CarInputEvent.Touch) {
+        if (touch.surface != TouchSurface.TOUCHSCREEN && !announcedTouchpad) {
+            announcedTouchpad = true
+            // GestureBuilder drops these itself; without this line the driver of
+            // a touchpad-equipped unit sees a dead pad and no explanation.
+            onStep(
+                "input: the head unit is sending touchpad events. Those are relative to the " +
+                    "pad's own geometry, not positions on the mirrored screen, so Headway " +
+                    "maps only the touchscreen"
+            )
+        }
+
+        val mapped = transform.map(touch)
+        if (mapped == null) {
+            // A touch in the bar, or a lift with nothing left to deliver. Counted
+            // rather than logged: a palm on the blank strip would otherwise fill
+            // the ring buffer and push out the reason a session died.
+            barTouches++
+            return
+        }
+
+        val gesture = builder.accept(mapped) ?: return
+        submit(gesture)
+    }
+
+    private fun submit(gesture: CarGesture) {
+        // Re-read every time: an unbind between two touches is normal (the user
+        // opened Settings), and a cached dispatcher belongs to a service the
+        // platform no longer knows about.
+        val dispatcher = HeadwayAccessibilityService.instance.value?.dispatcher
+        if (dispatcher == null || !dispatcher.submit(gesture)) {
+            gesturesDropped++
+            // Whatever comes next in this chain would be a continueStroke on a
+            // stroke the platform never received, so the chain ends here. The
+            // next finger down starts a fresh one and recovers on its own.
+            builder.cancel()
+            return
+        }
+        gesturesSubmitted++
+    }
+
+    // --- keys and the knob ---------------------------------------------------
+
+    private fun onKey(key: CarInputEvent.Key) {
+        keyEvents++
+        // Logged on press and release, with the raw code, because identifying a
+        // real car's steering-wheel buttons from a single drive's log is the
+        // whole point of Phase 3 on hardware.
+        onStep(
+            "input: key ${describeKeycode(key.keycode)} ${if (key.down) "down" else "up"}" +
+                (if (key.longPress) " (long)" else "") +
+                (if (key.metaState != 0) " meta=0x%02x".format(key.metaState) else "")
+        )
+
+        // On release only: press and release arrive as separate reports, and
+        // acting on both would fire everything twice.
+        if (key.down || key.keycode != InputKeyCodes.BACK) return
+
+        val service = HeadwayAccessibilityService.instance.value ?: return
+        val performed = runCatching {
+            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+        }.getOrDefault(false)
+        if (!performed) onStep("input: the platform refused the back action")
+    }
+
+    private fun onRelative(event: CarInputEvent.Relative) {
+        knobEvents++
+        // Log only. Turning a detent into focus movement requires knowing what is
+        // on screen, and this app's accessibility service is configured without
+        // window-content access on purpose.
+        onStep(
+            if (event.isRotary) {
+                "input: rotary knob ${if (event.delta > 0) "+" else ""}${event.delta} " +
+                    "(no mapping: focus navigation needs window content, which Headway " +
+                    "deliberately cannot read)"
+            } else {
+                "input: relative axis ${describeKeycode(event.keycode)} delta ${event.delta}"
+            }
+        )
+    }
+
+    // --- the accessibility grant ---------------------------------------------
+
+    /**
+     * Follows the grant for the life of the session.
+     *
+     * A `StateFlow` rather than a one-off check because the user may enable the
+     * service after the car link is already up — which is the common case the
+     * first time, since the settings screen is where the app sends them — and a
+     * session that had checked once at start-up would stay mute until the next
+     * reconnect. It emits its current value immediately, so the "not enabled"
+     * line is logged once at start and only again on a real transition.
+     */
+    private suspend fun watchAccessibility() {
+        HeadwayAccessibilityService.instance.collect { service ->
+            accessibilityAvailable = service != null
+            if (service == null) {
+                onStep(
+                    "input: the accessibility service is not enabled, so car touches cannot be " +
+                        "injected. The session stays up and everything else keeps working; " +
+                        "enable Headway under Settings > Accessibility to use the car's screen"
+                )
+                return@collect
+            }
+            service.onInterrupted = { interrupted.set(true) }
+            onStep("input: accessibility service available; car touches will be injected")
+        }
+    }
+
+    companion object {
+
+        /**
+         * Finds the head unit's input service by content, not by channel id.
+         *
+         * A touchscreen is the requirement: a unit that advertises an input
+         * service with keys only has nothing for the transform to map, and
+         * building one from a zero-sized panel would throw.
+         */
+        fun inputServiceOf(profile: HeadUnitProfile): ServiceOuterClass.Service? =
+            profile.services.firstOrNull {
+                it.hasInputSourceService() && it.inputSourceService.touchscreenCount > 0
+            }
+
+        /**
+         * Builds the stream for a profile, or null when the car offers no
+         * touchscreen or the phone will not say how large its display is.
+         *
+         * @param context any application-lifetime context; used for the device's
+         *   real touch slop and its display size, never retained for UI.
+         */
+        fun of(
+            profile: HeadUnitProfile,
+            connectionFor: (Int) -> MessageChannel,
+            context: Context,
+            onStep: (String) -> Unit = {},
+        ): CarInputStream? {
+            val service = inputServiceOf(profile) ?: return null
+            val input = service.inputSourceService
+            val panel = primaryTouchscreen(input) ?: return null
+
+            val phone = phoneDisplaySize(context)
+            if (phone == null) {
+                onStep("input: the platform reported no display size, so touches cannot be mapped")
+                return null
+            }
+
+            val car = carSurfaceOf(profile, panel, onStep)
+            if (car.first <= 0 || car.second <= 0) {
+                // TouchTransform requires positive dimensions and says so with an
+                // exception. Refusing here keeps a head unit that advertises a
+                // nonsensical panel from taking the whole session down with it —
+                // video is still worth having on a car whose touch is unusable.
+                onStep(
+                    "input: the head unit advertised a ${car.first}x${car.second} touch surface, " +
+                        "which cannot be mapped; touch is disabled for this session"
+                )
+                return null
+            }
+            val transform = TouchTransform(car.first, car.second, phone.first, phone.second)
+
+            val view = connectionFor(service.id)
+            return CarInputStream(
+                channel = InputChannel(view, service.id, onStep),
+                view = view,
+                transform = transform,
+                keycodes = input.keycodesSupportedList.toList(),
+                builder = GestureBuilder(GestureConfig.forDevice(context)),
+                onStep = onStep,
+            )
+        }
+
+        /**
+         * The panel the driver actually touches.
+         *
+         * `is_secondary` marks a rear-seat or passenger screen
+         * (`InputSourceService.proto` L12-L17); mirroring is a single-display
+         * feature, so the primary one wins and the first entry is the fallback
+         * for a unit that flags none of them.
+         */
+        private fun primaryTouchscreen(
+            input: InputSourceService,
+        ): InputSourceService.TouchScreen? =
+            input.touchscreenList.firstOrNull { !it.isSecondary } ?: input.touchscreenList.firstOrNull()
+
+        /**
+         * The coordinate space the head unit sends touches in.
+         *
+         * See the class KDoc: the advertised video resolution is correct, the
+         * panel geometry is the fallback, and a disagreement between them is
+         * worth a line in the log because it is otherwise invisible — every touch
+         * simply lands slightly wrong.
+         */
+        private fun carSurfaceOf(
+            profile: HeadUnitProfile,
+            panel: InputSourceService.TouchScreen,
+            onStep: (String) -> Unit,
+        ): Pair<Int, Int> {
+            val panelSize = panel.width to panel.height
+            val video = advertisedVideoSize(profile)
+            if (video == null) {
+                onStep(
+                    "input: mapping touches against the advertised ${panelSize.first}x" +
+                        "${panelSize.second} touch panel; the head unit offers no single " +
+                        "unambiguous video resolution to prefer"
+                )
+                return panelSize
+            }
+            if (video != panelSize) {
+                onStep(
+                    "input: the head unit advertises a ${video.first}x${video.second} video sink " +
+                        "but a ${panelSize.first}x${panelSize.second} touch panel. Using the " +
+                        "video resolution: the unit rescales panel coordinates into display " +
+                        "geometry before sending them (openauto InputDevice.cpp L391-L392)"
+                )
+            }
+            return video
+        }
+
+        /**
+         * The one resolution every advertised H.264 sink agrees on, or null.
+         *
+         * Deliberately not "the first one": which configuration the video channel
+         * ends up starting is negotiated at run time and this class never sees the
+         * answer, so a unit offering several sizes gives no basis for a choice and
+         * the panel geometry is the safer guess.
+         */
+        private fun advertisedVideoSize(profile: HeadUnitProfile): Pair<Int, Int>? =
+            profile.services
+                .filter {
+                    it.hasMediaSinkService() &&
+                        it.mediaSinkService.availableType == MediaCodecType.MEDIA_CODEC_VIDEO_H264_BP
+                }
+                .flatMap { it.mediaSinkService.videoConfigsList }
+                .filter { it.hasCodecResolution() }
+                .mapNotNull { VideoResolution.of(it.codecResolution) }
+                .map { it.width to it.height }
+                .distinct()
+                .singleOrNull()
+
+        /**
+         * The phone's full display, in its current rotation.
+         *
+         * `maximumWindowMetrics` rather than the deprecated `Display.getSize` or
+         * an activity's own bounds: what is mirrored is the whole display, not a
+         * window, and this is the API that reports the display's bounds from a
+         * `Service` context. `resources.displayMetrics` is the fallback for a
+         * context the window manager will not serve; it can be smaller than the
+         * display on a device with a persistent system bar inset, which would
+         * shift the transform, so it is a last resort rather than a preference.
+         */
+        private fun phoneDisplaySize(context: Context): Pair<Int, Int>? {
+            val bounds = runCatching {
+                context.getSystemService(WindowManager::class.java)?.maximumWindowMetrics?.bounds
+            }.getOrNull()
+            if (bounds != null && bounds.width() > 0 && bounds.height() > 0) {
+                return bounds.width() to bounds.height()
+            }
+            val metrics = context.resources.displayMetrics
+            if (metrics.widthPixels > 0 && metrics.heightPixels > 0) {
+                return metrics.widthPixels to metrics.heightPixels
+            }
+            return null
+        }
+
+        /**
+         * A readable name for a keycode, falling back to the raw number.
+         *
+         * The named set is the short list [InputKeyCodes] documents rather than a
+         * transcription of all 270-odd `KeyCode` values; anything else is printed
+         * as a number, which is exactly what is needed to identify an unknown
+         * steering-wheel button from a log.
+         */
+        fun describeKeycode(keycode: Int): String = when (keycode) {
+            InputKeyCodes.HOME -> "HOME"
+            InputKeyCodes.BACK -> "BACK"
+            InputKeyCodes.CALL -> "CALL"
+            InputKeyCodes.ENDCALL -> "ENDCALL"
+            InputKeyCodes.DPAD_UP -> "DPAD_UP"
+            InputKeyCodes.DPAD_DOWN -> "DPAD_DOWN"
+            InputKeyCodes.DPAD_LEFT -> "DPAD_LEFT"
+            InputKeyCodes.DPAD_RIGHT -> "DPAD_RIGHT"
+            InputKeyCodes.DPAD_CENTER -> "DPAD_CENTER"
+            InputKeyCodes.SEARCH -> "SEARCH/VOICE"
+            InputKeyCodes.MEDIA_PLAY_PAUSE -> "MEDIA_PLAY_PAUSE"
+            InputKeyCodes.MEDIA_NEXT -> "MEDIA_NEXT"
+            InputKeyCodes.MEDIA_PREVIOUS -> "MEDIA_PREVIOUS"
+            InputKeyCodes.MEDIA_PLAY -> "MEDIA_PLAY"
+            InputKeyCodes.MEDIA_PAUSE -> "MEDIA_PAUSE"
+            InputKeyCodes.ROTARY_CONTROLLER -> "ROTARY_CONTROLLER"
+            InputKeyCodes.MEDIA -> "MEDIA"
+            InputKeyCodes.NAVIGATION -> "NAVIGATION"
+            InputKeyCodes.TEL -> "TEL"
+            else -> "keycode $keycode"
+        }
+    }
+}

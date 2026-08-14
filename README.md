@@ -2,9 +2,16 @@
 
 An open-source Android app that replaces Google's Android Auto phone app
 entirely. It speaks the reverse-engineered Android Auto Protocol (AAP) directly
-to a factory head unit — wirelessly — and casts *any* app on the phone to the car
-screen, with touch input coming back from the car and the car's microphone driven
-by fully on-device speech recognition.
+to a factory head unit — wirelessly — and puts the phone on the car screen, with
+touch input coming back from the car and the car's microphone driven by fully
+on-device speech recognition.
+
+Any app on the phone can appear on the car screen, by mirroring the phone
+display. What an unprivileged app *cannot* do is host someone else's app on a
+display of its own — so multi-pane layouts are drawn by Headway rather than
+hosted, and mirroring cannot survive the phone screen turning off. Both limits
+are the OS's, and both are derived from AOSP source in
+[ADR 0004](docs/adr/0004-what-headway-can-put-on-the-car-screen.md).
 
 No Google services. No network. No root. No system privileges.
 

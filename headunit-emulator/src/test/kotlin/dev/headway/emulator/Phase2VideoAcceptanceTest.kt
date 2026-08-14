@@ -230,23 +230,78 @@ class Phase2VideoAcceptanceTest {
             video.sendStop()
         }
 
+        // Two: the one openStream sends during bring-up, and the one this test
+        // sends mid-stream. Re-asking is legal and is what a phone does when it
+        // has been backgrounded and wants the screen again.
         val requests = session.sink.videoFocusRequests
-        assertEquals(1, requests.size)
-        assertEquals(VideoFocusMode.VIDEO_FOCUS_PROJECTED, requests[0].mode)
-        assertEquals(VideoFocusReason.PHONE_SCREEN_OFF, requests[0].reason)
+        assertEquals(2, requests.size)
+        assertEquals(VideoFocusMode.VIDEO_FOCUS_PROJECTED, requests[1].mode)
+        assertEquals(VideoFocusReason.PHONE_SCREEN_OFF, requests[1].reason)
         // The reply is interleaved with the acks; the frames must not have been
         // disturbed by it.
         assertEquals(10, session.sink.dataFrames.size)
         assertEquals(VideoFocusMode.VIDEO_FOCUS_PROJECTED, session.channel.videoFocus)
     }
 
+    @Test
+    fun `a head unit that never volunteers focus is asked for it, and projects`() {
+        // The real failure, reproduced. openauto chains a `VideoFocusNotification`
+        // onto its Config response, so against the default emulator the car
+        // screen lights up whether or not the phone ever asks -- and the missing
+        // request was invisible for the whole life of this project.
+        //
+        // A 2021 Chevrolet Infotainment 3 unit volunteers nothing. It answered
+        // Config, accepted Start and acknowledged 1434 frames over fifteen
+        // seconds while its screen stayed on "Connecting Android Auto phone".
+        // Nothing on the wire looked wrong, because nothing on the wire was
+        // wrong: the phone had simply never asked for the display.
+        val session = videoSession(
+            mediaMessages = 6,
+            sinkConfig = VideoSinkConfig(notifyFocusAfterSetup = false),
+        ) { video -> streamFrames(video, frames = 5) }
+
+        assertTrue(
+            session.sink.videoFocusRequests.isNotEmpty(),
+            "the phone streamed to a head unit that had not granted video focus and never asked " +
+                "for it; every frame would be decoded and discarded",
+        )
+        assertTrue(
+            session.sink.projecting,
+            "the head unit never started projecting, so nothing the phone sent was displayed",
+        )
+        assertEquals(
+            VideoFocusMode.VIDEO_FOCUS_PROJECTED,
+            session.channel.videoFocus,
+            "the phone did not record the focus the head unit granted",
+        )
+        assertEquals(
+            0L,
+            session.sink.framesDiscarded,
+            "${session.sink.framesDiscarded} frame(s) arrived before the head unit was " +
+                "projecting; focus must be requested before the first frame, not after",
+        )
+    }
+
     // --- the phone's stream -------------------------------------------------
 
-    /** Setup through Start — everything before the first media message. */
+    /**
+     * Setup through Start — everything before the first media message.
+     *
+     * Deliberately the same order as [dev.headway.app.video.CarVideoStream],
+     * including the focus request, which is not optional and is the one step
+     * whose absence a wire trace does not reveal: a head unit that never grants
+     * video focus still answers Config, accepts Start, and acknowledges every
+     * frame while showing none of them. Keep the two in step; `a head unit that
+     * never volunteers focus is asked for it` is what fails if they drift.
+     */
     private suspend fun openStream(video: VideoChannel) {
         video.sendSetup()
         val config = video.awaitConfig()
         check(config.ready) { "head unit answered setup with ${config.status}" }
+        video.requestVideoFocus(
+            mode = VideoFocusMode.VIDEO_FOCUS_PROJECTED,
+            reason = VideoFocusReason.PHONE_SCREEN_OFF,
+        )
         video.sendStart(
             sessionId = SESSION_ID,
             configurationIndex = config.configurationIndices.first(),
@@ -280,6 +335,7 @@ class Phase2VideoAcceptanceTest {
     private fun videoSession(
         mediaMessages: Int,
         timeoutMillis: Long = 300_000,
+        sinkConfig: VideoSinkConfig = VideoSinkConfig(),
         phone: suspend (VideoChannel) -> Unit,
     ): VideoRun = runBlocking {
         LoopbackTransport.pair().use { pair ->
@@ -307,7 +363,11 @@ class Phase2VideoAcceptanceTest {
                     it.mediaSinkService.availableType == MediaCodecType.MEDIA_CODEC_VIDEO_H264_BP
             }
             val video = VideoChannel(phoneConnection, channelId = videoService.id)
-            val sink = EmulatedVideoSink(headUnitConnection, channelId = videoService.id)
+            val sink = EmulatedVideoSink(
+                headUnitConnection,
+                channelId = videoService.id,
+                config = sinkConfig,
+            )
 
             val sinkSide = async(Dispatchers.IO) {
                 sink.run(mediaMessages = mediaMessages)

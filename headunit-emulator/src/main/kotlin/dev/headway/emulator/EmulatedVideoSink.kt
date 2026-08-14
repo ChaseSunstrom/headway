@@ -255,6 +255,33 @@ class EmulatedVideoSink(
     var acksSent: Long = 0L
         private set
 
+    /**
+     * Whether this unit is actually putting the phone's picture on its screen.
+     *
+     * Modelled rather than assumed, because the difference is the whole of a
+     * real failure. A 2021 Chevrolet Infotainment 3 unit answered `Config`,
+     * accepted `Start`, and acknowledged 1434 frames across fifteen seconds
+     * while its screen stayed on "Connecting Android Auto phone" — every frame
+     * decoded and discarded, because nothing had asked it for the display. The
+     * emulator could not reproduce that, because it *volunteers* focus the way
+     * openauto does ([VideoSinkConfig.notifyFocusAfterSetup]) and so was
+     * projecting before the question could arise.
+     *
+     * With `notifyFocusAfterSetup = false` this stays false until the phone
+     * asks, which is a head unit that behaves like the car.
+     */
+    var projecting: Boolean = false
+        private set
+
+    /**
+     * Frames received while [projecting] was false — decoded and thrown away.
+     *
+     * Nonzero means the phone is streaming to a screen that is not showing it,
+     * which on the wire is indistinguishable from everything working.
+     */
+    var framesDiscarded: Long = 0L
+        private set
+
     /** Every media message received, in arrival order. */
     val frames: List<ReceivedFrame> get() = synchronized(lock) { received.toList() }
 
@@ -403,6 +430,10 @@ class EmulatedVideoSink(
     }
 
     private fun record(kind: MediaKind, timestampMicros: Long, media: ByteArray) {
+        // Counted before the frame is stored, and acknowledged either way: a
+        // head unit that is not projecting still decodes and acks. That is
+        // precisely why the failure is invisible on the wire.
+        if (!projecting) framesDiscarded++
         synchronized(lock) {
             received += ReceivedFrame(
                 index = received.size,
@@ -445,7 +476,10 @@ class EmulatedVideoSink(
         connection.send(
             specific(AvMessageId.VIDEO_FOCUS_NOTIFICATION, notification.toByteArray())
         )
-        onStep("focus notification: ${config.focus.name}")
+        // Announcing PROJECTED is the moment the picture reaches the screen; see
+        // [projecting]. NATIVE is the unit taking its own display back.
+        projecting = config.focus == VideoFocusMode.VIDEO_FOCUS_PROJECTED
+        onStep("focus notification: ${config.focus.name}; projecting = $projecting")
     }
 
     // --- helpers ------------------------------------------------------------
