@@ -167,6 +167,43 @@ object HeadwaySettings {
     fun holdProjection(context: Context): Boolean =
         of(context).getBoolean(KEY_HOLD_PROJECTION, true)
 
+    /** Set once the one-time move off the simulated display has been applied. */
+    const val KEY_APP_SOURCE_MIGRATED: String = "app_source_migrated"
+
+    /**
+     * Moves an existing install off the simulated display, once.
+     *
+     * The simulated display was the only way an app could reach the car with a
+     * car-shaped picture, so it was worth its two costs: a Developer options
+     * toggle, and a phone screen that has to stay on and be turned on and off
+     * around every drive. It is not the only way any more — an app pane renders
+     * the phone's own screen just as well, and crops to fill — and those costs
+     * are paid every drive by a driver who may not remember choosing them.
+     *
+     * So: one move, recorded so it never happens twice, and the setting is still
+     * there for anyone who wants it back. Silently changing a choice the driver
+     * made is only defensible because the choice now has a cheaper answer and
+     * the log says exactly what changed and how to undo it.
+     */
+    fun migrateAppSource(context: Context, onNote: (String) -> Unit = {}) {
+        val prefs = runCatching { of(context) }.getOrNull() ?: return
+        if (prefs.getBoolean(KEY_APP_SOURCE_MIGRATED, false)) return
+        val wasOn = prefs.getBoolean(KEY_NATIVE_APP_DISPLAY, false)
+        runCatching {
+            prefs.edit()
+                .putBoolean(KEY_APP_SOURCE_MIGRATED, true)
+                .apply { if (wasOn) putBoolean(KEY_NATIVE_APP_DISPLAY, false) }
+                .apply()
+        }
+        if (wasOn) {
+            onNote(
+                "apps now run on the phone's own screen instead of a simulated display, so " +
+                    "nothing has to be turned on in Developer options before a drive. The car " +
+                    "screen's settings can put it back",
+            )
+        }
+    }
+
     fun appPaneFill(context: Context): Boolean =
         of(context).getBoolean(KEY_APP_PANE_FILL, false)
 

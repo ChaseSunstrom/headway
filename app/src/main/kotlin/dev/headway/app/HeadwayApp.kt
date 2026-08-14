@@ -18,6 +18,8 @@
 package dev.headway.app
 
 import android.app.Application
+import dev.headway.app.log.SessionLog
+import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.HeadwayTheme
 
 /**
@@ -31,6 +33,9 @@ import dev.headway.app.ui.theme.HeadwayTheme
  * palette is loaded here, before any activity, service or `Presentation`
  * exists.
  *
+ * The one other thing here is a preference migration that has to run before any
+ * surface reads the setting it changes.
+ *
  * Nothing else belongs in this class. It runs on every process start including
  * ones that only deliver a broadcast, so anything expensive here is a cost paid
  * by a phone that is not in a car — the load is one `SharedPreferences` read of
@@ -41,5 +46,10 @@ class HeadwayApp : Application() {
     override fun onCreate() {
         super.onCreate()
         HeadwayTheme.load(this)
+        // One preference migration, once. See HeadwaySettings.migrateAppSource
+        // for why an existing choice is being changed at all.
+        HeadwaySettings.migrateAppSource(this) { note ->
+            SessionLog.shared.info("HeadwayApp", note)
+        }
     }
 }

@@ -232,10 +232,65 @@ class AppPaneTile(
             lastBoundWidth = width
             lastBoundHeight = height
             dormantCard.visibility = View.GONE
+            checkForBlackFrames()
         } else {
             showDormant()
         }
     }
+
+    /**
+     * Says so, once, if the picture is arriving black.
+     *
+     * ## Why this is worth the code
+     *
+     * Because the one failure this feature has that produces *no error at all*
+     * is capturing the wrong display. The consent dialog decides what is
+     * recorded; Headway decides where apps are launched and how touches are
+     * mapped; and when those two disagree the frames still flow, the pane still
+     * fills, and what it fills with is a display nobody is drawing on. From the
+     * driver's seat that is "the app pane is broken", and from the log it is
+     * indistinguishable from working.
+     *
+     * `TextureView.getBitmap` is the only way to look at what actually arrived —
+     * a `SurfaceView` cannot be read back at all, which is one more reason this
+     * pane is not one. Sixteen pixels are enough to answer "is any of this
+     * anything".
+     */
+    private fun checkForBlackFrames() {
+        if (blackFrameCheckPending) return
+        blackFrameCheckPending = true
+        picture.postDelayed(
+            {
+                blackFrameCheckPending = false
+                if (!live || picture.visibility != View.VISIBLE) return@postDelayed
+                val sample = runCatching { picture.getBitmap(SAMPLE, SAMPLE) }.getOrNull()
+                    ?: return@postDelayed
+                var brightest = 0
+                for (x in 0 until sample.width) {
+                    for (y in 0 until sample.height) {
+                        val pixel = sample.getPixel(x, y)
+                        val value = maxOf(
+                            (pixel shr 16) and 0xFF,
+                            (pixel shr 8) and 0xFF,
+                            pixel and 0xFF,
+                        )
+                        if (value > brightest) brightest = value
+                    }
+                }
+                runCatching { sample.recycle() }
+                if (brightest > BLACK_THRESHOLD) return@postDelayed
+                onStep(
+                    "app pane: the picture is arriving black. Screen sharing is recording a " +
+                        "display that nothing is drawing on — if the consent dialog offered " +
+                        "a choice, it was the wrong row; if apps are set to run on a simulated " +
+                        "display, the phone's screen is the safer setting",
+                )
+            },
+            BLACK_FRAME_DELAY_MILLIS,
+        )
+    }
+
+    private var blackFrameCheckPending = false
 
     override fun start() {
         applyState()
@@ -420,5 +475,14 @@ class AppPaneTile(
 
     private companion object {
         val EMPTY = PaneRect(0, 0, 0, 0)
+
+        /** Long enough for a launched app to have drawn something. */
+        const val BLACK_FRAME_DELAY_MILLIS = 3_000L
+
+        /** A 16x16 read is a rounding error next to one encoded frame. */
+        const val SAMPLE = 16
+
+        /** Below this on every channel of every sampled pixel is "nothing at all". */
+        const val BLACK_THRESHOLD = 12
     }
 }
