@@ -47,12 +47,12 @@ re-locks.
 | Pane kind | Source of the content |
 |---|---|
 | App | **a real third-party app, rendered into the pane** |
-| Maps | the ongoing notification every navigator publishes, or a car app's `Trip` |
+| Maps | **the navigator's own map**, drawn into the pane's `Surface`; the turn card when no allowed app offers a car interface |
 | Now playing / Music | `MediaSessionManager`, and `MediaBrowserService` for the library |
 | Phone | the dialer's own call notification, and `CallLog.Calls` |
 | Car app | `androidx.car.app` templates, drawn by Headway (ADR 0007) |
 | Messages | `NotificationListenerService` + the app's own `RemoteInput` |
-| Widget | the app's own `RemoteViews`, through `AppWidgetHost` |
+| Widget | the app's own `RemoteViews`, through `AppWidgetHost` — **any number, all different apps, all at once** |
 | All apps / Clock | Headway's own |
 
 **The App pane is the change that answers "why doesn't opening an app work?".**
@@ -71,6 +71,20 @@ existed only because opening an app was a one-way trip, and `SYSTEM_ALERT_WINDOW
 went with it), and no activity of Headway's own on the phone when a session
 comes up — which is what lets the link come up automatically without taking the
 driver's screen.
+
+**Several different apps at the same time is the Widget and Car app panes, not
+the App pane.** Screen sharing is one grant, one virtual display, one shared app
+— the platform allows a second of none of them — so a layout of four App panes
+has one live pane and three destinations. A layout of four Widget panes is four
+different apps drawing simultaneously, live, with no capture involved, and the
+pane picker says so where the choice is made. Adding one costs a single tap on
+the phone the first time ever, because `bindAppWidgetIdIfAllowed` needs the
+system's host-approval dialog once and `BIND_APPWIDGET` is `signature|privileged`.
+
+**Nothing reaches the car screen until the driver allows that app**, one at a
+time, on the phone, parked. Empty by default. The app picker, the widget picker,
+the car-app list, the launcher grid and the voice "open X" command all pass
+through the same gate.
 
 Themes are three bases (dark, true black, light) times six accents, one of which
 is *no* accent. Eighteen combinations, composed rather than hand-written, with

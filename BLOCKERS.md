@@ -947,3 +947,31 @@ Headway cannot tell which kind of sharing the driver chose.
 **How to close it:** not closable from inside the app. The honest description is
 "the phone looks off and behaves as though it were", not "it works locked", and
 the README says it that way.
+
+## B-021 — The capture origin is inferred from insets, not measured
+
+**Where:** `AppPaneHost.captureOrigin`, `TouchTransform.phoneOriginX/Y`
+
+**What:** When the driver shares a single app, the capture starts at that app's
+window corner rather than the screen's, and touches have to be shifted back by
+the difference before dispatch. The exact number is the window's bounds on
+display 0, which only `AccessibilityWindowInfo.getBoundsInScreen` reports.
+
+**Why it is not read from there:** `accessibility_service_config.xml` sets
+`canRetrieveWindowContent="false"`, and the settings screen tells the user in as
+many words that Headway injects and never observes. Turning it on to gain a few
+pixels of precision would make that untrue.
+
+**Workaround, shipped:** the origin is computed from display 0's system-bar
+insets and the measured capture size — status-bar height when the capture is
+short of the display by at least that much, zero otherwise, with the horizontal
+component halved from the width difference. Exact for the ordinary case (a
+portrait app below the status bar) and exact for a whole-display capture, which
+is the only other one the pane can be in.
+
+**What would go wrong:** an app in an unusual window — a freeform or
+split-screen window, or one inset on only one side — would be shifted by the
+wrong amount. The symptom is touches landing consistently off in one direction,
+and `input: touches inside the app pane map ... at X,Y` in the session log says
+which numbers were used. A drive that shows it should be fixed by widening the
+inference, not by taking the flag.

@@ -239,3 +239,48 @@ through.
 - The floating overlay window — the mic-and-Headway mark drawn over the app
   display — is removed. It existed because mirror mode was a one-way trip with no
   way back; the dashboard is never left now, and the mic is on the rail.
+
+## Amendment, 2026-08-14 (third): the two spaces a single-app capture creates
+
+Single-app sharing solved the aspect ratio and the "it shows the entire display"
+complaint, and quietly introduced a second one. The capture is the app's
+**window**; the gesture is dispatched on the **display**. Those are not the same
+coordinate space, and the difference is a status bar.
+
+A `GestureDescription` path is absolute on the display, so mapping a car touch
+through the capture's geometry and dispatching it unchanged puts every finger
+about 48 dp high — enough to hit the row above the target, every time, with no
+error in any log because nothing is in error. It reads as "I cannot do anything
+on the pane".
+
+`TouchTransform` therefore takes `phoneOriginX`/`phoneOriginY`, which
+`AppPaneHost` derives from display 0's system-bar insets and the measured capture
+size: a capture shorter than the display by at least a status bar starts below
+one, and a full-height capture starts at the top. Zero for a whole-display
+capture, so that path is unchanged and covered by a test that says so.
+
+Deliberately **not** read from the accessibility service, which knows the window's
+bounds exactly. That would mean `canRetrieveWindowContent="true"`, and the
+promise on the grant screen — Headway injects and never observes — is worth more
+than the last few pixels.
+
+### The Maps pane was never limited to a button
+
+This ADR's first draft said a pane cannot be a map, on the grounds that a map is
+another app's rendering. That is true of *capture* and false of the car app
+protocol: a navigation car app is handed a `Surface` through `SurfaceContainer`
+and draws its own map into it. `CarAppSession` already implemented the surface
+callback and `CarAppTile` already rendered it; the Maps pane simply never asked.
+It now hosts the first allowed navigator directly, and falls back to the turn
+card when the phone has none.
+
+### The widget pane had no picker
+
+Everything else about `WIDGET` panes worked — bind, host, save, restore — and
+choosing one set the kind with no argument, so it came up empty and stayed empty.
+That gap was the whole of "several different apps at once": widgets are the
+unlimited family, and none could be added. `WidgetSetupActivity` does the three
+steps a `Presentation` cannot (allocate, bind through the system's host-approval
+dialog, run the provider's configure activity) and hands the bound id back
+in-process. The picker is gated by `AllowedApps`, and so is the car-app list,
+which was not.
