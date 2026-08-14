@@ -230,12 +230,21 @@ remaining hypotheses can be tested with a text edit instead of a rebuild.
 
 ## What is left
 
-0. **Three device questions, each answerable in one session and each with the
-   probe already built.** B-012: does a real car app accept Headway as a host
-   (open the Car apps tab and read the log line). B-015: does the capture
-   chooser offer the simulated display as its own row (press "Show every display
-   this phone has", then Connect). And whether the `(secure)` trap was avoided,
-   which the same button answers.
+0. **One button that answers almost all of it, and it does not need the car.**
+   Press **Run the self-test** on the setup screen. It binds every installed car
+   app and prints what each said (**B-012**), lists every display with its flags
+   so the `(secure)` trap is visible (half of **B-015**), names whatever package
+   owns the renderer permission and the connection authority (**B-013**,
+   **B-014**), reads back every grant, and connects to each media app's browser.
+
+   The thing that kept these open was the belief that they needed a drive. They
+   do not: a `CarAppService` is bound over local binder, so an app on the phone
+   accepts or refuses Headway with no head unit involved. One report settles
+   four blockers.
+
+   What genuinely still needs the car: whether the capture chooser lists the
+   simulated display as its own row (the other half of B-015), and everything
+   drawn on the panel. The self-test's last section says exactly that.
 1. **Real-hardware validation.** The one step that cannot be self-performed, and
    the only thing between this and a working car link.
 2. **Release signing and F-Droid metadata.** The build is reproducible in shape;

@@ -24,6 +24,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -33,6 +34,7 @@ import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -51,6 +53,7 @@ import dev.headway.app.update.ReleaseCatalog
 import dev.headway.app.update.UpdateException
 import android.companion.CompanionDeviceManager
 import dev.headway.app.dash.tiles.NowPlayingTile
+import dev.headway.app.diag.SelfTest
 import dev.headway.app.link.CarCompanion
 import dev.headway.app.quirks.QuirkStore
 import dev.headway.app.service.HeadwayService
@@ -65,6 +68,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Persisted user choices, in one place so the two activities cannot disagree.
@@ -192,6 +196,12 @@ class MainActivity : AppCompatActivity() {
      * any drive.
      */
     private var tabsCard: TabsCard? = null
+
+    private lateinit var selfTestStatus: TextView
+    private lateinit var selfTestButton: TextView
+
+    /** Guards against a second run while the first is still binding apps. */
+    private var selfTestRunning = false
 
     private var uiScope: CoroutineScope? = null
 
@@ -488,6 +498,7 @@ class MainActivity : AppCompatActivity() {
         column.addView(Phone.sectionLabel(this, "Your choice"))
         column.addView(buildDrivingCard())
         column.addView(Phone.sectionLabel(this, "If something is wrong"))
+        column.addView(buildSelfTestCard())
         column.addView(buildDiagnosticsCard())
         column.addView(buildUpdatesCard())
 
@@ -723,7 +734,12 @@ class MainActivity : AppCompatActivity() {
             ),
         )
         card.addView(
-            Phone.button(this, "Show every display this phone has") { showDisplayReport() },
+            Phone.note(
+                this,
+                "To check which display you picked — and whether it is a (secure) one " +
+                    "— run the self-test at the bottom of this screen. It lists every " +
+                    "display with its flags.",
+            ).apply { layoutParams = Phone.spaced(this@MainActivity, 10f) },
         )
         return card
     }
@@ -736,22 +752,6 @@ class MainActivity : AppCompatActivity() {
         }
         startActivity(intent)
         toast("Simulate secondary displays → 720x480/142, not a (secure) one")
-    }
-
-    /**
-     * The probe.
-     *
-     * Reads out every display with its flags, which is the only way to tell a
-     * usable simulated display from a `(secure)` one the driver picked by
-     * mistake — they are indistinguishable in the Settings menu and produce a
-     * display that exists and cannot be recorded.
-     */
-    private fun showDisplayReport() {
-        AlertDialog.Builder(this)
-            .setTitle("Displays")
-            .setMessage(OverlayDisplay.diagnose(this))
-            .setPositiveButton("Close", null)
-            .show()
     }
 
     private fun refreshAppDisplay() {
@@ -984,6 +984,139 @@ class MainActivity : AppCompatActivity() {
             Phone.button(this, "Show the safety notice again") { showSafetyNotice(firstRun = false) },
         )
         return card
+    }
+
+    /**
+     * The one button that answers everything answerable without a car.
+     *
+     * Four entries in `BLOCKERS.md` were each written as "one device test
+     * settles it" and then sat open, because settling them meant three separate
+     * hunts in three different places. The thing that makes them cheap is easy
+     * to miss: **binding a car app does not need a car.** A `CarAppService` is
+     * bound over local binder, so Organic Maps on this phone accepts or refuses
+     * Headway with no head unit involved. Same for the display list, the
+     * install collisions and every permission.
+     *
+     * So this runs the lot and prints one report. See [SelfTest].
+     */
+    private fun buildSelfTestCard(): View {
+        val card = Phone.card(this, "Self-test")
+        card.addView(
+            Phone.body(
+                this,
+                "Checks everything that can be checked without the car: which apps " +
+                    "will let Headway draw them, which displays this phone has, what " +
+                    "Headway has been granted, and which music apps open their library.",
+            ),
+        )
+        selfTestStatus = Phone.body(this, "Not run yet.").apply {
+            layoutParams = Phone.spaced(this@MainActivity, 10f)
+        }
+        card.addView(selfTestStatus)
+        card.addView(
+            Phone.note(
+                this,
+                "Takes a few seconds per app, because each one is really connected to " +
+                    "and disconnected from. Nothing is changed and no permission is " +
+                    "asked for.",
+            ).apply { layoutParams = Phone.spaced(this@MainActivity, 8f) },
+        )
+        selfTestButton = Phone.button(this, "Run the self-test") { runSelfTest() }
+        card.addView(selfTestButton)
+        return card
+    }
+
+    /**
+     * Runs it off the main thread, because [SelfTest.run] blocks on binds it
+     * posts *to* the main thread and would otherwise deadlock against itself.
+     */
+    private fun runSelfTest() {
+        if (selfTestRunning) return
+        // Before anything is disabled: bailing out after the button is greyed
+        // would leave it greyed for good.
+        val scope = updateScope ?: return
+        selfTestRunning = true
+        selfTestButton.isEnabled = false
+        selfTestButton.alpha = 0.5f
+        selfTestStatus.text = "Starting…"
+
+        val application = applicationContext
+        scope.launch {
+            val report = withContext(Dispatchers.IO) {
+                runCatching {
+                    SelfTest.run(application) { step ->
+                        // Back to main for the view; the callback arrives on IO.
+                        // The destroyed check is not paranoia: the IO block
+                        // holds a blocking bind and cannot be cancelled at a
+                        // suspension point, so it outlives a rotation.
+                        runOnUiThread {
+                            if (selfTestRunning && !isFinishing && !isDestroyed) {
+                                selfTestStatus.text = step
+                            }
+                        }
+                    }
+                }.getOrElse { failure ->
+                    "The self-test itself failed: $failure\n\nThat is a Headway bug — " +
+                        "please export the log and report it."
+                }
+            }
+            selfTestRunning = false
+            selfTestButton.isEnabled = true
+            selfTestButton.alpha = 1f
+            selfTestStatus.text = summarise(report)
+            showSelfTestReport(report)
+        }
+    }
+
+    /** The one line the card keeps after the dialog is dismissed. */
+    private fun summarise(report: String): String {
+        val verdict = report.lineSequence()
+            .firstOrNull { it.contains(" accepted, ") }
+            ?.trim()
+            ?: "Report ready."
+        return "$verdict Tap to read it again."
+    }
+
+    private fun showSelfTestReport(report: String) {
+        // Monospace and horizontally scrollable: the report aligns its columns
+        // with spaces, and a proportional font in a wrapping dialog turns that
+        // into a smear.
+        val body = TextView(this).apply {
+            text = report
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
+            setTextIsSelectable(true)
+            val side = dp(20)
+            setPadding(side, dp(12), side, dp(12))
+        }
+        val scroll = ScrollView(this).apply {
+            addView(
+                HorizontalScrollView(this@MainActivity).apply { addView(body) },
+            )
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Self-test")
+            .setView(scroll)
+            .setPositiveButton("Share") { _, _ -> shareSelfTest(report) }
+            .setNeutralButton("Copy") { _, _ ->
+                getSystemService(ClipboardManager::class.java)
+                    ?.setPrimaryClip(ClipData.newPlainText("Headway self-test", report))
+                toast("Copied")
+            }
+            .setNegativeButton("Close", null)
+            .show()
+        selfTestStatus.setOnClickListener { showSelfTestReport(report) }
+    }
+
+    private fun shareSelfTest(report: String) {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Headway self-test (build ${BuildConfig.VERSION_CODE})")
+            putExtra(Intent.EXTRA_TEXT, report)
+        }
+        runCatching { startActivity(Intent.createChooser(send, "Share the self-test")) }
+            .onFailure { toast("Nothing on this phone can share text") }
     }
 
     private fun buildDiagnosticsCard(): View {

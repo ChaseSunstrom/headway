@@ -141,7 +141,9 @@ launched onto a trusted display. So:
 
 1. Settings → System → Developer options → **Simulate secondary displays** →
    `720x480/142`. **Not** an entry labelled `(secure)`; those cannot be recorded
-   and produce a black car screen with no error.
+   and produce a black car screen with no error. To check which one you got,
+   press **Run the self-test** on the setup screen — its Displays section prints
+   every display's flags and says which are usable.
 2. Same screen → **Disable screen-share protections for apps and notifications**.
    Android 15 and later stop a screen capture when the phone locks and ask for
    consent again on the next unlock, which would cost the car its picture every
@@ -229,6 +231,33 @@ in [`PROGRESS.md`](PROGRESS.md) carries a tier:
   `MediaCodec`, `MediaProjection`, `AccessibilityService`, Bluetooth sockets,
   Wi-Fi binding.
 - **Unverifiable without hardware** — anything measured in a car.
+
+### The self-test, and how little of this actually needs the car
+
+A great deal of what looks like it needs a drive does not, and the setup screen
+has a **Self-test** card that runs all of it in one press. It:
+
+- **binds every installed car app** and runs the real `androidx.car.app`
+  handshake, reporting per app whether it accepted Headway as a host, refused it
+  (with the app's own error text), or never answered;
+- **lists every display** with its flags, which is the only way to tell a usable
+  simulated display from a `(secure)` one;
+- **reads back every grant** — the renderer permission, the connection provider,
+  notification access, accessibility, overlay, and the four telephony
+  permissions;
+- **names whatever package** defines `android.car.permission.TEMPLATE_RENDERER`
+  and owns the `androidx.car.app.connection` authority on this phone;
+- **connects to each media app's browser** and says whose library opens.
+
+The report can be copied or shared as text, and it also goes into the session
+log. The insight it is built on: a `CarAppService` is bound over **local
+binder**, so Organic Maps on the phone accepts or refuses Headway with no head
+unit involved, no Wi-Fi, and no drive. Four `BLOCKERS.md` entries sat open on
+the assumption that settling them required a car; they did not.
+
+Two things genuinely do need the car, and the report's last section says so:
+whether Android's capture chooser offers the simulated display as its own row,
+and how any of it looks on the panel.
 
 One caveat worth stating plainly: the head-unit emulator shares its protocol
 code with the phone, so a wrong-but-symmetric constant round-trips cleanly and

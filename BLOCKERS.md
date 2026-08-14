@@ -587,10 +587,17 @@ single session names the app and the reason rather than showing an empty pane.
 Nothing else in Headway depends on the host: maps, media, phone and messages all
 work through their own models whether or not a single car app ever answers.
 
-**How to close it:** install any app with a `CarAppService`, open the Car apps
-tab, and read the exported log. `car app: <name> at api <n>` means the handshake
-passed and route 4 works. `car app: <name> declined Headway as a car host` means
-it did not, and the message carries the app's own exception.
+**How to close it:** install any app with a `CarAppService` and press **Run the
+self-test** on the setup screen. It binds every installed car app in turn, runs
+the real handshake, and prints one line per app: `ACCEPTED` with the negotiated
+API level, `refused` with the app's own error text, or `timed out`.
+
+The point worth stating, because it is what kept this entry open for so long:
+**none of that needs the car.** A `CarAppService` is bound over local binder, so
+Organic Maps on the phone accepts or refuses Headway with no head unit involved,
+no Wi-Fi, and no drive. The test that closes this entry takes ten seconds in a
+kitchen. What still needs the car is only whether the accepted templates *look*
+right on the panel, which is a rendering question, not a host one.
 
 ---
 
@@ -620,6 +627,13 @@ that allows all hosts.
 
 **How to close it:** it closes itself the day a car app adds Headway to its
 allowlist, because route 2 needs no permission at all.
+
+**How to check it on a given phone:** press **Run the self-test**. Its "Install
+collisions" section names the package that actually defines
+`android.car.permission.TEMPLATE_RENDERER` on this device. If Headway is running
+at all then no collision blocked the install, and the useful question is the
+next one — whether Headway's own declaration is the one in force, which the same
+section answers by name.
 
 ---
 
@@ -662,6 +676,12 @@ put the provider back.
 **How to close it:** it cannot be closed while both hosts are installed. The
 authority is a well-known string precisely so that whichever host is present can
 own it, and two hosts on one phone is a case the contract does not model.
+
+**How to check it on a given phone:** press **Run the self-test**. Its "Install
+collisions" section names the package that owns `androidx.car.app.connection`,
+and its "Grants" section says what that owner answers — `NOT_CONNECTED` with no
+car, `PROJECTION` with one. An answer from a package that is not Headway means
+the other host is the one apps are reading.
 
 ---
 
@@ -707,10 +727,16 @@ default, and `CarAppDisplay.resolve` logs which display it settled on — or tha
 it found none — on every session. With the switch off, or with no simulated
 display present, every path is byte-for-byte what it was before ADR 0008.
 
-**How to close it:** on the setup screen, press "Show every display this phone
-has". It lists every display with its flags and says which are usable, which
-answers the `(secure)` question outright. Then press Connect with the switch on
-and look at the consent dialog: a row named for the simulated display means the
-flag is enabled and the route works. If only "Entire screen" and "A single app"
-are offered, the flag is off, and the honest answer is that this phone cannot do
-native rendering for apps without a car template — turn the switch back off.
+**How to close it:** in two halves, and only the second needs the car.
+
+The `(secure)` half: press **Run the self-test** on the setup screen. Its
+"Displays" section lists every display with its flags and says which are usable,
+which settles outright whether the driver picked a recordable entry.
+
+The chooser half: press Connect with the switch on and look at the consent
+dialog. A row named for the simulated display means the flag is enabled and the
+route works. If only "Entire screen" and "A single app" are offered, the flag is
+off, and the honest answer is that this phone cannot do native rendering for
+apps without a car template — turn the switch back off. This is one of only two
+things in the whole self-test that a drive is genuinely required for, and the
+self-test's last section says so.
