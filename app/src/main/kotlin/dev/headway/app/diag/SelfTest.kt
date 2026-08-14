@@ -227,7 +227,13 @@ object SelfTest {
         }
         closed.await(ASK_TIMEOUT_SECONDS, TimeUnit.SECONDS)
 
-        if (!answered) return Verdict(HostState.TIMED_OUT, "no answer in ${ASK_TIMEOUT_SECONDS}s")
+        if (!answered) {
+            // The session's own watchdogs fire in well under this, so reaching
+            // here means the main looper was busy rather than the app silent —
+            // worth distinguishing, since the advice is completely different.
+            val why = fault.get()?.let { " ($it)" }.orEmpty()
+            return Verdict(HostState.TIMED_OUT, "no answer in ${ASK_TIMEOUT_SECONDS}s$why")
+        }
         val state = seen.get()
         // describe() leads with the app's label, which this line has already
         // printed.
