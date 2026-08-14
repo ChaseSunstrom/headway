@@ -42,6 +42,7 @@ import dev.headway.app.dash.tiles.MessagesTile
 import dev.headway.app.dash.tiles.NowPlayingTile
 import dev.headway.app.dash.tiles.PhoneTile
 import dev.headway.app.dash.tiles.WidgetTile
+import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.CarMetrics
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.ui.theme.HeadwayTheme
@@ -522,6 +523,7 @@ class CarShell(
                 metrics = metrics,
                 packageName = leaf.argument,
                 onStep = onStep,
+                fill = HeadwaySettings.appPaneFill(context),
                 onFocusRequested = ::focusAppPane,
             )
 
@@ -726,11 +728,84 @@ class CarShell(
             showAppPicker { openApp(it) }
         }
         rows += CarSheet.Row("Theme", themeSummary()) { showThemes() }
+        rows += CarSheet.Row("Apps and panels", appSourceSummary()) { showAppSettings() }
         rows += CarSheet.Row("About this session", sessionSummary()) { }
 
         showOverlay(
             sheet().build(title = "Settings", rows = rows, onClose = ::closeOverlay),
         )
+    }
+
+    /**
+     * Where apps run and how their picture is placed — the two questions the
+     * app pane raises, answerable from the car.
+     *
+     * On the car because the answer changes with the drive. The simulated
+     * display gives a car-shaped picture and costs a Developer options toggle
+     * and a phone screen that must stay on; the phone's own screen costs
+     * neither and gives a portrait strip unless it is cropped. A driver who has
+     * to stop and find the phone to switch between those will simply never
+     * switch.
+     */
+    private fun showAppSettings() {
+        val simulated = OverlayDisplay.find(context)
+        val onSimulated = CarAppDisplay.enabled(context)
+        val fill = HeadwaySettings.appPaneFill(context)
+        val rows = listOf(
+            CarSheet.Row(
+                title = "Run apps on the phone's screen",
+                detail = "Nothing to set up. The picture is portrait, so crop it to fill",
+                selected = !onSimulated,
+            ) {
+                setAppSource(false)
+            },
+            CarSheet.Row(
+                title = "Run apps on a simulated display",
+                detail = simulated?.let { "Car-shaped picture, on $it" }
+                    ?: "Needs Developer options \u2192 Simulate secondary displays first",
+                selected = onSimulated,
+            ) {
+                setAppSource(true)
+            },
+            CarSheet.Row(
+                title = if (fill) "Fit the picture inside the panel" else "Crop the picture to fill the panel",
+                detail = if (fill) {
+                    "Show all of it, with a bar where the shapes differ"
+                } else {
+                    "Fill the panel and lose the edges \u2014 better for a map"
+                },
+            ) {
+                runCatching {
+                    HeadwaySettings.of(context).edit()
+                        .putBoolean(HeadwaySettings.KEY_APP_PANE_FILL, !fill)
+                        .apply()
+                }
+                closeOverlay()
+                render()
+            },
+        )
+        showOverlay(sheet().build("Apps and panels", rows, onClose = ::closeOverlay))
+    }
+
+    private fun setAppSource(simulated: Boolean) {
+        runCatching {
+            HeadwaySettings.of(context).edit()
+                .putBoolean(HeadwaySettings.KEY_NATIVE_APP_DISPLAY, simulated)
+                .apply()
+        }
+        closeOverlay()
+        // The choice decides which display apps are launched onto *and* what
+        // the projection is assumed to be recording, and both are resolved once
+        // per session. Saying so is the honest thing: this cannot take effect
+        // until the next connection.
+        showVoiceMessage("Reconnect for this to take effect")
+        onStep("car screen: apps will run on ${if (simulated) "a simulated display" else "the phone's screen"} from the next session")
+    }
+
+    private fun appSourceSummary(): String {
+        val where = if (CarAppDisplay.enabled(context)) "a simulated display" else "the phone's screen"
+        val how = if (HeadwaySettings.appPaneFill(context)) "cropped to fill" else "fitted inside"
+        return "Apps run on $where, $how"
     }
 
     private fun themeSummary(): String {

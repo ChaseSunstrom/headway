@@ -143,6 +143,15 @@ object HeadwaySettings {
      */
     const val KEY_CAR_ADDRESS: String = "car_bluetooth_address"
 
+    /**
+     * Whether an app pane crops to fill rather than fitting inside.
+     *
+     * Off by default: cropping hides content, and hiding a row of a list is a
+     * worse surprise than a bar down each side. On for a map or a video, where
+     * the middle is the point and the edges are chrome.
+     */
+    const val KEY_APP_PANE_FILL: String = "app_pane_fill"
+
     fun of(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -157,6 +166,9 @@ object HeadwaySettings {
 
     fun holdProjection(context: Context): Boolean =
         of(context).getBoolean(KEY_HOLD_PROJECTION, true)
+
+    fun appPaneFill(context: Context): Boolean =
+        of(context).getBoolean(KEY_APP_PANE_FILL, false)
 
     fun carAddress(context: Context): String? =
         runCatching { of(context).getString(KEY_CAR_ADDRESS, null) }.getOrNull()

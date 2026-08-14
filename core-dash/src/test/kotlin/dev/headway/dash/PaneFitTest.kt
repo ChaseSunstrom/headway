@@ -119,6 +119,70 @@ class PaneFitTest {
     }
 
     @Test
+    @DisplayName("cover fills the pane, overflowing on the axis fit would have left blank")
+    fun cover() {
+        // The phone-screen case: 1080x2404 into an 800x432 pane.
+        val rect = PaneFit.cover(1080, 2404, 800, 432)
+        assertEquals(800, rect.width, "the pane's width must be filled")
+        assertTrue(rect.height > 432, "the overflow is what gets clipped")
+        assertEquals(0, rect.left)
+        assertTrue(rect.top < 0, "the overflow is centred, so it hangs off both ends")
+        // Aspect preserved.
+        assertTrue(abs(rect.width / rect.height.toDouble() - 1080 / 2404.0) < 0.01)
+    }
+
+    @Test
+    @DisplayName("cover and fit agree when the source already has the pane's shape")
+    fun coverEqualsFitWhenAspectsMatch() {
+        assertEquals(PaneFit.fit(720, 480, 360, 240), PaneFit.cover(720, 480, 360, 240))
+    }
+
+    @Test
+    @DisplayName("cover never leaves a gap on either axis")
+    fun coverLeavesNoGap() {
+        listOf(720 to 480, 1080 to 2404, 480 to 480, 2400 to 1080).forEach { (w, h) ->
+            listOf(800 to 432, 300 to 400, 640 to 200).forEach { (pw, ph) ->
+                val rect = PaneFit.cover(w, h, pw, ph)
+                assertTrue(rect.width >= pw, "width $rect for ${w}x$h in ${pw}x$ph")
+                assertTrue(rect.height >= ph, "height $rect for ${w}x$h in ${pw}x$ph")
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("place picks whichever the driver asked for")
+    fun place() {
+        assertEquals(
+            PaneFit.fit(1080, 2404, 800, 432),
+            PaneFit.place(1080, 2404, 800, 432, fill = false),
+        )
+        assertEquals(
+            PaneFit.cover(1080, 2404, 800, 432),
+            PaneFit.place(1080, 2404, 800, 432, fill = true),
+        )
+    }
+
+    @Test
+    @DisplayName("a touch still maps through a cropped picture, including off-pane rows")
+    fun touchThroughCover() {
+        val rect = PaneFit.cover(1080, 2404, 800, 432)
+        // The centre of the pane is the centre of the source, cropped or not.
+        val middle = PaneFit.toSource(400, 216, rect, 1080, 2404)!!
+        assertTrue(abs(middle.x - 540) <= 2, "x was ${middle.x}")
+        assertTrue(abs(middle.y - 1202) <= 6, "y was ${middle.y}")
+        // A point outside the picture's rectangle is still refused, which for a
+        // cover can only happen on the axis that was not filled.
+        assertNull(PaneFit.toSource(-5, 216, rect, 1080, 2404))
+    }
+
+    @Test
+    @DisplayName("an unmeasured pane covers nothing rather than dividing by zero")
+    fun coverDegenerate() {
+        assertEquals(0, PaneFit.cover(720, 480, 0, 0).width)
+        assertEquals(0, PaneFit.cover(0, 0, 400, 300).width)
+    }
+
+    @Test
     @DisplayName("a pane that wobbled by a pixel does not reallocate the display")
     fun resizeHasSlack() {
         val target = PaneFit.fit(720, 480, 600, 480)

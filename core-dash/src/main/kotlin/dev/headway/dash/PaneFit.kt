@@ -94,6 +94,58 @@ object PaneFit {
     }
 
     /**
+     * The smallest rectangle with the source's proportions that *covers* a
+     * [paneWidth]x[paneHeight] pane, centred — so the pane is filled and the
+     * overflow is clipped.
+     *
+     * ## Why this is offered at all
+     *
+     * Because [fit] is right and often ugly. A phone is 1080x2404 and a pane is
+     * landscape, so fitting a capture of the phone's own screen into one leaves
+     * a strip about a fifth of the pane wide with background either side. For a
+     * map, or a video, or anything whose interesting content is in the middle,
+     * cropping the top and bottom is straightforwardly better; for a list, it
+     * hides rows. Neither is correct in general, so it is the driver's choice
+     * and [fit] is the default, because losing content silently is the worse
+     * failure of the two.
+     *
+     * The returned rectangle can extend past the pane on one axis; its left/top
+     * are then negative. The pane clips it.
+     */
+    fun cover(sourceWidth: Int, sourceHeight: Int, paneWidth: Int, paneHeight: Int): PaneRect {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || paneWidth <= 0 || paneHeight <= 0) {
+            return PaneRect(0, 0, 0, 0)
+        }
+        // The mirror image of fit: take the axis that runs out *last*.
+        val sourceIsWider = sourceWidth.toLong() * paneHeight > paneWidth.toLong() * sourceHeight
+        val width: Int
+        val height: Int
+        if (sourceIsWider) {
+            height = paneHeight
+            width = max(1, (paneHeight.toLong() * sourceWidth / sourceHeight).toInt())
+        } else {
+            width = paneWidth
+            height = max(1, (paneWidth.toLong() * sourceHeight / sourceWidth).toInt())
+        }
+        val left = (paneWidth - width) / 2
+        val top = (paneHeight - height) / 2
+        return PaneRect(left, top, left + width, top + height)
+    }
+
+    /** [fit] or [cover], by the driver's choice. */
+    fun place(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        paneWidth: Int,
+        paneHeight: Int,
+        fill: Boolean,
+    ): PaneRect = if (fill) {
+        cover(sourceWidth, sourceHeight, paneWidth, paneHeight)
+    } else {
+        fit(sourceWidth, sourceHeight, paneWidth, paneHeight)
+    }
+
+    /**
      * Maps a touch at ([x], [y]) — in the pane's own coordinates — onto the
      * source display, or null when the touch landed on the letterbox rather than
      * on the picture.

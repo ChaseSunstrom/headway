@@ -96,6 +96,8 @@ class AppPaneTile(
     /** The package this pane prefers to show; null means "whatever is running". */
     private val packageName: String?,
     private val onStep: (String) -> Unit,
+    /** Crop to fill the pane rather than fitting inside it. */
+    private val fill: Boolean = false,
     /** Asks the shell to give this pane the picture. */
     private val onFocusRequested: (AppPaneTile) -> Unit,
 ) : DashTile {
@@ -347,7 +349,7 @@ class AppPaneTile(
         val sourceWidth = AppPaneHost.sourceWidth
         val sourceHeight = AppPaneHost.sourceHeight
         if (paneWidth <= 0 || paneHeight <= 0 || sourceWidth <= 0 || sourceHeight <= 0) return
-        val fitted = PaneFit.fit(sourceWidth, sourceHeight, paneWidth, paneHeight)
+        val fitted = PaneFit.place(sourceWidth, sourceHeight, paneWidth, paneHeight, fill)
         if (fitted.width <= 0 || fitted.height <= 0) return
         val params = picture.layoutParams as FrameLayout.LayoutParams
         if (params.width == fitted.width && params.height == fitted.height) return
