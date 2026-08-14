@@ -46,9 +46,13 @@ import java.util.concurrent.atomic.AtomicReference
  * is portrait and a dashboard is not.
  *
  * Android Auto resolves this by having apps write a second UI against a template
- * library whose host is locked to six hardcoded certificates. Headway cannot be
- * that host, so it does the next thing: draw its own home screen, and hand the
- * whole screen over when the driver asks for a real app.
+ * library, and Headway is now a host for that library too — see ADR 0007 and
+ * `dev.headway.app.carapp`, which draws a car app's templates as a dashboard
+ * pane rather than as pixels. [MIRROR] is what remains for the apps that
+ * publish no templates at all, and even those need not be squeezed: with a
+ * simulated secondary display configured (ADR 0008) they are launched onto a
+ * car-sized display and captured from there, so what mirroring means in
+ * practice is decided by `CarAppDisplay` rather than by this enum.
  */
 enum class CarSurfaceMode {
     /** Headway's own dashboard, drawn at the head unit's resolution. */

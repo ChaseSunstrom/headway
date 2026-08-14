@@ -131,3 +131,16 @@ of its intended size on the panel.
 three Automotive, and the `TEMPLATE_RENDERER` escape is privileged. There is no
 host library, and reimplementing the AIDL would work only against debuggable
 apps or ones that voluntarily add Headway's certificate.
+
+> **Reversed 2026-08-14 — see [ADR 0007](0007-headway-as-a-car-app-host.md).**
+> Two of the three reasons above are wrong. `android.car.permission.TEMPLATE_RENDERER`
+> is *not* privileged in any sense that matters here: it is an ordinary custom
+> permission name, undefined on a phone, which Headway declares at `signature`
+> level and is therefore granted at install — and `HostValidator.hasPermissionGranted`
+> asks for nothing more than that. And the AIDL does not need reimplementing,
+> because `androidx.car.app:app` exports every host-side stub and the whole
+> `Bundler` as public API, so Headway depends on the library rather than forking
+> it. The host is built and shipped in `dev.headway.app.carapp`. What was right
+> is the allowlist observation: out of the box a third-party host is accepted by
+> zero apps, which is exactly why the permission route is the whole of the
+> reach.
