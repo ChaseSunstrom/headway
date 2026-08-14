@@ -133,10 +133,16 @@ jobs:
       - name: Android module unit tests
         run: ./gradlew :core-video:test :core-input:test :core-audio:test :app:testHostDebugUnitTest
 
+      # Both variants, named explicitly. A `*/debug/*.apk` glob would also sweep
+      # up app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk,
+      # and handing somebody a test harness APK to sideload alongside the two
+      # real ones is a good way to waste an evening.
       - uses: actions/upload-artifact@v4
         with:
           name: headway-debug-apk
-          path: app/build/outputs/apk/*/debug/*.apk
+          path: |
+            app/build/outputs/apk/host/debug/app-host-debug.apk
+            app/build/outputs/apk/compat/debug/app-compat-debug.apk
           retention-days: 14
 
   instrumented:

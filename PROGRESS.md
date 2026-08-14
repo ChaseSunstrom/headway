@@ -228,6 +228,28 @@ the cause:
 `hiddenSsid`, `pinBssid` and `announceWifiChannel` are in the quirk file, so the
 remaining hypotheses can be tested with a text edit instead of a rebuild.
 
+## Two APKs per release, since 2026-08-14
+
+A user could not install any build after 84 — "App not installed", no reason
+given. The car-app host had added a `<permission>` and a `<provider>` to the
+manifest, and both claim names that are **global to the device**: one definer
+per permission name, one owner per provider authority. On a phone that already
+holds either, the APK does not install at all, and every unrelated feature goes
+down with it.
+
+Every release now carries `-host.apk` (declares both, the default) and
+`-compat.apk` (declares neither, installs anywhere, loses only the car-app
+host). Same package, same key, either upgrades the other.
+[ADR 0009](docs/adr/0009-two-apks-so-the-host-cannot-block-the-install.md) has
+the derivation, including why the obvious cheaper fix — a disabled provider
+enabled at runtime — is refuted from AOSP source rather than merely unattractive.
+
+The exact `INSTALL_FAILED_*` code was never captured, so this is the most likely
+cause rather than a proven one. That gap is itself now fixed:
+`UpdateReceiver` reads `EXTRA_OTHER_PACKAGE_NAME` and the legacy status, names
+the conflicting package, and writes it to the session log and the Updates card
+instead of a Toast that fades.
+
 ## What is left
 
 0. **One button that answers almost all of it, and it does not need the car.**
