@@ -331,6 +331,13 @@ class ScreenEncoder(
      * @return the same display, resized to the negotiated geometry and pointed
      *   at the codec's input surface. [stop] detaches that surface and leaves the
      *   display in place; nothing here ever releases it.
+     *
+     *   Detaching is not free, though it is recoverable: `VirtualDisplayAdapter`
+     *   derives display state from whether a surface is attached, so a detached
+     *   display goes to `STATE_OFF`, `DisplayContent.shouldSleep` becomes true,
+     *   and whatever is on it is paused until a surface comes back. The tasks
+     *   survive; the activity stops running. A reconnect is a pause and a
+     *   resume.
      */
     fun startOwnContent(ownContentDisplay: VirtualDisplay, sink: Sink): VirtualDisplay {
         val surface = start(sink)

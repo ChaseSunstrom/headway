@@ -75,15 +75,43 @@ class CarDisplayException(message: String, cause: Throwable? = null) :
  *
  * ## What may appear on it
  *
- * Headway's own activities, and nothing else's. Finding 1 of the same ADR:
- * `ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay` refuses a
- * third-party activity unless *that app* declares `android:allowEmbedded="true"`,
- * and the `VIRTUAL_DISPLAY_FLAG_TRUSTED` that would bypass the check is
- * `@SystemApi` behind `ADD_TRUSTED_DISPLAY` (`signature|role`), out of bounds
- * under CLAUDE.md constraint 2. Headway's own activities go on through the
- * `getOwnerUid() == callingUid` branch of that very check, needing no permission
- * whatsoever: pass [displayId] to `ActivityOptions.setLaunchDisplayId`. Other
- * apps reach the car screen as data drawn into a [DashTile], never as windows.
+ * A `Presentation`, and nothing else — **not an activity, not even Headway's
+ * own.** This is the opposite of what an earlier draft of this file said, and
+ * the difference matters enough to spell out.
+ *
+ * `ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay` runs three checks in
+ * order, and the third is the one everyone quotes:
+ *
+ * ```java
+ * if (!display.isTrusted()) {
+ *     if ((aInfo.flags & FLAG_ALLOW_EMBEDDED) == 0) return false;                 // 1
+ *     if (checkPermission(ACTIVITY_EMBEDDING, ...) == PERMISSION_DENIED
+ *             && !uidPresentOnDisplay) return false;                              // 2
+ * }
+ * if (display.getOwnerUid() == callingUid) return true;                           // 3
+ * ```
+ *
+ * This display is untrusted — `VirtualDisplayAdapter` sets `FLAG_TRUSTED` only
+ * for `VIRTUAL_DISPLAY_FLAG_TRUSTED`, which is `@SystemApi` behind
+ * `ADD_TRUSTED_DISPLAY` (`signature|role`) and out of bounds under CLAUDE.md
+ * constraint 2. So checks 1 and 2 both apply. Headway's dashboard clears 1 by
+ * declaring `allowEmbedded` on itself, and then **fails 2**: `ACTIVITY_EMBEDDING`
+ * is `signature|privileged`, and `uidPresentOnDisplay` is false because
+ * `DisplayContent.isUidPresent` matches `ActivityRecord`s and a display that has
+ * just been created has none. Check 3 is never reached.
+ *
+ * The owner-uid branch is therefore not an alternative to the untrusted gate —
+ * it sits after it, and only ever helps a *second* activity once one is already
+ * resident. There is no way to get the first one there. An activity cannot
+ * bootstrap this display.
+ *
+ * A `Presentation` can, because it is a `Dialog` — a window added through
+ * `WindowManager` on a display its own process owns, which never enters the
+ * activity-launch path at all. That is the documented purpose of the
+ * `Presentation` API and it is the only route this class can serve.
+ *
+ * Other apps reach the car screen as data drawn into a [DashTile], never as
+ * windows, and that part is unchanged.
  *
  * ## Consent, or the absence of it
  *
@@ -232,9 +260,18 @@ class CarDisplay private constructor(
          *   [ScreenEncoder.startOwnContent] attaches the codec's input surface.
          *   That ordering is what lets the encoder be torn down and rebuilt —
          *   every reconnect does exactly that — while the display, its
-         *   [displayId], and everything launched onto it all stay put. A caller
-         *   holding a surface already, such as a test drawing with `Canvas`, may
-         *   pass one.
+         *   [displayId] and its tasks all stay put.
+         *
+         *   Note "tasks", not "everything keeps running": the same
+         *   surface-implies-state rule that makes a detached display survive
+         *   also puts it in `STATE_OFF`, which makes `DisplayContent.shouldSleep`
+         *   true and *pauses* whatever is on it until a surface returns. A
+         *   reconnect is therefore a pause and a resume, not an uninterrupted
+         *   session, and anything reading the dashboard's lifecycle should
+         *   expect that cycle rather than be surprised by it.
+         *
+         *   A caller holding a surface already, such as a test drawing with
+         *   `Canvas`, may pass one.
          * @param callbackHandler where `VirtualDisplay.Callback` is delivered.
          * @throws CarDisplayException when the system refuses the display, or
          *   stops it before it can be handed back.
@@ -277,8 +314,16 @@ class CarDisplay private constructor(
             // holder being filled. Vanishingly unlikely, but a display stopped in
             // that window would otherwise be reported alive forever and its token
             // leaked for the life of the process.
-            if (lifecycle.stoppedBeforeHandover) {
-                carDisplay.release()
+            if (lifecycle.stoppedBeforeHandover) carDisplay.release()
+            // Checked on the outcome rather than on the flag, because the flag
+            // only covers one of the two orderings. If `onStopped` reads a
+            // non-null owner just after the line above, it releases the display
+            // itself and never sets the flag — and this method would have
+            // returned a CarDisplay whose token was already gone, contradicting
+            // its own @throws and leaving the caller with a null
+            // `virtualDisplay` and no explanation. Asking whether it is alive
+            // catches both orderings and needs no extra state.
+            if (!carDisplay.alive) {
                 throw CarDisplayException("the system stopped the car display before it was usable")
             }
             onStep(
@@ -377,12 +422,26 @@ private class DisplayLifecycle(private val onStep: (String) -> Unit) : VirtualDi
     }
 
     override fun onStopped() {
-        onStep("car display stopped by the system; it will not resume")
         val current = owner
         if (current == null) {
+            onStep("car display stopped by the system; it will not resume")
             stoppedBeforeHandover = true
             return
         }
+        // A deliberate release fires this callback too, and used to log it as a
+        // system kill. `VirtualDisplayAdapter.destroyLocked(binderAlive)`
+        // dispatches `displayStopped` whenever the binder is still alive, which
+        // is every app-initiated release; only `binderDied` passes false. So the
+        // most alarming line about this display was printed on its most ordinary
+        // event, which is the opposite of what a log is for.
+        //
+        // `release()` nulls the holder before releasing the token, so a false
+        // `alive` here means Headway asked for this.
+        if (!current.alive) {
+            onStep("car display stopped, following Headway's own release")
+            return
+        }
+        onStep("car display stopped by the system; it will not resume")
         // Stopped is not released: the display is dead but its token is not, and
         // this is the only place that knows.
         current.release()

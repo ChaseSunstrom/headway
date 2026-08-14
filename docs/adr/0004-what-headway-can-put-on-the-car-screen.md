@@ -17,9 +17,11 @@ Both were settled against AOSP source (`android15-release`, with
 `android11-release` and `android13-release` used to date a removal), not from
 memory.
 
-> **Revised 2026-08-14** after a second pass against `android17-release`. The
-> verdict is unchanged and three of the supporting arguments were wrong. See the
-> *Corrections* section at the end; the text below has been fixed in place.
+> **Revised 2026-08-14** after a second pass against `android17-release` and a
+> verifier's pass over the code that followed from it. The verdict is unchanged;
+> **five** of the supporting arguments were wrong, and one of them changes what
+> gets built. See the *Corrections* section at the end; the text below has been
+> fixed in place.
 
 ## Finding 1 — a third-party app cannot be placed on a display Headway owns
 
@@ -32,11 +34,17 @@ with the comment *"TODO(b/191165536): delete this flag since is no longer
 used"* — which is the clearest possible statement that no app written this
 decade sets it.
 
-`ACTIVITY_EMBEDDING` (`signature|privileged`) is **not** an additional
-requirement, contrary to this ADR's first version: L1338-1340 waives it when
-`uidPresentOnDisplay` is true, and Headway's own launcher on Headway's own
-display satisfies that for free. The binding constraint is the target's opt-in,
-which is strictly worse — it is outside Headway's control entirely.
+`ACTIVITY_EMBEDDING` (`signature|privileged`) is a second gate rather than an
+equal one, contrary to this ADR's first version: L1338-1340 waives it when
+`uidPresentOnDisplay` is true — that is, once the caller already has an activity
+on that display. On an empty display it is not waived, and
+`DisplayContent.isUidPresent` matches `ActivityRecord`s only, so a display that
+has just been created never satisfies it.
+
+Either way the conclusion for *third-party* apps is unchanged and rests on the
+first gate: the target's own `allowEmbedded`, which is outside Headway's control
+entirely. The refinement matters for Headway's own content, and Finding 4 is
+where it bites.
 
 `VIRTUAL_DISPLAY_FLAG_TRUSTED` bypasses the check, but it is `@SystemApi`
 (non-SDK, already out of bounds under CLAUDE.md constraint 2) and additionally
@@ -98,11 +106,36 @@ token taken for display 0 does not touch a virtual one. And
 `hasAwakeDisplay()` returning true for the virtual display keeps the global
 `mSleeping` false, so the activity on it stays resumed.
 
-Concretely: an activity of **Headway's own** on a `VirtualDisplay` created with
+Concretely: Headway's own content on a `VirtualDisplay` created with
 `VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY` keeps rendering with the phone locked
-and the screen dark. Headway may launch its own activities there without any
-privileged permission, via the `display.getOwnerUid() == callingUid` branch of
-the very check that blocks third-party apps.
+and the screen dark.
+
+**It has to be a `Presentation`, not an activity** — corrected 2026-08-14, and
+this is the third time the same check has been misread in this document. The
+owner-uid branch is not an alternative to the untrusted gate; it comes *after*
+it:
+
+```java
+if (!display.isTrusted()) {
+    if ((aInfo.flags & FLAG_ALLOW_EMBEDDED) == 0) return false;            // 1
+    if (checkPermission(ACTIVITY_EMBEDDING, ...) == PERMISSION_DENIED
+            && !uidPresentOnDisplay) return false;                         // 2
+}
+if (display.getOwnerUid() == callingUid) return true;                      // 3
+```
+
+An own-content display is untrusted, so 1 and 2 apply. Headway's own activity
+clears 1 by declaring `allowEmbedded` on itself, then fails 2:
+`ACTIVITY_EMBEDDING` is `signature|privileged`, and `uidPresentOnDisplay` is
+false because `DisplayContent.isUidPresent` matches `ActivityRecord`s and a
+freshly created display has none. Check 3 is never reached. The branch only ever
+helps a *second* activity once one is already resident — and nothing can put the
+first one there.
+
+A `Presentation` can, because it is a `Dialog`: a window added through
+`WindowManager` on a display the process owns, which never enters the
+activity-launch path. That is the documented purpose of the API, and it is the
+only route onto this display.
 
 That inverts the video architecture. The own-content display is not a layout
 nicety to add later; it is the only source that meets the screen-locked
@@ -235,6 +268,14 @@ edited, because the errors were the confident kind.
    put Headway's own controls over a third-party app, and it was not considered.
 4. **Android 17's `canHostTasks` gate was not known** (Finding 5), and it breaks
    the pre-existing code rather than merely constraining new code.
+5. **The own-content display cannot host an activity either** (Finding 4). This
+   ADR said Headway's own activities go on "via the `getOwnerUid() ==
+   callingUid` branch", which reads that branch as an alternative to the
+   untrusted gate. It is not — it comes after it, and the gate refuses the
+   *first* activity onto an empty display. A `Presentation` is the way on. This
+   is the same misreading as (1), one step further along, and it had been copied
+   into `BLOCKERS.md` B-008 and into `CarDisplay`'s own justification before a
+   verifier caught it.
 
 The lesson worth keeping: three of the four are cases where a *true* fact about
 one code path was generalised to a conclusion about a different one. Each

@@ -408,10 +408,17 @@ it.
 
 **Workaround shipped (this is the design, not a compromise):** Headway renders
 the panes itself from `MediaSessionManager`, a `NotificationListenerService` and
-`AppWidgetHost` — all user-granted, none privileged — and hosts only its *own*
+`AppWidgetHost` — all user-granted, none privileged. This is the same model
+Android Auto uses for third-party apps, which send template models rather than
+pixels.
+
+**Correction, 2026-08-14:** this entry used to add "and hosts only its *own*
 activities on its own display, where the `getOwnerUid() == callingUid` branch
-applies. This is the same model Android Auto uses for third-party apps, which
-send template models rather than pixels.
+applies". That branch sits *after* the untrusted-display gate, not instead of
+it, and the gate refuses the first activity onto an empty own-content display —
+`ACTIVITY_EMBEDDING` is privileged and `uidPresentOnDisplay` is false until an
+activity is already there. A `Presentation` is the way onto that display; see
+ADR 0004 Finding 4 and `CarDisplay`. Nothing about the panes changes.
 
 ## B-009 — The app-side video bring-up sequence has no automated test
 
