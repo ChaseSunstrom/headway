@@ -110,6 +110,20 @@ interface DashTile {
          */
         const val PHONE = "phone"
 
+        /**
+         * A third-party app's own car interface, drawn by Headway.
+         *
+         * The template host: the app publishes `androidx.car.app` templates and
+         * Headway renders them with its own widgets at the car's size. This is
+         * what Android Auto does with a navigation or messaging app, and it is
+         * the only route by which another app's *interface* reaches the car
+         * screen without mirroring the phone. See `CarAppTile`.
+         *
+         * The argument is the flattened `ComponentName` of the app's
+         * `CarAppService`; with none, the pane offers a picker.
+         */
+        const val CAR_APP = "car_app"
+
         /** Recent notifications with inline reply, from `NotificationListenerService`. */
         const val MESSAGES = "messages"
 
@@ -133,7 +147,7 @@ interface DashTile {
 
         /** Everything, in the order a picker should offer them. */
         val ALL: List<String> = listOf(
-            NOW_PLAYING, BROWSE, MAPS, PHONE, MESSAGES, WIDGET, LAUNCHER, CLOCK, MIRROR,
+            NOW_PLAYING, BROWSE, MAPS, PHONE, CAR_APP, MESSAGES, WIDGET, LAUNCHER, CLOCK, MIRROR,
         )
 
         /** A human name for a picker or a log line. */
@@ -142,6 +156,7 @@ interface DashTile {
             BROWSE -> "Music and podcasts"
             MAPS -> "Maps"
             PHONE -> "Phone"
+            CAR_APP -> "Car app"
             MESSAGES -> "Messages"
             WIDGET -> "Widget"
             LAUNCHER -> "Apps"

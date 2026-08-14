@@ -227,17 +227,20 @@ class DashLayoutStore(private val storage: Storage) {
          * already keeps *named* layouts and an active name, so a tab is a
          * layout and the tab bar is a picker over [list].
          *
-         * ## Why these five
+         * ## Why these six
          *
          * They are the destinations a car has. Maps and Media are where the
          * driver spends the drive; Phone and Messages are what a car is
-         * legally allowed to help with; Apps is the door to anything Headway
-         * does not model, including full-screen mirroring.
+         * legally allowed to help with; Car apps is every third-party app that
+         * publishes a car interface, drawn by Headway rather than mirrored; and
+         * Apps is the door to anything none of the others model, including
+         * full-screen mirroring.
          *
          * ```
          * Maps      one pane, the map, full width
          * Media     library ∥ (now playing / apps)
          * Phone     recent calls ∥ now playing
+         * Car apps  the template host, full width
          * Messages  conversations, full width
          * Apps      the grid, full width
          * ```
@@ -279,6 +282,10 @@ class DashLayoutStore(private val storage: Storage) {
                     first = DashNode.Leaf(DashTile.Kind.PHONE),
                     second = DashNode.Leaf(DashTile.Kind.NOW_PLAYING),
                 ),
+            ),
+            DashLayout(
+                name = "Car apps",
+                root = DashNode.Leaf(DashTile.Kind.CAR_APP),
             ),
             DashLayout(
                 name = "Messages",

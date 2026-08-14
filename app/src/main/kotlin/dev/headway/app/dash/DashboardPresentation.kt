@@ -27,6 +27,7 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import dev.headway.app.dash.tiles.CarAppTile
 import dev.headway.app.dash.tiles.ClockTile
 import dev.headway.app.dash.tiles.LauncherTile
 import dev.headway.app.dash.tiles.MapsTile
@@ -383,6 +384,7 @@ class DashboardPresentation(
         DashTile.Kind.BROWSE -> MediaBrowseTile(context, onStep)
         DashTile.Kind.MAPS -> MapsTile(context, onStep)
         DashTile.Kind.PHONE -> PhoneTile(context, onStep)
+        DashTile.Kind.CAR_APP -> CarAppTile(context, leaf.argument, onStep)
         DashTile.Kind.MESSAGES -> MessagesTile(context)
         DashTile.Kind.CLOCK -> ClockTile(context)
         DashTile.Kind.LAUNCHER, DashTile.Kind.MIRROR -> LauncherTile(onStep)

@@ -1513,7 +1513,16 @@ open class HeadwayService : Service() {
     }
 
     private fun publish(state: LinkState) {
+        val wasConnected = mutableLinkState.value is LinkState.Connected
         mutableLinkState.value = state
+        // Car apps learn they are being projected by querying Headway's
+        // CarConnectionProvider, and they cache the answer in a LiveData that
+        // only refreshes when told. Announcing on the edge, not on every
+        // publish: a reconnect countdown ticking once a second would broadcast
+        // once a second to every app on the phone.
+        if (wasConnected != (state is LinkState.Connected)) {
+            dev.headway.app.carapp.CarConnectionProvider.announce(this)
+        }
     }
 
     /**

@@ -39,6 +39,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import dev.headway.app.dash.tiles.CarAppTile
 import dev.headway.app.dash.tiles.ClockTile
 import dev.headway.app.dash.tiles.LauncherTile
 import dev.headway.app.dash.tiles.MapsTile
@@ -1042,6 +1043,7 @@ fun tileFor(
     DashTile.Kind.BROWSE -> MediaBrowseTile(context, onStep)
     DashTile.Kind.MAPS -> MapsTile(context, onStep)
     DashTile.Kind.PHONE -> PhoneTile(context, onStep)
+    DashTile.Kind.CAR_APP -> CarAppTile(context, argument, onStep)
     DashTile.Kind.MESSAGES -> MessagesTile(context)
     DashTile.Kind.CLOCK -> ClockTile(context)
     DashTile.Kind.LAUNCHER -> LauncherTile(onStep)

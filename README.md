@@ -87,6 +87,49 @@ core-audio/         Audio channels, focus signalling, playback capture      (And
 core-voice/         Car mic -> on-device STT -> command engine              (JVM)
 ```
 
+## What the car screen actually shows
+
+Not the phone. Headway draws a dashboard at the head unit's own resolution and
+density, in tabs the driver switches between:
+
+| Tab | What it is |
+|---|---|
+| **Maps** | The next instruction, large, from whichever app is navigating |
+| **Media** | Any media app's library, walked and drawn by Headway, plus now playing |
+| **Phone** | The live call, and the last twelve calls, from the call log |
+| **Car apps** | A third-party app's *own* interface, drawn by Headway |
+| **Messages** | Conversations, with the app's own inline reply |
+| **Apps** | The pinned-app grid, and the door to full-screen mirroring |
+
+Every one of those except the last is a **model** the app already publishes:
+`MediaBrowserService` for a library, `NotificationListenerService` for messages
+and calls, and `androidx.car.app` templates for a car interface. Headway renders
+them itself. Nothing is captured, nothing is scaled, and none of it needs the
+phone's screen to be on.
+
+**Car apps** is the one worth explaining, because it is what Android Auto does
+and it is not obvious that a third party can do it. An app that offers a car UI
+exports a `CarAppService` and hands back declarative templates — a list, a grid,
+a navigation strip — and the *host* draws every pixel. Headway is that host. A
+navigation app additionally gets a real `Surface`, sized to the pane and told
+the car's dpi, so its map is its own rendering at the car's resolution rather
+than a scaled screenshot; car touches come back as scroll, fling, scale and
+click.
+
+The honest limit: an app decides in its own process whether to accept a host, and
+most FOSS car apps ship Google's sample allowlist unchanged. Headway takes the
+one route open to it — it declares and holds
+`android.car.permission.TEMPLATE_RENDERER`, which is the fourth and last branch
+`HostValidator` accepts. The reasoning, the decompiled evidence, and the two
+install-time risks that come with it are in
+[ADR 0007](docs/adr/0007-headway-as-a-car-app-host.md) and BLOCKERS B-012 to
+B-014. If an app refuses anyway, the pane says which app and why, rather than
+sitting empty.
+
+Full-screen mirroring is still there, as the escape hatch for anything none of
+the above models. It is one tap from the Apps tab and it is no longer the
+default.
+
 ## Building
 
 Requires a JDK 17+ (JDK 21 works). The Android SDK is only needed for the

@@ -229,6 +229,10 @@ object CarPhone {
         }
         if (!granted(context, Manifest.permission.ANSWER_PHONE_CALLS)) return false
         val telecom = context.getSystemService(TelecomManager::class.java) ?: return false
+        // Deprecated in favour of an InCallService, which is the thing Headway
+        // cannot be (see the class KDoc). Until that changes this is the only
+        // route left, and it still works.
+        @Suppress("DEPRECATION")
         return runCatching { telecom.acceptRingingCall(); true }.getOrDefault(false)
     }
 

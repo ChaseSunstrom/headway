@@ -31,12 +31,17 @@ import java.util.concurrent.CopyOnWriteArrayList
  *   metres to re-render it as "0.4 mi" would add two chances to be wrong.
  * @param eta the arrival summary, when there is one.
  * @param source the package the instruction came from, for the label.
+ * @param structured true when this came from a car app's `Trip` rather than
+ *   from a notification. It is not cosmetic: a structured step carries a real
+ *   maneuver code and a real distance, and it must not be overwritten by a
+ *   scrape of the same app's notification a moment later.
  */
 data class NavigationStep(
     val instruction: String,
     val distance: String?,
     val eta: String?,
     val source: String,
+    val structured: Boolean = false,
 )
 
 /**
@@ -127,9 +132,24 @@ object NavigationFeed {
      *   also treat it as a message.
      */
     fun offer(sbn: StatusBarNotification, extraPackages: Set<String>): Boolean {
+        // A car app connected through the template host publishes a real Trip,
+        // which beats anything that can be recovered from a notification. While
+        // one is doing so, the scrape stays out of the way rather than
+        // overwriting a structured maneuver with a parsed display string.
+        if (current?.structured == true && current?.source != sbn.packageName) return false
         val parsed = parse(sbn, extraPackages) ?: return false
         publish(parsed)
         return true
+    }
+
+    /**
+     * Offers a step that did not come from a notification.
+     *
+     * The entry point for `CarAppTrips`, which decodes the `Trip` a car app
+     * publishes over the template host. Null clears.
+     */
+    fun offer(step: NavigationStep?) {
+        publish(step)
     }
 
     /** Called when a notification goes away, so a finished route clears. */

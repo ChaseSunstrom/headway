@@ -225,6 +225,25 @@ template models, with Gearhead rendering every pixel. That model is entirely
 available unprivileged. It is how you get several apps on screen at once with
 your own layout — by drawing them, not by hosting them.
 
+> **Correction, 2026-08-14.** "Entirely available unprivileged" was written
+> about the *client* side — writing a car app — and is true of it. It is not
+> true of the **host** side without one extra step, and the host side is the
+> side Headway occupies. An app runs `HostValidator.isValidHost()` in its own
+> process before answering anything, and it accepts a caller on four conditions
+> only; the one Headway can reach is holding
+> `android.car.permission.TEMPLATE_RENDERER`, which Headway therefore declares
+> and self-grants. That is still unprivileged — declaring a permission and using
+> it needs no root, no system signature and no adb — but it is a step, and it
+> carries an install-time cost recorded as B-013. The full derivation, the
+> decompiled evidence, and the reason this is a capability claim rather than an
+> impersonation is [ADR 0007](0007-headway-as-a-car-app-host.md); the host is
+> built and shipped in `dev.headway.app.carapp`.
+>
+> Also: the fully qualified name below should be
+> `androidx.car.app.validation.HostValidator`, and the sample allowlist in
+> `hosts_allowlist_sample` holds six digests across two Google packages rather
+> than "six hardcoded host signatures".
+
 **2. Full-screen mirroring of the phone display, as the escape hatch** for
 anything not modelled. Ships first, because it is what unblocks a real car
 today and is what CLAUDE.md specifies. Carries the screen-off limitation from

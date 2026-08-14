@@ -231,6 +231,20 @@ android {
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
     .configureEach { dependsOn(fetchVoskModel) }
 
+// Lint reads the generated assets directory too, and Gradle fails the build
+// outright when a task consumes another task's output without saying so. It
+// only bites the release variant, because that is the only one that runs
+// lintVital -- which is why `assembleDebug` in CI never caught it and
+// `assembleRelease` could not be built at all. Named by prefix for the same
+// reason as above: the task set is per variant and AGP renames them between
+// versions.
+tasks.matching {
+    it.name.startsWith("lintVitalAnalyze") ||
+        it.name.startsWith("lintAnalyze") ||
+        (it.name.startsWith("generate") && it.name.endsWith("LintReportModel")) ||
+        (it.name.startsWith("generate") && it.name.endsWith("LintVitalReportModel"))
+}.configureEach { dependsOn(fetchVoskModel) }
+
 dependencies {
     implementation(project(":core-protocol"))
     implementation(project(":core-transport"))
@@ -243,6 +257,14 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.lifecycle.service)
     implementation(libs.coroutines.android)
+
+    // The car-app template host. Headway uses the library's own AIDL stubs and
+    // Bundler rather than reimplementing them, because the binder transaction
+    // codes are assigned by declaration order and the Bundler's field-name
+    // mangling is an exact contract -- getting either subtly wrong would fail
+    // only against a real third-party app. Guava arrives transitively for a
+    // ListenableFuture the host side never touches; R8 removes it from release.
+    implementation(libs.androidx.car.app)
 
     // The speech decoder. :core-voice declares the desktop jar `compileOnly` so
     // it can stay a pure-JVM module and its acceptance test can run on the

@@ -529,3 +529,104 @@ names the exception if the platform turned the `Presentation` away. Then lock
 the phone and watch whether frames keep flowing, which answers (2). One session
 answers both, and the session degrades to mirroring either way rather than
 failing.
+
+---
+
+## B-012 — Whether a real car app accepts Headway as a host
+
+**Status:** Open. Everything the derivation predicts is built; one bench test
+with a real app confirms or refutes it.
+
+**Blocked:** Confirming that a third-party `CarAppService` runs
+`HostValidator.isValidHost()` against Headway and returns true, so its templates
+reach the car screen.
+
+**Why:** The decision happens in the *app's* process, not Headway's.
+`CarAppBinder.onHandshakeCompleted` builds `HostInfo(claimedPackage,
+Binder.getCallingUid())` and hands it to whatever `HostValidator` the app's
+`createHostValidator()` returned. Decompiled from `androidx.car.app:app:1.7.0`,
+`validateHost` accepts on exactly four conditions:
+
+1. `applicationInfo.uid == Process.myUid()` — the app calling itself.
+2. The caller's package name and signing digest are in the app's own allowlist.
+3. `uid == 1000` — a system binding.
+4. The caller holds `android.car.permission.TEMPLATE_RENDERER`, read as
+   `REQUESTED_PERMISSION_GRANTED` off the caller's `PackageInfo`.
+
+Headway takes route 4, by declaring that permission at `signature` level and
+using it, which grants it at install to the declaring package — itself. The
+reasoning is written out in full in the manifest beside the declaration and in
+ADR 0007. It is sound from source, and it has not been run against a real app on
+real hardware, which is the whole of this entry.
+
+Route 2 is worth recording as the fallback: both shipping FOSS car apps branch
+on `FLAG_DEBUGGABLE` and use `ALLOW_ALL_HOSTS_VALIDATOR` in a debug build, so a
+locally built debug APK of Organic Maps or OsmAnd accepts any host and is the
+bench test that needs no permission at all. Adding Headway permanently is a
+one-line diff to each — an upstream ask, not a Google decision.
+
+**Workaround shipped:** the pane distinguishes refusal from failure and says
+which. `HostState.REFUSED` prints the app's own error text, so a log from a
+single session names the app and the reason rather than showing an empty pane.
+Nothing else in Headway depends on the host: maps, media, phone and messages all
+work through their own models whether or not a single car app ever answers.
+
+**How to close it:** install any app with a `CarAppService`, open the Car apps
+tab, and read the exported log. `car app: <name> at api <n>` means the handshake
+passed and route 4 works. `car app: <name> declined Headway as a car host` means
+it did not, and the message carries the app's own exception.
+
+---
+
+## B-013 — The template-renderer permission can block installation
+
+**Status:** Open by construction. Not fixable without giving up the host.
+
+**Blocked:** Installing Headway on a phone where some other package already
+declares `android.car.permission.TEMPLATE_RENDERER`.
+
+**Why:** Android allows exactly one definer per permission name. A second
+package declaring one that is already defined fails to install with
+`INSTALL_FAILED_DUPLICATE_PERMISSION`. Headway has to declare it — see B-012 —
+because holding it is the only route by which a car app will accept Headway as
+a host, and a permission cannot be held unless something defines it.
+
+Nothing on an AOSP phone declares this permission: it belongs to Android
+Automotive's car service, which is not part of a handset build. The realistic
+case is a phone that also has Google's Android Auto installed.
+
+**Workaround shipped:** none needed on the target device, which is GrapheneOS
+with no Google apps. For a phone that hits it, the two ways out are to uninstall
+Android Auto, or to delete the `<permission>` and `<uses-permission>` pair from
+`app/src/main/AndroidManifest.xml` and rebuild — everything except the car-app
+host works unchanged, and the host itself still works against a debug-built app
+that allows all hosts.
+
+**How to close it:** it closes itself the day a car app adds Headway to its
+allowlist, because route 2 needs no permission at all.
+
+---
+
+## B-014 — The car-connection authority can block installation
+
+**Status:** Open by construction, and cheaper to give up than B-013.
+
+**Blocked:** Installing Headway on a phone where some other package owns the
+`androidx.car.app.connection` content-provider authority.
+
+**Why:** Provider authorities are exclusive, and a package declaring one that is
+taken fails to install with `INSTALL_FAILED_CONFLICTING_PROVIDER`. On a phone
+with Android Auto, Gearhead owns it. Headway declares it because
+`androidx.car.app.connection.CarConnection` is how every car app asks whether it
+is being projected, and on a de-Googled phone nothing answers — so every app
+concludes it is not in a car, and several of them then decline to run their car
+service at all.
+
+**Workaround shipped:** delete the `<provider>` block from
+`app/src/main/AndroidManifest.xml` and rebuild. Templates render either way;
+what is lost is apps knowing they are projected, which affects behaviour rather
+than rendering. Nothing else in the codebase depends on the provider.
+
+**How to close it:** it cannot be closed while both hosts are installed. The
+authority is a well-known string precisely so that whichever host is present can
+own it, and two hosts on one phone is a case the contract does not model.
