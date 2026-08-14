@@ -75,17 +75,19 @@ internal class TabsCard(
         orientation = LinearLayout.VERTICAL
     }
 
-    val view: View = Phone.card(activity, "Car screen tabs").apply {
+    val view: View = Phone.card(activity, "Layouts").apply {
         addView(
             Phone.body(
                 activity,
-                "The car screen has a row of tabs across the top. Each one is a " +
-                    "layout of panes, and this is where they are made.",
+                "Each layout is an arrangement of panels, and the ones you pin " +
+                    "appear on the car screen's rail. Arranging them is quicker " +
+                    "on the car itself — settings there, then Edit this layout — " +
+                    "but naming one needs a keyboard, so that is here.",
             ),
         )
         addView(rows, Phone.spaced(activity, 12f))
         addView(
-            Phone.button(activity, "Add a tab") { addTab() },
+            Phone.button(activity, "Add a layout") { addTab() },
         )
         addView(mapAppRow())
         addView(
@@ -178,7 +180,7 @@ internal class TabsCard(
                 if (name.isEmpty()) return@setPositiveButton
                 val existing = materialise()
                 if (existing.any { it.name == name }) {
-                    toast("There is already a tab called \"$name\"")
+                    toast("There is already a layout called \"$name\"")
                     return@setPositiveButton
                 }
                 // A new tab starts as the app grid, which is the one pane that
@@ -245,7 +247,7 @@ internal class TabsCard(
                 // the Phone layout and dropped the tab count by one, silently
                 // and with no undo. addTab already guards this; edit did not.
                 if (name != tab.name && existing.any { it.name == name }) {
-                    toast("There is already a tab called \"$name\"")
+                    toast("There is already a layout called \"$name\"")
                     return@setPositiveButton
                 }
                 // Substituted in place rather than deleted and re-saved.
@@ -273,7 +275,7 @@ internal class TabsCard(
                 // "never empty", so the old condition was dead code — and
                 // deleting the last tab silently resurrected six of them, which
                 // reads as the delete having failed.
-                if (!store.hasSaved()) toast("The shipped tabs are back")
+                if (!store.hasSaved()) toast("The shipped layouts are back")
                 changed()
             }
             .setNegativeButton("Cancel", null)
