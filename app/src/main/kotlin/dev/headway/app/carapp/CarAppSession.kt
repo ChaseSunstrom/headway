@@ -377,7 +377,6 @@ class CarAppSession(
      */
     fun refreshTemplate() {
         val manager = appManager ?: return
-        armWatchdog(TEMPLATE_TIMEOUT_MILLIS, "${app.label} sent no screen")
         send("getTemplate") {
             manager.getTemplate(
                 callback("getTemplate") { payload ->
@@ -634,6 +633,12 @@ class CarAppSession(
      */
     private fun callback(what: String, onDone: (Any?) -> Unit): IOnDoneCallback {
         val issued = generation
+        // Every step gets its own deadline, armed here rather than at each call
+        // site. An app that binds and then stops answering produces no callback
+        // at all -- the same silent stall the media browser had -- and only the
+        // first step was guarded when the deadline was armed by hand. This runs
+        // before the binder call because the callback is constructed first.
+        armWatchdog(STEP_TIMEOUT_MILLIS, "${app.label} did not answer $what")
         return object : IOnDoneCallback.Stub() {
             override fun onSuccess(response: Bundleable?) {
                 val payload = response?.let { runCatching { it.get() }.getOrNull() }
@@ -773,11 +778,17 @@ class CarAppSession(
         const val PLACE_LIMIT = 12
         const val ROUTE_LIMIT = 3
 
-        /** Ten seconds to bind and hand over a first template. */
+        /** Ten seconds to bind. A cold app is a cold process start. */
         const val BIND_TIMEOUT_MILLIS = 10_000L
 
-        /** A redraw is a round trip; five seconds is already generous. */
-        const val TEMPLATE_TIMEOUT_MILLIS = 5_000L
+        /**
+         * How long any one step of the handshake, or a redraw, may take.
+         *
+         * Each is a binder round trip against a process that is already warm by
+         * then, so five seconds is generous. The bind above gets longer because
+         * it may be waiting on the app's process to start at all.
+         */
+        const val STEP_TIMEOUT_MILLIS = 5_000L
 
         /** The token every watchdog is posted under, so one cancels the last. */
         private val WATCHDOG = Any()

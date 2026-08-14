@@ -175,9 +175,18 @@ class CarAppTile(
         attachSurface()
     }
 
+    /**
+     * Puts the app's map surface behind everything, once.
+     *
+     * Idempotent, and that is the whole point: re-parenting a `SurfaceView`
+     * destroys its surface and hands the app a new one, so doing it on every
+     * template refresh would tear a navigating app's map down once a second.
+     * The renderer never touches the parenting for the same reason.
+     */
     private fun attachSurface() {
         val frame = stack ?: return
         val surface = renderer?.mapSurface() ?: return
+        if (surface.parent === frame) return
         (surface.parent as? android.view.ViewGroup)?.removeView(surface)
         // Index 0: behind the picker and behind the template column.
         frame.addView(surface, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))

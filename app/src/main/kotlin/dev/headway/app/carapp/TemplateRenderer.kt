@@ -500,25 +500,19 @@ class TemplateRenderer(
     // --- the map surface --------------------------------------------------------
 
     /**
-     * Puts the app's surface behind everything else in this pane.
+     * Makes sure a surface exists for the app to draw its map on.
      *
-     * Created lazily and kept across renders: a surface torn down and rebuilt on
-     * every template refresh would make the map flash black once a second while
-     * navigating, and the app would have to re-upload its tiles each time.
+     * Created once and then left exactly where it is. It is deliberately *not*
+     * added to this renderer's column: a `SurfaceView` re-parented is a
+     * `SurfaceView` whose surface is destroyed and recreated, and since
+     * [render] rebuilds the column from scratch on every template, adding it
+     * here would tear the map down and hand the app a fresh surface once per
+     * refresh — which for a navigating app is once a second. The pane owns the
+     * parenting; see `CarAppTile`, which puts it behind everything in a
+     * `FrameLayout` because a `LinearLayout` cannot overlap its children.
      */
     private fun attachMap(context: Context) {
-        val existing = mapView
-        if (existing != null) {
-            (existing.parent as? LinearLayout)?.removeView(existing)
-            root.addView(existing, LinearLayout.LayoutParams(MATCH_PARENT, 0, 0f))
-            // Height 0 with weight 0 keeps it out of the vertical flow; the
-            // surface is positioned by the frame the tile wraps this in.
-            return
-        }
-        val created = CarAppSurfaceView(context, session)
-        mapView = created
-        created.layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 0f)
-        root.addView(created)
+        if (mapView == null) mapView = CarAppSurfaceView(context, session)
     }
 
     private fun releaseMap() {
