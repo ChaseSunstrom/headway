@@ -84,7 +84,7 @@
       service from the background: Android 12 forbids that in general and
       exempts an app that holds an active CompanionDeviceManager association,
       which Headway already creates for the Wi-Fi approval bypass (CarCompanion).
-      Both are protectionLevel="normal" -- granted at install, nothing asked of
+      Both are protectionLevel="normal": granted at install, nothing asked of
       the driver. When the platform refuses anyway, the receiver posts a
       notification instead of failing quietly.
     -->
@@ -184,7 +184,7 @@
           There is deliberately no car-facing *activity* any more.
 
           The car screen is a Presentation on a display Headway creates, drawn by
-          CarShell, and it never enters the activity-launch path at all -- which
+          CarShell, and it never enters the activity-launch path at all, which
           is the only reason it can be there: ActivityTaskSupervisor refuses the
           first activity onto an untrusted virtual display. The two activities
           that used to be declared here (a launcher and a dashboard, both drawn
