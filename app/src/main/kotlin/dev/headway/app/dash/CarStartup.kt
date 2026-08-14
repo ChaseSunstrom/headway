@@ -215,9 +215,10 @@ class CarStartupView(
          * Long enough to read as deliberate, short enough that nobody waits.
          *
          * The session's own bring-up runs alongside it, so this is not time the
-         * driver is made to spend: the tiles are inflating and the first channels
-         * are opening underneath. It ends early if the dashboard is ready sooner —
-         * see `CarShell`.
+         * driver is made to spend: the dashboard is built and its tiles are
+         * started underneath, and the animation is simply the top layer until it
+         * fades. It does not end early when the dashboard finishes first —
+         * cutting a 1.5 s animation at 300 ms reads as a glitch, not as speed.
          */
         const val TOTAL_MILLIS = 1_500L
 

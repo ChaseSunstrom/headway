@@ -131,7 +131,6 @@ class CarShell(
     private var liveAppPane: AppPaneTile? = null
 
     private var startup: View? = null
-    private var dashboardReady = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -430,7 +429,6 @@ class CarShell(
 
         Headway.revealIn(view)
         if (isShowing) live.forEach { runCatching { it.start() } }
-        dashboardReady = true
         main.post { publishAppPaneRect() }
     }
 
@@ -665,7 +663,14 @@ class CarShell(
             setEditing(true)
         } else {
             layout = layout.withLocked(true)
+            // Saved here rather than left to setEditing, which returns early
+            // when editing is already false -- the state a layout is in when it
+            // was decoded unlocked (every layout saved before locking existed)
+            // and the driver has not opened the editor. Locking one of those
+            // would have been a no-op that looked like it worked.
+            saveLayout()
             setEditing(false)
+            render()
         }
     }
 
