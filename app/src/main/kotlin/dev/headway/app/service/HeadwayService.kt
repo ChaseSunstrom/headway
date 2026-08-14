@@ -319,6 +319,9 @@ open class HeadwayService : Service() {
         // Developer options entry, and a stale one aims every injected gesture
         // into nothing.
         CarAppDisplay.clear()
+        // The one virtual display the grant allows is kept between sessions on
+        // purpose (see AppPaneHost.detach); this is where it really goes.
+        AppPaneHost.release()
         publish(LinkState.Idle)
         super.onDestroy()
     }

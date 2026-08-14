@@ -568,8 +568,22 @@ class CarShell(
         }
     }
 
+    /**
+     * The grant appeared, moved, or was taken away.
+     *
+     * Every app pane re-decides what it can show — the live one may now have a
+     * picture, and after a revoke it must stop claiming to have one, because a
+     * pane that keeps a dead `SurfaceView` visible goes on swallowing every
+     * touch inside its rectangle and forwarding them to a display that is no
+     * longer being captured.
+     */
     private val appPaneChanged = AppPaneHost.Listener {
-        main.post { runCatching { publishAppPaneRect() } }
+        main.post {
+            runCatching {
+                live.filterIsInstance<AppPaneTile>().forEach { it.refresh() }
+                publishAppPaneRect()
+            }
+        }
     }
 
     // --- the startup animation ------------------------------------------------

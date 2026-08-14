@@ -169,6 +169,21 @@ class AppPaneTile(
         applyState()
     }
 
+    /**
+     * Re-evaluates whether this pane can show anything.
+     *
+     * The grant does not arrive with the pane. Video bring-up creates the car
+     * surface — which renders the layout and starts every tile — and only then
+     * does the session hand the projection to [AppPaneHost]; a grant obtained
+     * after the link is up (which is every automatically started session)
+     * arrives later still. Without this the pane would say "screen sharing is
+     * off" for the whole drive, having decided that once, before it could have
+     * been true. The shell calls this from `AppPaneHost`'s listener.
+     */
+    fun refresh() {
+        applyState()
+    }
+
     /** Told by the shell which app pane holds the picture. */
     fun setLive(live: Boolean) {
         if (this.live == live) return

@@ -151,14 +151,25 @@ object AppPaneHost {
     ) {
         val source = sourceGeometry(context)
         synchronized(lock) {
-            releaseDisplayLocked("re-attaching")
-            unregisterLocked()
+            // The display is kept when the grant is the same object, and that is
+            // load-bearing rather than an optimisation. The service holds one
+            // `MediaProjection` across reconnects deliberately, and a projection
+            // allows exactly one `createVirtualDisplay` for its whole life --
+            // the second call throws `SecurityException` on target SDK 34 and
+            // up. Releasing the display between sessions therefore spent the
+            // grant's one recording, and every session after the first would
+            // have had no app pane at all, silently.
+            val sameGrant = projection != null && projection === this.projection
+            if (!sameGrant) {
+                releaseDisplayLocked("a different screen-capture grant")
+                unregisterLocked()
+            }
             this.projection = projection
             this.densityDpi = densityDpi.coerceAtLeast(1)
             this.onStep = onStep
             sourceWidth = source.first
             sourceHeight = source.second
-            if (projection != null) {
+            if (projection != null && !sameGrant) {
                 // Required before createVirtualDisplay on API 34+, and needed
                 // regardless: the driver can revoke the grant from the status
                 // bar at any moment and every app pane has to stop claiming it
@@ -220,8 +231,14 @@ object AppPaneHost {
                     // second recording on one grant. Both are states the driver
                     // can reach, and neither may take the session down: the
                     // dashboard is still drawing everything else.
+                    //
+                    // The grant is dropped along with its callback, because both
+                    // reasons are permanent for this projection: retrying would
+                    // throw again on every surface the panes offer, once per
+                    // layout pass.
                     SessionLog.shared.warn(TAG, "no app-pane display: $error")
                     onStep("app pane: the system refused a capture display ($error)")
+                    unregisterLocked()
                     projection = null
                     return false
                 }
@@ -271,17 +288,46 @@ object AppPaneHost {
         if (changed) announce("unbound")
     }
 
-    /** Drops the display and forgets the projection. The projection is not stopped. */
+    /**
+     * Ends the session's use of the panes, keeping the display for the next one.
+     *
+     * Deliberately not a teardown. See [attach]: one grant allows one virtual
+     * display for its lifetime, and the service holds the grant across
+     * reconnects, so releasing here would leave every later session unable to
+     * show an app. What ends is the *binding* -- no pane holds the picture, and
+     * the geometry is forgotten so a pane cannot fit against a stale source.
+     */
     fun detach() {
         synchronized(lock) {
-            releaseDisplayLocked("session ended")
+            boundTo = null
+            boundWidth = 0
+            boundHeight = 0
+            runCatching { display?.surface = null }
+            sourceWidth = 0
+            sourceHeight = 0
+            pictureRect = PaneRect(0, 0, 0, 0)
+            onStep = {}
+        }
+        announce("detached")
+    }
+
+    /**
+     * The real teardown, for when the process is done with the grant.
+     *
+     * Called from the service's `onDestroy`, which is also where the projection
+     * itself stops mattering. Everything here is idempotent.
+     */
+    fun release() {
+        synchronized(lock) {
+            releaseDisplayLocked("the service is going away")
             unregisterLocked()
             projection = null
             sourceWidth = 0
             sourceHeight = 0
+            pictureRect = PaneRect(0, 0, 0, 0)
             onStep = {}
         }
-        announce("detached")
+        announce("released")
     }
 
     fun observe(listener: Listener) {
@@ -339,14 +385,19 @@ object AppPaneHost {
         CarAppDisplay.active?.let { return it.width to it.height }
         val manager = context.getSystemService(DisplayManager::class.java)
         val display = manager?.getDisplay(Display.DEFAULT_DISPLAY)
-        val mode = display?.mode
-        val width = mode?.physicalWidth ?: 0
-        val height = mode?.physicalHeight ?: 0
+        // The display *as it is oriented*, not its physical panel. `Display.Mode`
+        // reports the unrotated dimensions, so a phone held in landscape would
+        // give 1080x2404 for a capture that is really 2404x1080 -- and every
+        // touch mapped through it would land somewhere else entirely.
+        val metrics = display?.let {
+            runCatching { context.createDisplayContext(it).resources.displayMetrics }.getOrNull()
+        } ?: runCatching { context.resources.displayMetrics }.getOrNull()
+        val width = metrics?.widthPixels ?: 0
+        val height = metrics?.heightPixels ?: 0
         if (width > 0 && height > 0) return width to height
-        val metrics = runCatching {
-            context.resources.displayMetrics
-        }.getOrNull()
-        return (metrics?.widthPixels ?: 1080) to (metrics?.heightPixels ?: 1920)
+        val mode = display?.mode
+        return (mode?.physicalWidth?.takeIf { it > 0 } ?: 1080) to
+            (mode?.physicalHeight?.takeIf { it > 0 } ?: 1920)
     }
 
     private const val DISPLAY_NAME = "headway-app-pane"
