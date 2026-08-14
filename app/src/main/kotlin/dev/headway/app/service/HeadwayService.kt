@@ -1260,6 +1260,19 @@ open class HeadwayService : Service() {
                         "screen: no panes, no rail, no app pane"
                 )
             }
+            // Now, in case a measurement already arrived, and again when one
+            // does: the capture reports its real size with the first frames,
+            // which is after everything here has finished starting.
+            AppPaneHost.onSharingKnown = { single ->
+                // Arrives on the projection's callback handler, which is the main
+                // looper -- `AppPaneHost` registers the callback with one -- so
+                // adding the overlay window from here is already on the right
+                // thread.
+                if (single) {
+                    runCatching { coverPhoneScreen() }
+                        .onFailure { step("the phone screen could not be covered: $it") }
+                }
+            }
             runCatching { coverPhoneScreen() }
                 .onFailure { step("the phone screen could not be covered: $it") }
             startSubsystem("audio") { audio?.start(this) }
@@ -1285,6 +1298,7 @@ open class HeadwayService : Service() {
             input?.let { runCatching { step(it.describe()) } }
             voice?.let { runCatching { step(it.describe()) } }
             runCatching { CarShell.onVoiceRequested = null }
+            runCatching { AppPaneHost.onSharingKnown = null }
             runCatching { AppPaneHost.detach() }
             runCatching { HeadwayAccessibilityService.instance.value?.hideBlackout() }
             runCatching { video?.stop() }
@@ -1317,9 +1331,16 @@ open class HeadwayService : Service() {
      * that appears to do nothing.
      */
     private fun coverPhoneScreen() {
-        if (!HeadwaySettings.of(this).getBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, false)) {
+        if (!HeadwaySettings.of(this).getBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, true)) {
             return
         }
+        // The safety gate, and the reason this can be on by default. A blackout
+        // is invisible to a single-app capture and fatal to a display capture,
+        // and which one is running is measured rather than asked -- see
+        // `AppPaneHost.sharingSingleApp`. Until the first measurement arrives the
+        // answer is "not yet", so the cover waits for `onSharingKnown` instead of
+        // guessing, and a session sharing the whole display never gets one.
+        if (!AppPaneHost.sharingSingleApp) return
         // Compatible with single-app sharing, and not with whole-display
         // sharing. The blackout is a window on display 0: a capture of the
         // *display* captures it, and the app pane would show a perfectly black

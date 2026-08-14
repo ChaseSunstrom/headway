@@ -152,6 +152,38 @@ object AppPaneHost {
      * grant screen that Headway injects and never observes, and knowing where a
      * window is would mean breaking it. This costs nothing and reads nothing.
      */
+    /**
+     * True once the capture is known to be **one app** rather than the whole
+     * display.
+     *
+     * Measured, not assumed: the platform reports the captured region's real
+     * size through `onCapturedContentResize`, and a region smaller than display 0
+     * is a single-app capture. Headway cannot ask the consent dialog what the
+     * driver picked, and asking the driver a second time on the car screen is
+     * worse than measuring.
+     *
+     * This is what makes the blackout safe to apply by itself. Covering the
+     * phone with a black window is invisible to an app capture -- Android
+     * excludes system UI from one -- and is captured in full by a *display*
+     * capture, where it would send the car a perfectly black rectangle while
+     * every diagnostic reported frames arriving. So the cover goes up only when
+     * this is true. See `HeadwayService.coverPhoneScreen`.
+     */
+    @Volatile
+    var sharingSingleApp: Boolean = false
+        private set
+
+    /**
+     * Called on the first measurement, with whether it is a single-app capture.
+     *
+     * Exists because the answer arrives *after* the session is up: the
+     * measurement comes with the first frames, and the service that wants to act
+     * on it has long since finished starting. Set by `HeadwayService`, cleared
+     * when the session ends.
+     */
+    @Volatile
+    var onSharingKnown: ((Boolean) -> Unit)? = null
+
     @Volatile
     var sourceOriginX: Int = 0
         private set
@@ -256,14 +288,27 @@ object AppPaneHost {
                     override fun onCapturedContentResize(width: Int, height: Int) {
                         if (width <= 0 || height <= 0) return
                         val origin = captureOrigin(context, width, height)
-                        synchronized(lock) {
-                            if (sourceWidth == width && sourceHeight == height) return
-                            sourceWidth = width
-                            sourceHeight = height
-                            sourceMeasured = true
-                            sourceOriginX = origin.first
-                            sourceOriginY = origin.second
+                        val display = sourceGeometry(context)
+                        // A capture that is the display, to within a pixel of
+                        // rounding, is a display capture. Anything smaller is one
+                        // app's window.
+                        val single = CarAppDisplay.active == null &&
+                            (display.first - width > 1 || display.second - height > 1)
+                        val changed = synchronized(lock) {
+                            if (sourceWidth == width && sourceHeight == height) {
+                                false
+                            } else {
+                                sourceWidth = width
+                                sourceHeight = height
+                                sourceMeasured = true
+                                sourceOriginX = origin.first
+                                sourceOriginY = origin.second
+                                sharingSingleApp = single
+                                true
+                            }
                         }
+                        if (!changed) return
+                        runCatching { onSharingKnown?.invoke(single) }
                         onStep(
                             "app pane: the shared content is ${width}x$height at " +
                                 "${origin.first},${origin.second} on the phone",
@@ -445,6 +490,7 @@ object AppPaneHost {
             sourceMeasured = false
             sourceOriginX = 0
             sourceOriginY = 0
+            sharingSingleApp = false
             contentVisible = true
             pictureRect = PaneRect(0, 0, 0, 0)
             onStep = {}

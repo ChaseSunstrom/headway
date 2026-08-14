@@ -673,23 +673,11 @@ class MainActivity : AppCompatActivity() {
             ),
         )
         card.addView(
-            SwitchCompat(this).apply {
-                text = "Blank the phone screen while driving"
-                setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
-                minHeight = dp(MIN_TOUCH_TARGET_DP)
-                isChecked = HeadwaySettings.of(this@MainActivity)
-                    .getBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, false)
-                setOnCheckedChangeListener { _, checked ->
-                    HeadwaySettings.of(this@MainActivity).edit()
-                        .putBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, checked)
-                        .apply()
-                    SessionLog.shared.info(
-                        TAG,
-                        "blank phone screen ${if (checked) "on" else "off"}",
-                    )
-                }
-                layoutParams = Phone.spaced(this@MainActivity, 12f)
-            },
+            Phone.note(
+                this,
+                "The switch that covers it is \"Blank the phone screen while driving\", " +
+                    "under The car screen above. It is on by default.",
+            ),
         )
         card.addView(
             Phone.note(
@@ -755,6 +743,31 @@ class MainActivity : AppCompatActivity() {
      * put a third-party app's own pixels on the screen, and that is a trade
      * only the driver can make.
      */
+    /**
+     * The one control for the phone-screen cover, wherever it is shown.
+     *
+     * On by default. That is only safe because the cover is self-gating: it goes
+     * up once the capture has been *measured* as a single app -- where Android
+     * excludes system UI from what is shared, so the car never sees it -- and
+     * never for a whole-display capture, where it would be the entire picture.
+     * `AppPaneHost.sharingSingleApp` is the measurement and
+     * `HeadwayService.coverPhoneScreen` is the gate.
+     */
+    private fun blankScreenSwitch(): View = SwitchCompat(this).apply {
+        text = "Blank the phone screen while driving"
+        setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
+        minHeight = dp(MIN_TOUCH_TARGET_DP)
+        isChecked = HeadwaySettings.of(this@MainActivity)
+            .getBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, true)
+        setOnCheckedChangeListener { _, checked ->
+            HeadwaySettings.of(this@MainActivity).edit()
+                .putBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, checked)
+                .apply()
+            SessionLog.shared.info(TAG, "blank phone screen ${if (checked) "on" else "off"}")
+        }
+        layoutParams = Phone.spaced(this@MainActivity, 12f)
+    }
+
     private fun buildCarScreenCard(): View {
         val card = Phone.card(this, "The car screen")
         card.addView(
@@ -771,6 +784,20 @@ class MainActivity : AppCompatActivity() {
         card.addView(themeValue)
         card.addView(
             Phone.button(this, "Change the theme") { chooseTheme() },
+        )
+
+        card.addView(blankScreenSwitch())
+        card.addView(
+            Phone.note(
+                this,
+                "Covers your phone with black for the drive, so nothing of the phone " +
+                    "shows and nothing can be tapped by accident. The screen has to stay " +
+                    "on -- Android stops a shared app drawing when its display sleeps -- " +
+                    "so this is the closest there is to \"off\". It is applied only when " +
+                    "you shared a single app, where the car cannot see it; sharing your " +
+                    "whole screen leaves the phone alone, because the cover would be all " +
+                    "the car got.",
+            ),
         )
 
         autoConnectSwitch = SwitchCompat(this).apply {
