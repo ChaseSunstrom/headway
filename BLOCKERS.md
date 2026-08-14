@@ -603,7 +603,23 @@ right on the panel, which is a rendering question, not a host one.
 
 ## B-013 — The template-renderer permission can block installation
 
-**Status:** Open by construction. Not fixable without giving up the host.
+**Status:** **Hit in production 2026-08-14, and fixed.** A user on GrapheneOS
+could not install any build after 84; Android's only report was "App not
+installed". Workaround shipped: every release now carries a second APK that
+declares neither this permission nor the provider in B-014. See
+[ADR 0009](docs/adr/0009-two-apks-so-the-host-cannot-block-the-install.md).
+
+The collision itself is still open by construction — two definers of one
+permission name cannot coexist and that is not in Headway's gift — but it no
+longer costs the whole app.
+
+### What this entry got wrong
+
+It priced the cost as the car-app host. The cost is **the entire application**:
+an APK that cannot install takes the car link, video, touch, audio, voice, maps,
+phone and media down with a feature that was supposed to be purely additive. And
+the stated workaround — "delete the two manifest lines and rebuild" — asks
+somebody holding a phone to have a toolchain. Both errors are corrected below.
 
 **Blocked:** Installing Headway on a phone where some other package already
 declares `android.car.permission.TEMPLATE_RENDERER`.
@@ -618,12 +634,21 @@ Nothing on an AOSP phone declares this permission: it belongs to Android
 Automotive's car service, which is not part of a handset build. The realistic
 case is a phone that also has Google's Android Auto installed.
 
-**Workaround shipped:** none needed on the target device, which is GrapheneOS
-with no Google apps. For a phone that hits it, the two ways out are to uninstall
-Android Auto, or to delete the `<permission>` and `<uses-permission>` pair from
-`app/src/main/AndroidManifest.xml` and rebuild — everything except the car-app
-host works unchanged, and the host itself still works against a debug-built app
-that allows all hosts.
+**Workaround shipped:** **install `-compat.apk` instead of `-host.apk`.** Every
+release carries both, built from the same commit and signed with the same key.
+The compat APK declares neither this permission nor the B-014 provider, so it
+installs on any phone; it loses the car-app host and nothing else, and the host
+build upgrades it later with no uninstall if the conflicting app is removed.
+
+The mechanism is a product flavour — `app/src/host/AndroidManifest.xml` holds
+both declarations, `app/src/compat/AndroidManifest.xml` holds nothing — because
+a manifest element cannot be made conditional at install time and a permission
+cannot be granted late. `tools/check-install-claims.sh` runs in CI against the
+two built APKs and fails if compat declares either name or host declares
+neither; both mistakes are otherwise completely silent.
+
+The older manual routes still work and are no longer the only ones: uninstall
+the conflicting app, or delete the two declarations and rebuild.
 
 **How to close it:** it closes itself the day a car app adds Headway to its
 allowlist, because route 2 needs no permission at all.
@@ -639,7 +664,11 @@ section answers by name.
 
 ## B-014 — The car-connection authority can block installation
 
-**Status:** Open by construction, and cheaper to give up than B-013.
+**Status:** **Fixed the same way as B-013**, and by the same change: the
+`-compat.apk` in every release declares no provider. See
+[ADR 0009](docs/adr/0009-two-apks-so-the-host-cannot-block-the-install.md). The
+authority collision is still unavoidable in a single APK; it no longer blocks
+the install of an app that has one to fall back on.
 
 **Blocked:** Installing Headway on a phone where some other package owns the
 `androidx.car.app.connection` content-provider authority.
@@ -652,10 +681,11 @@ is being projected, and on a de-Googled phone nothing answers — so every app
 concludes it is not in a car, and several of them then decline to run their car
 service at all.
 
-**Workaround shipped:** delete the `<provider>` block from
-`app/src/main/AndroidManifest.xml` and rebuild. Templates should render either
-way; what is lost is apps knowing they are projected, which affects behaviour
-rather than rendering. Nothing in Headway's own code reads the provider.
+**Workaround shipped:** install `-compat.apk`, which declares no provider. What
+is lost is apps knowing they are projected, which affects their behaviour rather
+than Headway's rendering; nothing in Headway's own code reads the provider.
+(Deleting the `<provider>` block and rebuilding still works and is now the
+`compat` flavour's entire content.)
 
 One caveat found in review and *not* resolved: `androidx.car.app:app:1.7.0`'s
 own manifest carries
@@ -740,3 +770,67 @@ off, and the honest answer is that this phone cannot do native rendering for
 apps without a car template — turn the switch back off. This is one of only two
 things in the whole self-test that a drive is genuinely required for, and the
 self-test's last section says so.
+
+---
+
+## B-016 — A test double ships in the published APK
+
+**Status:** Open, cosmetic, with a known fix deliberately deferred.
+
+**Blocked:** Nothing. Recorded because it is a real defect found in review and
+leaving it undocumented would be worse than leaving it unfixed.
+
+**Why:** Releases are built with `assembleDebug` — on purpose, because
+frame-level protocol logging is what makes a first-connection failure
+diagnosable from the in-app log export. That makes `debug` the *published*
+source set, so `app/src/debug/AndroidManifest.xml` merges into the APK people
+install, and with it `dev.headway.app.media.FakeLibraryService` — a stub
+`MediaBrowserService` that exists only so `CarMediaBrowserTest` has a real
+framework service to bind rather than a mock of one.
+
+It is `exported="false"`, so nothing outside Headway can bind it, and
+`MediaApps.installed()` excludes Headway's own package, so it never appears in
+the media pane. The harm is that a shipped APK advertises a component that is
+not part of the product.
+
+**Workaround shipped:** none needed; the component is inert in normal use.
+
+**How to close it:** declare it `android:enabled="false"` and have the test turn
+it on with `PackageManager.setComponentEnabledSetting`, which an app may do for
+its own components with no permission. Deferred rather than done because this
+service has already broken the instrumented suite twice — once for
+`exported="false"` blocking a cross-package bind, once for
+`NoClassDefFoundError` when it lived in the test APK — and destabilising a green
+suite to fix a cosmetic wart, while a real install failure was being shipped,
+was the wrong order of work.
+
+---
+
+## B-017 — `libvosk.so` is 4 KB-page aligned, and Pixels now run 16 KB pages
+
+**Status:** Open. Latent; not yet observed, and not an install failure.
+
+**Blocked:** Running the voice pipeline on a device booted with 16 KB memory
+pages. Android 15 introduced 16 KB page support on 64-bit Pixels, and a shared
+object whose `PT_LOAD` segments are aligned to 4 KB cannot be mapped in place.
+
+**Why:** Two things combine. `minSdk 33` makes AGP set
+`android:extractNativeLibs="false"`, so the library is loaded straight out of
+the APK rather than unpacked, which requires its segment alignment to match the
+kernel's page size. The `libvosk.so` inside `com.alphacephei:vosk-android` is
+built with the older 4 KB `max-page-size`. On a 16 KB device the load fails with
+`UnsatisfiedLinkError` at the first speech attempt.
+
+Everything else is unaffected: the ABI filter, the install, the car link, and
+every non-voice feature. Nothing about this blocks installation, which is worth
+stating because it was found while investigating one.
+
+**Workaround shipped:** none yet. The voice path already degrades to "the car
+microphone works, nothing is transcribed" rather than crashing the app.
+
+**How to close it:** ship a `libvosk.so` linked with
+`-Wl,-z,max-page-size=16384`, either by rebuilding `vosk-android` or by
+repacking the AAR. In the meantime the load failure should be logged with its
+own `UnsatisfiedLinkError` text instead of collapsing into the generic "no
+on-device speech model" message, so a 16 KB device is diagnosable from one
+exported log rather than mistaken for a missing model.

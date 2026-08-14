@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This file is part of Headway.
+  Copyright (C) 2026 The Headway Authors
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<!--
+  The two declarations that make Headway a car-app host, and the two that can
+  stop it installing.
+
+  They are in a flavour of their own because they are the only things in the
+  whole manifest whose cost is paid by the entire app. A permission name has
+  exactly one definer per device; a provider authority exactly one owner. On a
+  phone where something else already holds either — realistically, one with
+  Google's Android Auto — an APK that declares them fails to install outright,
+  and the platform's own report for that is the bare string "App not
+  installed". Every unrelated feature goes down with it.
+
+  So: the `host` flavour claims them and gets the car-app host; the `compat`
+  flavour claims nothing and installs anywhere. Same applicationId, same key,
+  so either upgrades the other with no uninstall. See app/build.gradle.kts,
+  docs/adr/0007-headway-as-a-car-app-host.md, and BLOCKERS B-013 / B-014.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      The car-app template host, declared and then held by Headway itself.
+
+      This is the single line that decides whether a third-party car app will
+      talk to Headway at all, and it is worth stating exactly why it works.
+
+      An app that offers a car UI does so through a CarAppService, and before it
+      answers anything it runs HostValidator.isValidHost() in its own process.
+      That method accepts a caller on four conditions and no others
+      (HostValidator.validateHost, decompiled from androidx.car.app:app:1.7.0):
+      the caller is the app itself; the caller's package and signing digest are
+      in the allowlist the app hardcoded; the caller is uid 1000; or the caller
+      holds android.car.permission.TEMPLATE_RENDERER, checked as
+      REQUESTED_PERMISSION_GRANTED on the caller's own PackageInfo.
+
+      Headway cannot be any of the first three. It can be the fourth, because a
+      permission is just a name: an app may declare one and use it, and a
+      signature-protected permission is granted at install to the package that
+      declared it, itself. No root, no system signature, no adb, no
+      privileged API. The permission names a role, and Headway genuinely
+      performs that role: it renders car-app templates on a car screen.
+
+      This is not impersonation and cannot become it. Headway still tells every
+      app its real package name, and the library cross-checks that name against
+      the real calling uid: HostValidator.validateHost looks the claimed package
+      up and throws IllegalStateException when its uid does not match the
+      HostInfo it was handed. CarAppBinder.onHandshakeCompleted supplies that
+      HostInfo from Binder.getCallingUid() and does no checking of its own, so
+      the guarantee lives one frame further in than an earlier version of this
+      comment said. It is reached on the permission branch, which is the branch
+      Headway takes. An app that would rather not talk to Headway can still
+      refuse it by name.
+
+      signature rather than normal, so nothing else on the phone can pick the
+      permission up from Headway's declaration.
+
+      The one real cost: a package that already declares this permission makes
+      Headway fail to install with INSTALL_FAILED_DUPLICATE_PERMISSION. Nothing
+      on an AOSP phone declares it: it belongs to Android Automotive's car
+      service, which is not present. Google's Android Auto app might, so a
+      phone running that alongside Headway is the case to watch. BLOCKERS B-013
+      records it with the workaround.
+    -->
+    <permission
+        android:name="android.car.permission.TEMPLATE_RENDERER"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="android.car.permission.TEMPLATE_RENDERER" />
+
+    <application>
+        <!--
+          The car-connection provider every car app queries to find out whether
+          it is being projected.
+
+          androidx.car.app.connection.CarConnection does not ask the system; it
+          queries this well-known authority and reads one integer. On a phone
+          with Android Auto installed, Gearhead answers it. On a de-Googled
+          phone nothing does, and every car app concludes it is not in a car,
+          which for several of them means refusing to run their car service at
+          all. Headway answers with the truth about its own AAP session.
+
+          Exported because the whole point is that other apps read it, and there
+          is nothing to protect: the answer is whether a car is connected, which
+          any app can already see from Bluetooth. Read-only; every write path in
+          CarConnectionProvider is refused.
+
+          The authority is exclusive, so a phone that already has Android Auto
+          installed will refuse to install Headway with
+          INSTALL_FAILED_CONFLICTING_PROVIDER. BLOCKERS B-014 records it and the
+          way out; templates render either way.
+        -->
+        <provider
+            android:name=".carapp.CarConnectionProvider"
+            android:authorities="androidx.car.app.connection"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+    </application>
+</manifest>

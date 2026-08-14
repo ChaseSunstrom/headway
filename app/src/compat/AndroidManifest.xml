@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This file is part of Headway.
+  Copyright (C) 2026 The Headway Authors
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<!--
+  The compat flavour, defined by what it does not declare.
+
+  No <permission> and no <provider>. That is the whole difference from `host`,
+  and it is deliberately expressed as an empty manifest rather than as a removal
+  in the build script, so that the diff between the two variants is one file you
+  can read.
+
+  What it costs: third-party car apps will refuse Headway as a host, because
+  HostValidator's only reachable branch is "the caller holds
+  android.car.permission.TEMPLATE_RENDERER" and a permission cannot be held
+  unless something defines it. The Car apps tab will bind, be refused by name,
+  and say so. Car apps also lose the way they ask whether they are being
+  projected, so some decline to start their car service at all.
+
+  What it does not cost: everything else. The car link, video, touch, audio,
+  voice, the dashboard, maps, phone, messages and media all work identically —
+  they were never downstream of these two names, and taking the whole app down
+  with them is the bug this flavour exists to fix.
+
+  A locally built debug APK of a car app still works against this flavour:
+  both OsmAnd and Organic Maps branch on FLAG_DEBUGGABLE to
+  ALLOW_ALL_HOSTS_VALIDATOR, which consults no permission.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

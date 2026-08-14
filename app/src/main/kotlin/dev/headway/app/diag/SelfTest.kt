@@ -109,6 +109,7 @@ object SelfTest {
         // Stamped, because this report exists to be pasted into an issue, and a
         // report without the build and the device is a report nobody can act on.
         out.append("build ").append(BuildConfig.VERSION_CODE)
+            .append(" ").append(BuildConfig.FLAVOR)
             .append(" · ").append(Build.MODEL)
             .append(" · Android ").append(Build.VERSION.RELEASE)
             .appendLine()
@@ -174,12 +175,17 @@ object SelfTest {
             .append(" refused, ").append(apps.size - accepted - refused)
             .append(" neither.").appendLine()
         out.append(
-            if (accepted > 0) {
-                "  B-012 is answered: the TEMPLATE_RENDERER route works against a real app.\n"
-            } else {
-                "  B-012 is answered the other way: no installed app took the permission\n" +
-                    "  route. A locally built debug APK of Organic Maps or OsmAnd accepts any\n" +
-                    "  host and is the way to tell a Headway bug from an allowlist refusal.\n"
+            when {
+                accepted > 0 ->
+                    "  B-012 is answered: the TEMPLATE_RENDERER route works against a real app.\n"
+                !BuildConfig.CAR_APP_HOST ->
+                    "  This is the compat build, which does not declare the renderer\n" +
+                        "  permission, so a refusal here is expected and says nothing about\n" +
+                        "  B-012. Install the host APK from the same release to test it.\n"
+                else ->
+                    "  B-012 is answered the other way: no installed app took the permission\n" +
+                        "  route. A locally built debug APK of Organic Maps or OsmAnd accepts any\n" +
+                        "  host and is the way to tell a Headway bug from an allowlist refusal.\n"
             },
         )
         return out.toString()
@@ -264,7 +270,14 @@ object SelfTest {
             "android.car.permission.TEMPLATE_RENDERER",
             context.packageManager.checkPermission(TEMPLATE_RENDERER, context.packageName) ==
                 PackageManager.PERMISSION_GRANTED,
-            "without it every car app answers \"Unknown host\"",
+            if (BuildConfig.CAR_APP_HOST) {
+                "without it every car app answers \"Unknown host\""
+            } else {
+                // Not a fault in this build, and saying so matters: a bare "NO"
+                // here would send someone hunting a grant that was deliberately
+                // never asked for.
+                "not declared by the compat build, by design — the host build has it"
+            },
         )
         line("car-connection provider answers", providerState(context) != null, describeProvider(context))
         line("notification listener", NowPlayingTile.notificationAccessGranted(context))

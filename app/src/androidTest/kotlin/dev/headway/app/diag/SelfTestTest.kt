@@ -20,9 +20,11 @@ package dev.headway.app.diag
 import android.os.Looper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import dev.headway.app.BuildConfig
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -78,6 +80,11 @@ class SelfTestTest {
      */
     @Test(timeout = RUN_TIMEOUT_MILLIS)
     fun theGrantsSectionAgreesWithThePackageManager() {
+        // Both claims below belong to the host variant by construction; the
+        // compat variant exists precisely because it makes neither. See
+        // tools/check-install-claims.sh, which asserts that difference on the
+        // built APKs where it is a fact rather than an expectation.
+        assumeTrue("the compat build claims neither name", BuildConfig.CAR_APP_HOST)
         val report = SelfTest.run(context)
         assertTrue(
             "TEMPLATE_RENDERER should read granted on any device Headway installed on:\n$report",
@@ -99,6 +106,7 @@ class SelfTestTest {
      */
     @Test(timeout = RUN_TIMEOUT_MILLIS)
     fun nothingElseOwnsWhatHeadwayClaims() {
+        assumeTrue("the compat build claims neither name", BuildConfig.CAR_APP_HOST)
         val report = SelfTest.run(context)
         assertTrue(
             "another package defines TEMPLATE_RENDERER on this device:\n$report",

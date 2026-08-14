@@ -155,4 +155,96 @@ class ReleaseCatalogTest {
         val url = ReleaseCatalog.feedUrl("ChaseSunstrom/headway")
         assertTrue(url, url.startsWith("https://api.github.com/repos/ChaseSunstrom/headway/releases"))
     }
+
+    // --- picking between the two published APKs -------------------------------
+
+    private fun apk(name: String) = Triple(name, "https://example/$name", 1L)
+
+    /**
+     * An update keeps the variant it started on.
+     *
+     * Both directions are real failures, not tidiness. Handing a `host` install
+     * the compat APK silently removes the car-app host on an ordinary update —
+     * the app keeps working and the Car apps tab quietly goes dark. Handing a
+     * `compat` install the host APK reproduces the exact "App not installed"
+     * that made the split necessary, on a phone that had a working Headway a
+     * moment earlier.
+     */
+    @Test
+    fun theUpdaterStaysOnItsOwnVariant() {
+        val both = listOf(
+            apk("headway-0.1.0-dev-build90-abc1234-host.apk"),
+            apk("headway-0.1.0-dev-build90-abc1234-compat.apk"),
+        )
+        assertEquals(
+            "headway-0.1.0-dev-build90-abc1234-host.apk",
+            ReleaseCatalog.chooseApk(both, "host")?.first,
+        )
+        assertEquals(
+            "headway-0.1.0-dev-build90-abc1234-compat.apk",
+            ReleaseCatalog.chooseApk(both, "compat")?.first,
+        )
+        // Order must not decide it: GitHub promises nothing about asset order.
+        assertEquals(
+            "headway-0.1.0-dev-build90-abc1234-compat.apk",
+            ReleaseCatalog.chooseApk(both.reversed(), "compat")?.first,
+        )
+    }
+
+    /**
+     * A release from before the split still updates.
+     *
+     * Every release up to build 77 carries one APK with no variant in its name.
+     * A strict match would make those invisible and strand anyone sitting on an
+     * older build, which is the opposite of what this whole change is for.
+     */
+    @Test
+    fun aSingleUnlabelledApkIsStillTaken() {
+        val legacy = listOf(apk("headway-0.1.0-dev-build77-abb7a62-debug.apk"))
+        assertEquals(
+            "headway-0.1.0-dev-build77-abb7a62-debug.apk",
+            ReleaseCatalog.chooseApk(legacy, "host")?.first,
+        )
+        assertEquals(
+            "headway-0.1.0-dev-build77-abb7a62-debug.apk",
+            ReleaseCatalog.chooseApk(legacy, "compat")?.first,
+        )
+    }
+
+    /**
+     * Several APKs and none of them ours: refuse rather than guess.
+     *
+     * Skipping the release leaves the user on a build that works. Picking the
+     * first one would be a coin flip between "silently lose the car-app host"
+     * and "fail to install", decided by whatever order GitHub happened to
+     * return.
+     */
+    @Test
+    fun anAmbiguousReleaseIsSkippedRatherThanGuessed() {
+        val unlabelled = listOf(apk("one-debug.apk"), apk("two-debug.apk"))
+        assertNull(ReleaseCatalog.chooseApk(unlabelled, "host"))
+        assertNull(ReleaseCatalog.chooseApk(emptyList(), "host"))
+    }
+
+    /** And the whole path end to end, through the feed. */
+    @Test
+    fun theFeedYieldsTheVariantsApk() {
+        val assets = listOf("host", "compat").joinToString(",") { variant ->
+            val name = "headway-0.1.0-dev-build90-abc1234-$variant.apk"
+            """{"name":"$name","size":99,"browser_download_url":"https://example/$name"}"""
+        }
+        val json = """
+            [{"tag_name":"v0.1.0-dev-build.90","name":"n","draft":false,
+              "prerelease":true,"body":"","assets":[$assets]}]
+        """.trimIndent()
+
+        assertEquals(
+            "headway-0.1.0-dev-build90-abc1234-compat.apk",
+            ReleaseCatalog.newestSince(json, currentBuild = 89, variant = "compat")?.apkName,
+        )
+        assertEquals(
+            "headway-0.1.0-dev-build90-abc1234-host.apk",
+            ReleaseCatalog.newestSince(json, currentBuild = 89, variant = "host")?.apkName,
+        )
+    }
 }

@@ -31,9 +31,11 @@ import androidx.car.app.serialization.Bundleable
 import androidx.car.app.versioning.CarAppApiLevels
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import dev.headway.app.BuildConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -71,6 +73,11 @@ class CarAppHostTest {
      */
     @Test
     fun headwayHoldsTheTemplateRendererPermission() {
+        // The compat variant deliberately declares neither this permission nor
+        // the provider below — that is the whole of what makes it installable
+        // on a phone that already has a car-app host. Asserting them there
+        // would fail a variant that is behaving exactly as designed.
+        assumeTrue("the compat build declares no permission", BuildConfig.CAR_APP_HOST)
         val granted = context.packageManager.checkPermission(
             TEMPLATE_RENDERER,
             context.packageName,
@@ -91,6 +98,7 @@ class CarAppHostTest {
      */
     @Test
     fun theCarConnectionProviderAnswers() {
+        assumeTrue("the compat build declares no provider", BuildConfig.CAR_APP_HOST)
         val uri = android.net.Uri.parse("content://${CarConnectionProvider.AUTHORITY}")
         val cursor = context.contentResolver.query(
             uri,

@@ -96,7 +96,23 @@ android {
         // The CI run number, so every published build outranks the one before
         // it. A fixed versionCode meant Android saw every release as the same
         // version, and the in-app updater had nothing to compare.
-        versionCode = (System.getenv("HEADWAY_BUILD_NUMBER") ?: "1").toInt()
+        //
+        // The fallback of 1 is deliberate and it is a trap worth naming, because
+        // its symptom is the same three words as everything else here: an APK
+        // built without the variable cannot install over any CI build, and
+        // Android reports INSTALL_FAILED_VERSION_DOWNGRADE as the bare "App not
+        // installed". Raising the fallback instead would swap one trap for a
+        // worse one -- a local build numbered above every future CI run can
+        // never be updated by one. So it stays at 1 and says so out loud.
+        versionCode = (System.getenv("HEADWAY_BUILD_NUMBER") ?: "1").toInt().also {
+            if (System.getenv("HEADWAY_BUILD_NUMBER") == null) {
+                logger.lifecycle(
+                    "Headway: HEADWAY_BUILD_NUMBER unset, versionCode=1. This APK cannot " +
+                        "install over a CI build -- Android calls that \"App not installed\". " +
+                        "Set HEADWAY_BUILD_NUMBER above the installed build to sideload it.",
+                )
+            }
+        }
         versionName = "0.1.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -146,6 +162,39 @@ android {
             // older tooling able to read the APK at all.
             enableV1Signing = true
             enableV2Signing = true
+        }
+    }
+
+    // Two APKs, differing only in whether they claim two global names.
+    //
+    // This exists because of a real install failure, not a hypothetical one.
+    // The car-app host needs Headway to declare
+    // `android.car.permission.TEMPLATE_RENDERER` and to own the
+    // `androidx.car.app.connection` provider authority — see ADR 0007 for why
+    // both are unavoidable. A permission name has exactly one definer per
+    // device and a provider authority exactly one owner, so on a phone where
+    // something else has either, the whole APK fails to install with nothing
+    // but "App not installed" to show for it. Every other feature — the car
+    // link, video, input, audio, voice, maps, phone, media — is unaffected and
+    // was taken down with it.
+    //
+    // BLOCKERS B-013 and B-014 recorded the workaround as "delete the two
+    // manifest lines and rebuild", which is no use at all to somebody
+    // installing a published APK. So the build does it for them.
+    //
+    // Same applicationId and same signing key, so either variant upgrades the
+    // other with no uninstall and no data loss. `compat` is a strict subset:
+    // if it installs and `host` does not, the difference is exactly the two
+    // names, which is itself the diagnosis.
+    flavorDimensions += "install"
+    productFlavors {
+        create("host") {
+            dimension = "install"
+            buildConfigField("boolean", "CAR_APP_HOST", "true")
+        }
+        create("compat") {
+            dimension = "install"
+            buildConfigField("boolean", "CAR_APP_HOST", "false")
         }
     }
 

@@ -654,19 +654,65 @@ updates** at the bottom of the main screen fetches the newest and hands it to
 Android's installer; you will need to allow Headway to install unknown apps, a
 normal per-app setting.
 
+### Which of the two APKs to take
+
+Every release carries two. They are the same app, built from the same commit,
+signed with the same key, and they differ in **two lines of manifest**.
+
+| | `-host.apk` | `-compat.apk` |
+|---|---|---|
+| Car-app host (Organic Maps, OsmAnd et al. drawing on the car screen) | yes | no |
+| Declares `android.car.permission.TEMPLATE_RENDERER` | yes | no |
+| Owns the `androidx.car.app.connection` authority | yes | no |
+| Everything else — car link, video, touch, audio, voice, maps, phone, media | yes | yes |
+| Installs on a phone that already has Android Auto | **maybe not** | yes |
+
+**Take `-host.apk`.** If Android answers "App not installed", take
+`-compat.apk` instead — that message means something else on the phone already
+holds one of those two names, and the compat build claims neither.
+
+Same package name and same key, so you can move between them later with no
+uninstall and no data loss. The in-app updater keeps you on whichever you have.
+
 That check is the only thing in Headway that touches the internet, and it runs
 only when you press the button — no background poll, no check on launch, nothing
 sent. CLAUDE.md's "no update checks" rule is about the app never depending on
 connectivity or phoning home, and both still hold: Headway starts, connects to
 the car and drives with no network at all.
 
-### If an update says "App not installed"
+### If it says "App not installed"
 
-Builds up to and including 19 were each signed with a throwaway key generated on
-the CI runner that built them, so no two were signed alike, and Android refuses
-to replace an app with one signed by a different key. Uninstall Headway once and
-install build 20 or later; those share a stable key
-(`signing/headway-dev.jks`), so updates work from then on.
+Android's installer says this for half a dozen unrelated reasons and tells you
+none of them. In order of likelihood, and each answerable without adb:
+
+**1. Something else owns one of the two names the host build claims.** This is
+the common one now, and the symptom is that even a *fresh* install fails —
+uninstalling Headway first changes nothing. A permission name has exactly one
+definer per device and a provider authority exactly one owner; if Google's
+Android Auto is installed, it holds both. **Install `-compat.apk` from the same
+release.** It claims neither and installs anywhere.
+
+You can confirm it after the fact: install compat, press **Run the self-test**,
+and read the "Install collisions" section. It names the package that actually
+owns each one.
+
+**2. It is older than what you have.** The build number is the `versionCode`,
+and Android refuses to go backwards. Check the number in the Updates card
+against the release you are installing.
+
+**3. It is signed with a different key.** Builds up to and including **19** were
+each signed with a throwaway key generated on the CI runner that built them, so
+no two were signed alike. Uninstall Headway once and install build 20 or later;
+those share a stable key (`signing/headway-dev.jks`) and update cleanly from
+then on. A locally built APK will also collide this way unless you build with
+that keystore, which is the default.
+
+**4. There is not enough free space.** The APK bundles a ~41 MB speech model.
+
+Updating from inside the app rather than by hand is worth doing for exactly this
+reason: `PackageInstaller` reports *which* of the above it was, Headway writes it
+to the session log and shows it in the Updates card, and it survives long enough
+to read. The system installer's own dialog does not.
 
 That keystore is committed on purpose. It is public and protects nothing — the
 point is that it is *stable*, not secret, exactly as the platform-wide Android

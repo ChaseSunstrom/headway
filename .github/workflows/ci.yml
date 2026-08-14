@@ -111,18 +111,32 @@ jobs:
       - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Assemble the debug APK
+      # Both variants. They differ only in two manifest declarations, but the
+      # one that is easy to break is `compat` -- nothing else in the build
+      # references it, so a merge error there would be invisible until somebody
+      # who needs it tried to install one.
+      - name: Assemble both debug APKs
         env:
           HEADWAY_BUILD_NUMBER: ${{ github.run_number }}
-        run: ./gradlew :app:assembleDebug
+        run: ./gradlew :app:assembleHostDebug :app:assembleCompatDebug
 
+      # The one property the variants exist for, checked on the built APKs
+      # rather than on the intent. Both ways of getting it wrong are silent:
+      # claims left in `compat` make the fallback uninstallable on exactly the
+      # phones it is for, and claims missing from `host` disable the car-app
+      # host with no error anywhere.
+      - name: The two APKs claim what they should
+        run: ./tools/check-install-claims.sh
+
+      # The variants share every line of Kotlin, so running the suite twice
+      # would buy nothing; `host` is the default and the one people install.
       - name: Android module unit tests
-        run: ./gradlew :core-video:test :core-input:test :core-audio:test :app:testDebugUnitTest
+        run: ./gradlew :core-video:test :core-input:test :core-audio:test :app:testHostDebugUnitTest
 
       - uses: actions/upload-artifact@v4
         with:
           name: headway-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/*/debug/*.apk
           retention-days: 14
 
   instrumented:
@@ -168,8 +182,21 @@ jobs:
           #
           # headway.model: nothing instrumented needs the speech model, and
           # skipping it saves a 41 MB download on every run.
+          #
+          # Every module is named explicitly now that :app has flavours. The
+          # bare `connectedDebugAndroidTest` would run BOTH app variants, which
+          # doubles a four-minute emulator job to test one manifest difference;
+          # but `connectedHostDebugAndroidTest` alone would silently run only
+          # :app, because Gradle's name matching skips projects that lack the
+          # task and the three library modules have no flavours. Losing their
+          # instrumented tests without a single line of output is exactly the
+          # kind of quiet coverage hole worth spelling out against.
           script: >-
-            ./gradlew connectedDebugAndroidTest
+            ./gradlew
+            :app:connectedHostDebugAndroidTest
+            :core-audio:connectedDebugAndroidTest
+            :core-input:connectedDebugAndroidTest
+            :core-video:connectedDebugAndroidTest
             -Pheadway.abis=arm64-v8a,x86_64
             -Pheadway.model=none
 
@@ -239,25 +266,36 @@ jobs:
       # build number in the tag, because the in-app updater compares tags and
       # Android compares versionCodes, and an update where those two disagree
       # either never gets offered or gets refused as a downgrade.
-      - name: Assemble the APK
+      - name: Assemble both APKs
         env:
           HEADWAY_BUILD_NUMBER: ${{ github.run_number }}
-        run: ./gradlew :app:assembleDebug
+        run: ./gradlew :app:assembleHostDebug :app:assembleCompatDebug
 
-      - name: Name the artifact after what it actually is
+      - name: Name the artifacts after what they actually are
         id: name
         run: |
           version=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
           sha=$(git rev-parse --short HEAD)
           # A dot before the run number would read as a version segment; a dash
           # keeps the build identifier visibly separate from the version.
+          #
+          # The variant is the LAST segment before .apk on purpose:
+          # ReleaseCatalog.chooseApk matches on the "-host.apk"/"-compat.apk"
+          # suffix so an update keeps the variant it started on. Renaming these
+          # without changing that function silently sends every updater down the
+          # single-APK fallback.
           echo "tag=v${version}-build.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          echo "apk=headway-${version}-build${{ github.run_number }}-${sha}-debug.apk" >> "$GITHUB_OUTPUT"
+          echo "stem=headway-${version}-build${{ github.run_number }}-${sha}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
 
-      - name: Stage the APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk "${{ steps.name.outputs.apk }}"
+      - name: Stage both APKs
+        run: |
+          cp app/build/outputs/apk/host/debug/app-host-debug.apk \
+             "${{ steps.name.outputs.stem }}-host.apk"
+          cp app/build/outputs/apk/compat/debug/app-compat-debug.apk \
+             "${{ steps.name.outputs.stem }}-compat.apk"
+          ls -l "${{ steps.name.outputs.stem }}"-*.apk
 
       # Uses the preinstalled GitHub CLI rather than a third-party action. A
       # release job holds contents:write, so it is the last place to take on a
@@ -326,10 +364,31 @@ jobs:
           stable key, so this is a one-time uninstall — and the reason the
           in-app updater can work at all.
 
-          ## About this APK
+          ## Which APK to download
 
-          It is a **debug** build, and deliberately so: protocol frame logging is
-          compiled in, which is what makes a first-connection failure
+          Two are attached. They are the same app; they differ in two lines of
+          manifest.
+
+          - **`-host.apk` — take this one.** It declares
+            `android.car.permission.TEMPLATE_RENDERER` and owns the
+            `androidx.car.app.connection` authority, which is what lets
+            third-party car apps draw their own interface on the car screen.
+          - **`-compat.apk` — take this one if `-host.apk` says "App not
+            installed".** A permission name has one definer per device and a
+            provider authority one owner, so if something else on your phone
+            already holds either — realistically Google's Android Auto — the
+            host APK cannot install at all. The compat APK claims neither and
+            installs anywhere. You lose only the car-app host; the car link,
+            video, touch, audio, voice, maps, phone and media are identical.
+
+          Same package name and same signing key, so you can switch between them
+          later with no uninstall and no data loss. The in-app updater keeps you
+          on whichever you installed.
+
+          ## About these APKs
+
+          They are **debug** builds, and deliberately so: protocol frame logging
+          is compiled in, which is what makes a first-connection failure
           diagnosable from the in-app log export.
 
           It is signed with the development key committed in `signing/`, which is
@@ -344,7 +403,8 @@ jobs:
           } >> notes.md
 
           gh release create "${{ steps.name.outputs.tag }}" \
-            "${{ steps.name.outputs.apk }}" \
+            "${{ steps.name.outputs.stem }}-host.apk" \
+            "${{ steps.name.outputs.stem }}-compat.apk" \
             --title "Headway ${{ steps.name.outputs.version }} (build ${{ github.run_number }})" \
             --notes-file notes.md \
             --prerelease \

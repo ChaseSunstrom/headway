@@ -92,7 +92,11 @@ object ReleaseCatalog {
      * publish that failed halfway leaves exactly that, and it should not mask
      * the last good build underneath it.
      */
-    fun newestSince(json: String, currentBuild: Int): AvailableRelease? {
+    fun newestSince(
+        json: String,
+        currentBuild: Int,
+        variant: String = "",
+    ): AvailableRelease? {
         val releases = JSONArray(json)
         var best: AvailableRelease? = null
 
@@ -106,19 +110,20 @@ object ReleaseCatalog {
             if (best != null && build <= best.buildNumber) continue
 
             val assets = release.optJSONArray("assets") ?: continue
-            var apkName: String? = null
-            var apkUrl: String? = null
-            var apkSize = 0L
+            val apks = mutableListOf<Triple<String, String, Long>>()
             for (j in 0 until assets.length()) {
                 val asset = assets.optJSONObject(j) ?: continue
                 val name = asset.optString("name").orEmpty()
                 if (!name.endsWith(".apk", ignoreCase = true)) continue
-                apkName = name
-                apkUrl = asset.optString("browser_download_url").orEmpty()
-                apkSize = asset.optLong("size", 0L)
-                break
+                apks += Triple(
+                    name,
+                    asset.optString("browser_download_url").orEmpty(),
+                    asset.optLong("size", 0L),
+                )
             }
-            if (apkName == null || apkUrl.isNullOrEmpty()) continue
+            val chosen = chooseApk(apks, variant) ?: continue
+            val (apkName, apkUrl, apkSize) = chosen
+            if (apkUrl.isEmpty()) continue
 
             best = AvailableRelease(
                 tag = tag,
@@ -131,5 +136,34 @@ object ReleaseCatalog {
             )
         }
         return best
+    }
+
+    /**
+     * Picks the APK belonging to the variant that is running.
+     *
+     * A release carries two APKs that differ only in whether they declare the
+     * car-app host's permission and provider — see `app/build.gradle.kts`.
+     * Handing a `host` install the `compat` APK would silently strip the car-app
+     * host on an ordinary update, and handing a `compat` install the `host` APK
+     * would fail with the very "App not installed" the split exists to prevent.
+     * Neither is acceptable as a silent outcome, so the variant is matched by
+     * the suffix the release job puts on the filename.
+     *
+     * Falls back to the single APK when a release has exactly one, which is what
+     * every release up to build 77 looks like and what an update from one of
+     * those has to be able to read. Deliberately does *not* guess when there are
+     * several and none matches: skipping the release leaves the user on a build
+     * that works, which is the better failure.
+     */
+    fun chooseApk(
+        apks: List<Triple<String, String, Long>>,
+        variant: String,
+    ): Triple<String, String, Long>? {
+        if (apks.isEmpty()) return null
+        if (variant.isNotEmpty()) {
+            val suffix = "-$variant.apk"
+            apks.firstOrNull { it.first.endsWith(suffix, ignoreCase = true) }?.let { return it }
+        }
+        return apks.singleOrNull()
     }
 }

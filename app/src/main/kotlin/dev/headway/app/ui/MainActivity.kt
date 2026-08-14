@@ -51,6 +51,7 @@ import dev.headway.app.update.AppUpdater
 import dev.headway.app.update.AvailableRelease
 import dev.headway.app.update.ReleaseCatalog
 import dev.headway.app.update.UpdateException
+import dev.headway.app.update.UpdateReceiver
 import android.companion.CompanionDeviceManager
 import dev.headway.app.dash.tiles.NowPlayingTile
 import dev.headway.app.diag.SelfTest
@@ -199,6 +200,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var selfTestStatus: TextView
     private lateinit var selfTestButton: TextView
+    private lateinit var installFailureRow: Phone.StatusRow
 
     /** Guards against a second run while the first is still binding apps. */
     private var selfTestRunning = false
@@ -1135,8 +1137,43 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildUpdatesCard(): View {
         val card = Phone.card(this, "Updates")
-        updateValue = Phone.body(this, "Build ${BuildConfig.VERSION_CODE} installed")
+        updateValue = Phone.body(
+            this,
+            "Build ${BuildConfig.VERSION_CODE} installed (${BuildConfig.FLAVOR})",
+        )
         card.addView(updateValue)
+
+        // Why the variant is on screen at all: it is the difference between a
+        // car app refusing Headway because of a bug and refusing it because
+        // this APK never declared the permission. Without it the Car apps tab
+        // is unreadable, and the driver has no way to know which APK they
+        // installed months ago.
+        card.addView(
+            Phone.note(
+                this,
+                if (BuildConfig.CAR_APP_HOST) {
+                    "This is the host build: it declares the car-app renderer " +
+                        "permission, so apps that publish a car interface can draw on " +
+                        "the car screen. If a future update ever says \"App not " +
+                        "installed\", the compat build in the same release installs " +
+                        "anywhere — you would lose only that."
+                } else {
+                    "This is the compat build. It claims no global permission and no " +
+                        "provider authority, so it installs on any phone — including " +
+                        "one that has Android Auto. The cost is the car-app host: apps " +
+                        "that publish a car interface will refuse Headway by name. " +
+                        "Everything else is identical. The host build in the same " +
+                        "release upgrades this one with no uninstall."
+                },
+            ).apply { layoutParams = Phone.spaced(this@MainActivity, 6f) },
+        )
+
+        // A failed install reports itself in a Toast that is gone in four
+        // seconds, from a broadcast receiver with no window to put a dialog in.
+        // This is the record that survives.
+        installFailureRow = Phone.StatusRow(this, "Last install")
+        card.addView(installFailureRow.view)
+
         card.addView(
             Phone.note(
                 this,
@@ -1150,6 +1187,15 @@ class MainActivity : AppCompatActivity() {
         return card
     }
 
+    private fun refreshInstallFailure() {
+        if (!::installFailureRow.isInitialized) return
+        val failure = UpdateReceiver.lastFailure(this)
+        installFailureRow.set(
+            if (failure == null) Phone.Level.GOOD else Phone.Level.WARN,
+            failure ?: "No failed install to report.",
+        )
+    }
+
     // --- state --------------------------------------------------------------
 
     private fun refresh() {
@@ -1159,6 +1205,7 @@ class MainActivity : AppCompatActivity() {
         refreshPhonePermissions()
         refreshAccessibility()
         refreshGrants()
+        refreshInstallFailure()
         // Re-read rather than trust the widget: the preferences are shared with
         // the car launcher and with anything else that may have changed them
         // while this activity was stopped.

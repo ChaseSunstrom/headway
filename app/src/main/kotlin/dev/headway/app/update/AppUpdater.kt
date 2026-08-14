@@ -59,10 +59,15 @@ class AppUpdater(private val context: Context) {
     suspend fun check(
         repository: String = BuildConfig.UPDATE_REPOSITORY,
         currentBuild: Int = BuildConfig.VERSION_CODE,
+        // The running flavour, so an update never silently swaps it. `host` and
+        // `compat` differ only in two manifest declarations, but crossing
+        // between them either strips the car-app host or fails to install --
+        // see ReleaseCatalog.chooseApk.
+        variant: String = BuildConfig.FLAVOR,
     ): AvailableRelease? = withContext(Dispatchers.IO) {
         val body = get(ReleaseCatalog.feedUrl(repository))
         try {
-            ReleaseCatalog.newestSince(body, currentBuild)
+            ReleaseCatalog.newestSince(body, currentBuild, variant)
         } catch (e: Exception) {
             throw UpdateException("GitHub returned a release feed we could not read", e)
         }
