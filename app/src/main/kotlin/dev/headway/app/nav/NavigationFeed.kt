@@ -73,9 +73,20 @@ data class NavigationStep(
  * exactly that and documents it breaking. Headway shows the words instead, which
  * are the part that does not rot.
  *
- * For OsmAnd there is something far better and [OsmAndNavigation] uses it: a
- * published AIDL interface returning a numeric turn type and a distance in
- * metres. Where both are available the AIDL wins.
+ * There is something far better than a scrape, and
+ * [dev.headway.app.carapp.CarAppTrips] is where it arrives: an app connected
+ * through the template host publishes a real `Trip` over
+ * `INavigationHost.updateTrip`, with a numeric maneuver type, a distance
+ * carrying its own unit, and a remaining time in seconds. Nothing is parsed out
+ * of a display string. [offer] declines to overwrite a structured step with a
+ * scraped one, so an app that supplies both gets the good version.
+ *
+ * OsmAnd also publishes its own AIDL interface with the same information, and it
+ * is deliberately not used: OsmAnd ships a `CarAppService`, so the template host
+ * already gets the structured `Trip` from it through an interface that is common
+ * to every car app rather than specific to one. Adding a second, OsmAnd-only
+ * path would mean vendoring roughly a hundred and fifty parcelable classes whose
+ * binder transaction codes are positional, to obtain data Headway already has.
  *
  * ## Matching
  *

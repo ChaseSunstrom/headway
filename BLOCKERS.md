@@ -534,8 +534,24 @@ failing.
 
 ## B-012 — Whether a real car app accepts Headway as a host
 
-**Status:** Open. Everything the derivation predicts is built; one bench test
-with a real app confirms or refutes it.
+**Status:** Open, and **half of it is now verified**. The permission route works
+on a real Android image; what is untested is a real app on the other end.
+
+**Verified 2026-08-14, CI run 92, AOSP emulator API 35:**
+`CarAppHostTest.headwayHoldsTheTemplateRendererPermission` passed, so
+`PackageManager.checkPermission("android.car.permission.TEMPLATE_RENDERER",
+"dev.headway.app")` returns `PERMISSION_GRANTED` — the signature-level
+self-declaration is granted at install exactly as the derivation predicted, and
+that value is precisely what `HostValidator.hasPermissionGranted` reads. The APK
+also installed cleanly, which is the first real evidence against the B-013 and
+B-014 collision risks on a Google-free image. The rest of the class passed too:
+`HandshakeInfo`, a whole `ListTemplate` with its rows and its click delegate, and
+a standard `Action` all survive the `Bundler` round trip.
+
+What that does *not* prove is that a third-party app runs the branch. Route 4 is
+the last of four and only reached when the first three miss; an app with a
+stricter custom validator, or a future library that drops the branch, would still
+refuse. That is what remains open.
 
 **Blocked:** Confirming that a third-party `CarAppService` runs
 `HostValidator.isValidHost()` against Headway and returns true, so its templates

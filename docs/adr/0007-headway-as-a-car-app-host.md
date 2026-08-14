@@ -146,6 +146,12 @@ for a `ListenableFuture` the host side never touches; R8 drops it from release.
   real `Trip`: numeric maneuver types, distances with units, remaining seconds.
   `CarAppTrips` decodes it into the same `NavigationFeed` the notification
   scraper feeds, and a structured step is never overwritten by a scraped one.
+- **The permission route is verified on a real image.** CI run 92, AOSP emulator
+  API 35: the APK installs, `checkPermission` returns `PERMISSION_GRANTED` for
+  `android.car.permission.TEMPLATE_RENDERER` against Headway's own package, and
+  `HandshakeInfo`, a populated `ListTemplate` and a standard `Action` all survive
+  the `Bundler` round trip. What is still untested is a third-party app on the
+  other end of the binder — B-012.
 - **Reach is honest and bounded.** Route 4 is the whole of it. If a future
   library release drops that branch, or an app ships its own stricter validator,
   those apps go dark and the pane says so by name. **B-012** tracks the fact that
