@@ -116,6 +116,17 @@ class CarSurface private constructor(
     suspend fun encodeUntilStopped() = encoder.encodeUntilStopped()
 
     /**
+     * Whether the gesture in progress was claimed by the app pane at its DOWN.
+     *
+     * Written and read on the session's reader coroutine, which is the only
+     * thread `deliver` is called from, so it needs no synchronisation -- but it
+     * is `@Volatile` anyway because a stale value here silently sends touches to
+     * the wrong side and there is no cheaper way to be sure.
+     */
+    @Volatile
+    private var gestureBelongsToApp = false
+
+    /**
      * The pointer's current position, for synthesising a coherent gesture.
      *
      * A `MotionEvent` stream has to be well formed — a DOWN, then MOVEs, then an
@@ -159,7 +170,20 @@ class CarSurface private constructor(
         // through the accessibility service rather than dispatched into this
         // window. Refusing it here is what sends it down that path -- see
         // `CarInputStream.deliverDirect` and ADR 0010.
-        if (presentation.claimsAppTouch(point.x, point.y)) return false
+        //
+        // Decided once, at the DOWN, and held for the whole stroke. Testing
+        // every event instead would split a drag that starts on the app and
+        // leaves the pane -- a fling across a map, a swipe that overshoots -- 
+        // between the two paths: the accessibility service would be left with a
+        // stroke that never ends, and the dashboard would receive a MOVE with no
+        // DOWN before it. Neither side can recover from that, and the driver
+        // sees a map that stops following their finger halfway through.
+        val down = touch.action == TouchAction.DOWN
+        if (down) gestureBelongsToApp = presentation.claimsAppTouch(point.x, point.y)
+        if (gestureBelongsToApp) {
+            if (touch.action == TouchAction.UP) gestureBelongsToApp = false
+            return false
+        }
         val action = when (touch.action) {
             TouchAction.DOWN, TouchAction.POINTER_DOWN -> MotionEvent.ACTION_DOWN
             TouchAction.MOVED -> MotionEvent.ACTION_MOVE
