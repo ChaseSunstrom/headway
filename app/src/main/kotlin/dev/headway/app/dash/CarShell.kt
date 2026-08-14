@@ -18,6 +18,8 @@
 package dev.headway.app.dash
 
 import android.app.Presentation
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -41,6 +43,7 @@ import dev.headway.app.dash.tiles.MediaBrowseTile
 import dev.headway.app.dash.tiles.MessagesTile
 import dev.headway.app.dash.tiles.NowPlayingTile
 import dev.headway.app.dash.tiles.PhoneTile
+import dev.headway.app.dash.tiles.WidgetSetup
 import dev.headway.app.dash.tiles.WidgetTile
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.CarMetrics
@@ -173,6 +176,7 @@ class CarShell(
 
         tabs = store.list()
         layout = store.active()
+        releaseOrphanedWidgets()
         column.addView(buildRail())
         column.addView(stage, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         showStartup()
@@ -1087,21 +1091,125 @@ class CarShell(
                     (layout.nodeAt(path) as? DashNode.Leaf)?.kind.orEmpty(),
                 ) == kind,
             ) {
-                if (kind == PaneKind.APP) {
-                    showAppPicker { packageName ->
+                when (kind) {
+                    PaneKind.APP -> showAppPicker { packageName ->
                         closeOverlay()
                         layout = layout.setPane(path, PaneKind.APP, packageName)
                         render()
                         openApp(packageName)
                     }
-                } else {
-                    closeOverlay()
-                    layout = layout.setPane(path, kind)
-                    render()
+                    PaneKind.WIDGET -> showWidgetPicker(path)
+                    else -> {
+                        closeOverlay()
+                        layout = layout.setPane(path, kind)
+                        render()
+                    }
                 }
             }
         }
         showOverlay(sheet().build("Show in this pane", rows, onClose = ::closeOverlay))
+    }
+
+    /**
+     * Drops widget ids that no saved layout mentions any more.
+     *
+     * Ids outlive the panes that referenced them: removing a widget pane, or
+     * deleting a layout, rewrites the tree and says nothing to `AppWidgetService`,
+     * which goes on believing Headway hosts that widget and goes on asking its
+     * provider for updates. Nothing else can find them, because they appear in no
+     * layout.
+     *
+     * The keep set has to be **every id in every stored layout**, not just the
+     * active one -- see `WidgetTile.releaseOrphans`, where passing a partial set
+     * silently empties panes the driver has not opened yet.
+     */
+    private fun releaseOrphanedWidgets() {
+        val keep = runCatching {
+            tabs.flatMap { it.leaves() }
+                .filter { PaneKind.canonical(it.kind) == PaneKind.WIDGET }
+                .map { WidgetTile.widgetIdOf(it.argument) }
+                .filter { it != AppWidgetManager.INVALID_APPWIDGET_ID }
+                .toSet()
+        }.getOrNull() ?: return
+        runCatching { WidgetTile.releaseOrphans(context, keep, onStep) }
+    }
+
+    // --- the widget list ------------------------------------------------------
+
+    /**
+     * The widgets the driver may put in a pane, and the route that adds one.
+     *
+     * This is the only pane kind that renders a *different* third-party app in
+     * every pane at once, and it is why the layout editor is worth having: screen
+     * sharing gives one app on the whole car screen at a time, while four widget
+     * panes are four apps drawn simultaneously, live, by the apps themselves.
+     *
+     * Filtered by the same allow-list as the app picker. A widget draws that
+     * app's data on the car screen, so the decision to put it there is the same
+     * decision, and it is made on the phone while parked.
+     */
+    private fun showWidgetPicker(path: DashPath) {
+        val allowed = HeadwaySettings.allowedApps(context)
+        val manager = context.packageManager
+        val providers = WidgetTile.installedProviders(context)
+            .filter { it.provider.packageName in allowed }
+        val rows = providers.map { info ->
+            val app = runCatching {
+                manager.getApplicationLabel(
+                    manager.getApplicationInfo(info.provider.packageName, 0),
+                ).toString()
+            }.getOrDefault(info.provider.packageName)
+            CarSheet.Row(
+                title = runCatching { info.loadLabel(manager) }.getOrNull()
+                    ?: info.provider.shortClassName,
+                detail = app,
+                icon = runCatching { info.loadIcon(context, 0) }.getOrNull(),
+            ) {
+                closeOverlay()
+                addWidget(path, info.provider)
+            }
+        }
+        showOverlay(
+            sheet().build(
+                title = "Widgets",
+                rows = rows.ifEmpty {
+                    listOf(
+                        CarSheet.Row(
+                            title = if (allowed.isEmpty()) {
+                                "No apps are allowed yet"
+                            } else {
+                                "None of the allowed apps has a widget"
+                            },
+                            detail = "Open Headway on the phone to allow more apps",
+                        ) { closeOverlay() },
+                    )
+                },
+                onClose = ::closeOverlay,
+            ),
+        )
+    }
+
+    /**
+     * Adds one widget, which happens on the phone -- see [WidgetSetupActivity].
+     *
+     * The pane is only rewritten once an id comes back bound. A failed attempt
+     * leaves the pane exactly as it was, and says so, rather than replacing
+     * something the driver could see with a widget pane that is empty.
+     */
+    private fun addWidget(path: DashPath, provider: ComponentName) {
+        showVoiceMessage("Finish adding this widget on the phone")
+        WidgetSetup.request(context, provider) { widgetId, bound ->
+            if (widgetId == AppWidgetManager.INVALID_APPWIDGET_ID || bound == null) {
+                showVoiceMessage("That widget was not added")
+                return@request
+            }
+            layout = layout.setPane(
+                path,
+                PaneKind.WIDGET,
+                WidgetTile.argumentFor(widgetId, bound),
+            )
+            render()
+        }
     }
 
     // --- the app list ---------------------------------------------------------

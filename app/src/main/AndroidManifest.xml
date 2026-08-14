@@ -195,6 +195,20 @@
             android:theme="@style/Theme.Headway.Invisible" />
 
         <!--
+          Adds a widget to a pane. Transparent, and only ever visible as the
+          system's "allow Headway to add widgets?" dialog or the widget's own
+          setup screen. The car screen cannot do either: both are
+          startActivityForResult calls and a Presentation is not an activity.
+          See WidgetSetupActivity.
+        -->
+        <activity
+            android:name=".dash.tiles.WidgetSetupActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Headway.Invisible" />
+
+        <!--
           There is deliberately no car-facing *activity* any more.
 
           The car screen is a Presentation on a display Headway creates, drawn by

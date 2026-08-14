@@ -102,7 +102,7 @@ object PaneKind {
 
     /** Everything, in the order a picker should offer them. */
     val ALL: List<String> = listOf(
-        APP, MAPS, NOW_PLAYING, BROWSE, PHONE, MESSAGES, CAR_APP, LAUNCHER, WIDGET, CLOCK,
+        APP, MAPS, NOW_PLAYING, BROWSE, PHONE, MESSAGES, CAR_APP, WIDGET, LAUNCHER, CLOCK,
     )
 
     /**

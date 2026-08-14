@@ -19,6 +19,7 @@ package dev.headway.app.link
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.LinkProperties
@@ -1552,11 +1553,54 @@ class CarWifiNetwork(
                     ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
             }
             if (!up) return null
+            val named = vpnApps(context).joinToString(" or ") { it.second }
+            val which = if (named.isEmpty()) "the VPN app" else named
             return "A VPN is running. Headway binds itself to the car's network, which is " +
                 "normally enough. If the car never finishes connecting, the VPN is set to " +
-                "block connections that do not go through it: turn off \"Block connections " +
-                "without VPN\" for it, or add Headway to its excluded apps. Android gives no " +
-                "unprivileged way around that setting."
+                "block connections that do not go through it. In $which, either turn off " +
+                "\"Block connections without VPN\" (called Always-on or lockdown in some " +
+                "apps) or add Headway to its excluded/split-tunnelling apps -- excluding " +
+                "Headway is the narrower of the two and leaves the rest of the phone on the " +
+                "VPN. Android gives an unprivileged app no way to do either for you: a " +
+                "locked-down VPN is enforced in netd, and the exemption Android Auto relies " +
+                "on, CONNECTIVITY_USE_RESTRICTED_NETWORKS, is signature|privileged."
+        }
+
+        /**
+         * The VPN apps installed on this phone, as (package, label).
+         *
+         * Found by who can be a VPN rather than by who is one: the owner of a
+         * live VPN network is `NetworkCapabilities.getOwnerUid`, which reports
+         * `INVALID_UID` to everyone but the owner and the system, so an
+         * unprivileged app cannot ask the running VPN what it is. Every VPN app
+         * must export a service guarded by `BIND_VPN_SERVICE` and matching the
+         * `android.net.VpnService` action, which is visible to a package query
+         * and is close enough: on a phone with one VPN app installed it names
+         * exactly the right one.
+         *
+         * Returns empty rather than throwing on a phone whose package manager
+         * refuses the query. The caller then says "the VPN app", which is still
+         * true.
+         */
+        fun vpnApps(context: Context): List<Pair<String, String>> {
+            val manager = context.packageManager ?: return emptyList()
+            val intent = Intent("android.net.VpnService")
+            return runCatching {
+                manager.queryIntentServices(intent, 0)
+                    .asSequence()
+                    .mapNotNull { it.serviceInfo }
+                    .filter { it.packageName != context.packageName }
+                    .map { info ->
+                        info.packageName to runCatching {
+                            manager.getApplicationLabel(
+                                manager.getApplicationInfo(info.packageName, 0),
+                            ).toString()
+                        }.getOrDefault(info.packageName)
+                    }
+                    .distinctBy { it.first }
+                    .sortedBy { it.second.lowercase() }
+                    .toList()
+            }.getOrDefault(emptyList())
         }
 
         fun buildRequest(spec: Spec, maxPreferredChannels: Int = 0): NetworkRequest =

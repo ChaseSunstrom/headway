@@ -849,6 +849,26 @@ class MainActivity : AppCompatActivity() {
         val card = Phone.card(this, "A VPN is running")
         vpnCard = card
         card.addView(Phone.body(this, CarWifiNetwork.vpnAdvice(this).orEmpty()))
+        // Both remedies live in someone else's settings, so the card carries the
+        // driver there rather than describing where to look. The system screen
+        // is where always-on and lockdown are set; the VPN's own app is where
+        // split tunnelling usually is.
+        card.addView(
+            Phone.button(this, "Open VPN settings") {
+                val opened = runCatching {
+                    startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
+                    true
+                }.getOrDefault(false)
+                if (!opened) {
+                    runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                }
+            },
+        )
+        CarWifiNetwork.vpnApps(this).take(MAX_VPN_BUTTONS).forEach { (packageName, label) ->
+            val launch = runCatching { packageManager.getLaunchIntentForPackage(packageName) }
+                .getOrNull() ?: return@forEach
+            card.addView(Phone.button(this, "Open $label") { runCatching { startActivity(launch) } })
+        }
         card.visibility = if (CarWifiNetwork.vpnAdvice(this) == null) View.GONE else View.VISIBLE
         return card
     }
@@ -2205,6 +2225,15 @@ class MainActivity : AppCompatActivity() {
 
         /** Android's own minimum, and the floor CLAUDE.md sets for the car screen. */
         private const val MIN_TOUCH_TARGET_DP = 48
+
+        /**
+         * How many VPN apps the VPN card offers to open.
+         *
+         * A phone normally has one. Two is room for the case where an old VPN
+         * app was left installed beside the one actually in use; past that the
+         * card would be a list of shortcuts rather than a piece of advice.
+         */
+        private const val MAX_VPN_BUTTONS = 2
 
         // The palette lives in `dev.headway.app.ui.theme.Headway`, which is
         // derived from the launcher icon and shared with every car surface. The

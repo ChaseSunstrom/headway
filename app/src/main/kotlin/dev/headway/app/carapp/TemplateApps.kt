@@ -23,6 +23,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import androidx.car.app.CarAppService
+import dev.headway.app.ui.HeadwaySettings
 
 /**
  * An app that offers a car interface, and what kind of one it says it is.
@@ -106,6 +107,11 @@ object TemplateApps {
      */
     fun installed(context: Context): List<TemplateApp> {
         val packages = context.packageManager
+        // The same gate as the app picker and the widget picker: an app reaches
+        // the car screen only after the driver said it may, once, on the phone.
+        // A car app draws that app's own interface on the car screen, so it is
+        // the same decision -- see `AllowedApps`.
+        val allowed = HeadwaySettings.allowedApps(context)
         val query = Intent(CarAppService.SERVICE_INTERFACE)
         val resolved = runCatching {
             packages.queryIntentServices(
@@ -119,6 +125,7 @@ object TemplateApps {
             .mapNotNull { info ->
                 val service = info.serviceInfo ?: return@mapNotNull null
                 if (service.packageName == context.packageName) return@mapNotNull null
+                if (service.packageName !in allowed) return@mapNotNull null
                 TemplateApp(
                     packageName = service.packageName,
                     service = ComponentName(service.packageName, service.name),

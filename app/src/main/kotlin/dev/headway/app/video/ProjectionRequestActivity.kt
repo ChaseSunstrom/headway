@@ -49,19 +49,20 @@ private const val TAG = "HeadwayProjection"
  * which attaches it to the panes without restarting the session. See
  * `HeadwayService.adoptProjectionGrant`.
  *
- * ## Why it forces the default display on Android 14 and up
+ * ## What the driver should pick
  *
- * `MediaProjectionConfig.createConfigForDefaultDisplay()` makes the consent
- * dialog offer exactly one thing: the whole of display 0. Left to the ordinary
- * intent, the dialog also offers "a single app", and a driver who picks that
- * gets a capture of *one* app that never changes, while Headway goes on
- * launching things and mapping touches as though the whole screen were being
- * recorded. That failure is invisible — frames arrive, they are simply of the
- * wrong thing — and it is precisely the sort of mismatch that reads as "the app
- * pane is broken".
+ * **A single app.** The dialog offers that and "entire screen", and the whole
+ * point of an app pane is the first one: app screen sharing excludes the status
+ * bar, the navigation bar and notifications, shares only the chosen app, and
+ * reports that app's own size through `onCapturedContentResize` — so the pane
+ * gets the app at the app's aspect ratio instead of a phone-shaped rectangle
+ * with the driver's notifications in it.
  *
- * The simulated-display path (ADR 0008) is the exception and says so: there the
- * driver must be able to pick that display, so the config is not applied.
+ * This used to force `createConfigForDefaultDisplay()` to stop the driver
+ * picking a source Headway had not assumed. That was backwards: forcing the
+ * default display *removes the single-app option from the dialog*, which is
+ * exactly the "it shows the entire display, not the one app" failure. See
+ * [captureIntentFor].
  *
  * ## No UI
  *
