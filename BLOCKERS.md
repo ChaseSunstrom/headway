@@ -937,12 +937,24 @@ Nothing unprivileged moves a third-party activity off display 0:
 `ADD_TRUSTED_DISPLAY` is `signature|role`, and an untrusted virtual display
 refuses the first activity outright.
 
-**Workaround shipped:** the screen stays on and goes black. Since app screen
-sharing excludes system UI from the capture, an accessibility blackout hides the
-phone from the driver without appearing on the car screen — so the phone reads as
-off, is off to look at, and keeps drawing. It is off by default because with
-whole-display sharing the same overlay would black out the car screen too, and
-Headway cannot tell which kind of sharing the driver chose.
+**Workaround shipped:** the screen stays on, goes black, and stays awake. Since
+app screen sharing excludes system UI from the capture, an accessibility blackout
+hides the phone from the driver without appearing on the car screen — so the
+phone reads as off, is off to look at, and keeps drawing.
+
+The cover carries `FLAG_KEEP_SCREEN_ON`, which is the half that makes it worth
+having: without it the phone sleeps a minute in and everything that needs
+display 0 goes with it, so the driver gets a car screen that works, goes black,
+and comes back only if they pick the phone up. A window flag rather than a wake
+lock — no permission, scoped to the view's lifetime, and it cannot outlive the
+session.
+
+It is **on by default** as of this build, because Headway can now tell which kind
+of sharing is running rather than having to ask: `onCapturedContentResize`
+reports the captured region's real size, and a region smaller than display 0 is a
+single app. `AppPaneHost.sharingSingleApp` is that measurement and
+`HeadwayService.coverPhoneScreen` is the gate — a whole-display capture never
+gets a cover, where it would be the entire picture.
 
 **How to close it:** not closable from inside the app. The honest description is
 "the phone looks off and behaves as though it were", not "it works locked", and

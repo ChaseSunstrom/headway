@@ -188,11 +188,20 @@ class HeadwayAccessibilityService : AccessibilityService() {
      *
      * ## What it deliberately does not do
      *
-     * The screen stays *on*. The simulated display takes its power state
-     * verbatim from display 0 — `OverlayDisplayWindow` forwards it and
-     * `DisplayContent` puts a non-default display's activities to sleep when it
-     * is off — so letting the phone sleep would stop the car picture. This is a
-     * black view over a live screen, not a way to turn the screen off.
+     * The screen stays *on*, and this window is what holds it on:
+     * `FLAG_KEEP_SCREEN_ON`. Everything the car needs lives on display 0 — a
+     * shared app stops drawing when its display sleeps, Android 15 tears a
+     * capture down at the lock screen and asks again on the next unlock, and a
+     * simulated display takes its power state verbatim from display 0 because
+     * `OverlayDisplayWindow` forwards it. So a cover that let the phone sleep
+     * would give the driver a car screen that works, goes black a minute in, and
+     * returns only when they pick the phone up. This is a black view over a live
+     * screen, not a way to turn the screen off, and B-020 is the record of why
+     * those are not the same thing.
+     *
+     * A window flag rather than a wake lock, deliberately: no permission, scoped
+     * to exactly as long as this view exists, and unable to outlive the session
+     * the way a leaked `PARTIAL_WAKE_LOCK` can.
      *
      * It is also not a privacy-indicator bypass. The preview exists because the
      * user turned on a developer setting; it says "a simulated display exists",
@@ -224,7 +233,22 @@ class HeadwayAccessibilityService : AccessibilityService() {
             // the driver cannot remove would be a trap rather than a feature.
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                // The flag that makes this cover worth having. Without it the
+                // phone sleeps a minute in, and everything that needs display 0
+                // goes with it: a shared app stops drawing when its display
+                // sleeps, and Android 15 tears a capture down at the lock screen
+                // and asks again on the next unlock. The driver's symptom is a
+                // car screen that works, goes black, and comes back only if they
+                // pick the phone up -- which is worse than not covering it.
+                //
+                // A window flag rather than a wake lock: it needs no permission,
+                // it is scoped to exactly as long as this view exists, and it
+                // cannot outlive the session the way a leaked PARTIAL_WAKE_LOCK
+                // can. The screen is on and black, which is B-020's approximation
+                // of "works when locked" and the closest an unprivileged app can
+                // get.
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
             android.graphics.PixelFormat.OPAQUE,
         )
         val added = runCatching { windows.addView(view, params) }
