@@ -994,7 +994,9 @@ class HeadwayNotificationListener : NotificationListenerService() {
         // conversation someone had sitting on a car screen indefinitely. Same for
         // the turn instruction and the call, which are read from the same feed.
         deliver(emptyList())
-        NavigationFeed.clear()
+        // Same scoping as the sweep: a revoked notification grant must not
+        // erase a route that never came from a notification.
+        NavigationFeed.clearScraped()
         CarPhone.clear()
         SessionLog.shared.info(TAG, "notification listener disconnected")
     }
@@ -1035,7 +1037,12 @@ class HeadwayNotificationListener : NotificationListenerService() {
             if (!navigating && NavigationFeed.offer(sbn, mapPackages)) navigating = true
             if (!calling && CarPhone.offer(this, sbn)) calling = true
         }
-        if (!navigating) NavigationFeed.clear()
+        // clearScraped, not clear: a structured Trip from a car app is
+        // invisible to this sweep and NavigationFeed.offer even declines the
+        // notification while one is held, so `navigating` is structurally
+        // false and an unconditional clear wiped a live route on every
+        // notification the phone received.
+        if (!navigating) NavigationFeed.clearScraped()
         if (!calling) CarPhone.clear()
 
         val messages = active

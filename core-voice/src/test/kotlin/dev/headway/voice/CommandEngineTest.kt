@@ -111,6 +111,51 @@ class CommandEngineTest {
         }
     }
 
+    /**
+     * A destination whose last word is a media word is still a destination.
+     *
+     * `matchMedia` used to accept any transcript merely *ending* with a media
+     * phrase, and it ran before `matchNavigate`. MEDIA_PHRASES contains bare
+     * "stop", "next" and "back", so "navigate to the nearest bus stop" halted
+     * the music and started no route. The single-word fixtures in the
+     * acceptance suite could never see it.
+     */
+    @Test
+    fun `a destination ending in a media word still routes`() {
+        val cases = mapOf(
+            "navigate to the nearest bus stop" to "nearest bus stop",
+            "take me to the truck stop" to "truck stop",
+            "drive to the next stop" to "next stop",
+            "directions to paddington station" to "paddington station",
+        )
+        cases.forEach { (spoken, expected) ->
+            val navigate = assertInstanceOf(
+                VoiceCommand.Navigate::class.java,
+                engine().parse(spoken),
+                "\"$spoken\" was not treated as a route",
+            )
+            assertEquals(expected, navigate.destination, "wrong destination from \"$spoken\"")
+        }
+    }
+
+    /**
+     * A transport command surrounded by filler is still a transport command.
+     *
+     * The other half of the same fix: tightening the media rule must not cost
+     * the mis-hearings it was loose for in the first place.
+     */
+    @Test
+    fun `filler around a transport word does not stop it matching`() {
+        listOf("pause please", "just pause", "pause the music", "and pause", "next track")
+            .forEach { spoken ->
+                assertInstanceOf(
+                    VoiceCommand.Media::class.java,
+                    engine().parse(spoken),
+                    "\"$spoken\" stopped being a transport command",
+                )
+            }
+    }
+
     // --- the rules navigation had to be threaded between ---------------------
 
     @Test

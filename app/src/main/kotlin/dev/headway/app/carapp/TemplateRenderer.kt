@@ -129,10 +129,27 @@ class TemplateRenderer(
      */
     private var mapView: CarAppSurfaceView? = null
 
+    /**
+     * The template class last drawn, so a refresh of the same screen is not
+     * animated. See the end of [render].
+     */
+    private var lastShape: Class<*>? = null
+
+    /**
+     * Whether the template just drawn asked for a map.
+     *
+     * Set by [attachMap] and read at the end of [render]: a template with no
+     * map must have the surface taken away, or the app keeps rendering into it
+     * behind an opaque list, burning GPU for a view nobody sees and showing
+     * through every transparent gap.
+     */
+    private var mapWanted = false
+
     val view: View get() = root
 
     fun render(state: HostState, template: Template?) {
         root.removeAllViews()
+        mapWanted = false
         val context = root.context
 
         if (state != HostState.RUNNING || template == null) {
@@ -142,6 +159,7 @@ class TemplateRenderer(
                 CarStyle.emptyState(context, messageFor(state)),
                 LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f),
             )
+            lastShape = null
             releaseMap()
             return
         }
@@ -150,16 +168,35 @@ class TemplateRenderer(
             .onFailure { error ->
                 SessionLog.shared.warn(TAG, "could not draw ${template.javaClass.simpleName}: $error")
                 root.removeAllViews()
-                root.gravity = Gravity.CENTER
+                root.gravity = Gravity.TOP
+                // Chrome first, for the reason the fallback branch gives: the
+                // one state where the driver most needs a way out is the one
+                // where Headway has just admitted it cannot draw the screen.
+                root.addView(chrome(context))
                 root.addView(
                     CarStyle.emptyState(
                         context,
                         "${session.app.label} sent a screen Headway could not draw " +
                             "(${template.javaClass.simpleName}).",
                     ),
+                    LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f),
                 )
             }
-        Headway.revealIn(root)
+        // Only when the screen has actually changed. render() runs on every
+        // invalidate — once a second for a navigating app, and the host tells
+        // apps to invalidate freely — and revealIn sets alpha to 0 and animates
+        // back over 260 ms, so animating every refresh strobes the whole pane
+        // for the length of the drive. An app faster than about 4 Hz would
+        // reset alpha before the previous animation finished and sit
+        // permanently near-invisible.
+        // A template with no map must not leave one running behind it.
+        if (!mapWanted) releaseMap()
+
+        val shape = template.javaClass
+        if (shape != lastShape) {
+            lastShape = shape
+            Headway.revealIn(root)
+        }
     }
 
     /** Drops the surface; call when the pane goes away. */
@@ -286,11 +323,33 @@ class TemplateRenderer(
             }
 
             is TabTemplate -> {
-                // The app's own tabs, above Headway's. Nested tabs read badly
-                // but the alternative is losing half the app's navigation, and
-                // the row is drawn small and tight so the hierarchy is obvious.
-                root.addView(tabStrip(context, template))
-                template.tabContents?.template?.let { draw(context, it) }
+                // Chrome first, because the nested content template supplies
+                // the only other exit and in the loading state there is no
+                // nested template at all.
+                root.addView(chrome(context))
+                // `getTabContents()` is annotated @NonNull and is null in
+                // exactly this state: Builder.build() rejects a loading
+                // template that *has* tabs, so a loading one has neither
+                // contents nor tabs. Reading it under Kotlin's strict jspecify
+                // handling throws a null-check assertion, which the caller
+                // catches and reports as "Headway could not draw TabTemplate" —
+                // a wrong and alarming message for a template it supports.
+                if (template.isLoading) {
+                    body(context, loading(context))
+                } else {
+                    // The app's own tabs, above Headway's. Nested tabs read
+                    // badly but the alternative is losing half the app's
+                    // navigation, and the row is drawn small and tight so the
+                    // hierarchy is obvious.
+                    root.addView(tabStrip(context, template))
+                    val contents = runCatching { template.tabContents }.getOrNull()
+                    val nested = contents?.template
+                    if (nested == null) {
+                        body(context, loading(context))
+                    } else {
+                        draw(context, nested)
+                    }
+                }
             }
 
             is NavigationTemplate -> drawNavigation(context, template)
@@ -368,6 +427,13 @@ class TemplateRenderer(
                 // release and an app may send one this build has never seen;
                 // naming it is more useful than a blank pane, and it is the
                 // report that says which one to add next.
+                //
+                // The chrome is not optional here. A pane that says "Headway
+                // cannot draw this" and offers no way out is worse than one
+                // that crashes, because the driver has no reason to think
+                // switching tabs would help. Two shipping templates land here
+                // today: SignInTemplate and MediaPlaybackTemplate.
+                root.addView(chrome(context))
                 body(
                     context,
                     CarStyle.emptyState(
@@ -512,6 +578,7 @@ class TemplateRenderer(
      * `FrameLayout` because a `LinearLayout` cannot overlap its children.
      */
     private fun attachMap(context: Context) {
+        mapWanted = true
         if (mapView == null) mapView = CarAppSurfaceView(context, session)
     }
 
@@ -657,16 +724,48 @@ class TemplateRenderer(
      * one", and honouring it is what makes an app's own emphasis survive being
      * redrawn by somebody else's widgets.
      *
-     * A standard action with no title (`BACK`, `PAN`, `APP_ICON`) is given
-     * Headway's own word for it. Drawing an empty pill because the app assumed
-     * the host had an icon for the constant is how a car screen ends up with
-     * three blank buttons.
+     * ## A standard action is the host's job, not the app's
+     *
+     * `Action.BACK`, `PAN`, `APP_ICON` and `COMPOSE_MESSAGE` carry **no**
+     * `OnClickDelegate` — `Action`'s private single-int constructor stores null
+     * for both the title and the delegate — and a header action cannot carry
+     * one at all: `ACTIONS_CONSTRAINTS_HEADER` is built with
+     * `setOnClickListenerAllowed(false)`. So routing a standard action's tap to
+     * its delegate is routing it to null, every time, and the first version of
+     * this drew a "Back" pill that silently did nothing on every screen of
+     * every app using the modern `Header` API. The host is *required* to
+     * interpret the type itself, and [standardAction] is where that happens.
+     *
+     * ## Icons
+     *
+     * Drawn, because an action strip is mostly icons and nothing else. A map
+     * action strip may legally contain zero titled actions —
+     * `ACTIONS_CONSTRAINTS_MAP` never calls `setMaxCustomTitles`, so it defaults
+     * to 0 — which is how four pills all reading "Action" ended up side by side
+     * across the guidance screen.
      */
     private fun actionView(context: Context, action: Action, compact: Boolean): View {
-        val label = action.title.plain() ?: standardName(action.type)
+        val icon = action.icon?.let { drawable(it) }
+        val title = action.title.plain()
+        // A titled action shows its title. An icon-only action shows its icon
+        // and no word at all, because the word would be a guess. Only an action
+        // with neither gets a name, and then only a standard one has a name
+        // worth giving.
+        val label = title ?: if (icon != null) "" else standardName(action.type)
         val primary = (action.flags and Action.FLAG_PRIMARY) != 0
-        val pill = CarStyle.button(context, label, emphasised = primary) {
-            click(action.onClickDelegate, label)
+        val handler = standardAction(action) ?: { click(action.onClickDelegate, label) }
+        val pill = CarStyle.button(context, label, emphasised = primary, onClick = handler)
+        if (icon != null) {
+            val size = CarStyle.dp(context, ICON_ACTION_DP)
+            icon.setBounds(0, 0, size, size)
+            action.icon?.tint?.let { tint -> resolve(tint)?.let { icon.setTint(it) } }
+            pill.setCompoundDrawablesRelative(icon, null, null, null)
+            if (title != null) {
+                pill.compoundDrawablePadding = CarStyle.gutter(context) / 2
+            }
+            // Named for the driver's screen reader and for the log, since the
+            // pill itself may now carry no text.
+            pill.contentDescription = title ?: standardName(action.type)
         }
         if (compact) {
             pill.minWidth = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
@@ -695,6 +794,26 @@ class TemplateRenderer(
         Action.TYPE_APP_ICON -> session.app.label
         Action.TYPE_COMPOSE_MESSAGE -> "Message"
         else -> "Action"
+    }
+
+    /**
+     * What a standard action does, or null when the app owns the behaviour.
+     *
+     * `TYPE_BACK` is the app's own screen stack, popped through
+     * `IAppManager.onBackPressed` — the same call Headway's own Back pill makes,
+     * which is the point: an app that asks for a Back button gets a working one
+     * rather than a decoration.
+     *
+     * `TYPE_APP_ICON` is a label, not a control, and Google's own host draws it
+     * inert; a no-op keeps it from looking tappable-but-broken. `TYPE_PAN` needs
+     * a pan-mode state machine over `PanModeDelegate` that this build does not
+     * have, so it says so rather than pretending.
+     */
+    private fun standardAction(action: Action): (() -> Unit)? = when (action.type) {
+        Action.TYPE_BACK -> ({ session.back(); Unit })
+        Action.TYPE_APP_ICON -> ({})
+        Action.TYPE_PAN -> ({ onStep("car app: pan mode is not implemented yet") })
+        else -> null
     }
 
     private fun fillItems(context: Context, into: LinearLayout, list: ItemList) {
@@ -1031,6 +1150,9 @@ class TemplateRenderer(
     private companion object {
         const val ROW_IMAGE_FRACTION = 0.72f
         const val ICON_LARGE_DP = 56f
+
+        /** An action pill's icon; sized against the pill, not the row. */
+        const val ICON_ACTION_DP = 24f
         const val ICON_GRID_DP = 40f
         const val GRID_COLUMNS = 3
         const val MAX_ROW_TEXTS = 2

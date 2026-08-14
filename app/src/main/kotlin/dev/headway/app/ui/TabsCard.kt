@@ -237,22 +237,42 @@ internal class TabsCard(
                     kind == current -> tab.root
                     else -> DashNode.Leaf(kind)
                 }
-                materialise()
-                if (name != tab.name) store.delete(tab.name)
-                store.save(DashLayout(name, root))
+                val existing = materialise()
+                // A rename onto a name already in use is a *merge*, not a
+                // rename: save() keys on the name and overwrites in place, so
+                // renaming "Phone" to "Maps" replaced the real Maps tab with
+                // the Phone layout and dropped the tab count by one, silently
+                // and with no undo. addTab already guards this; edit did not.
+                if (name != tab.name && existing.any { it.name == name }) {
+                    toast("There is already a tab called \"$name\"")
+                    return@setPositiveButton
+                }
+                // Substituted in place rather than deleted and re-saved.
+                // delete() clears the active pointer when it removes the active
+                // tab, and save() appends an unknown name to the end — so the
+                // old two-step moved the tab under the driver's finger to the
+                // far right of the bar and, if they were on it, sent the next
+                // drive back to the default tab. Exactly the trap `move()`
+                // documents avoiding.
+                val wasActive = store.active().name == tab.name
+                val index = existing.indexOfFirst { it.name == tab.name }
+                val updated = existing.toMutableList()
+                val renamed = DashLayout(name, root)
+                if (index >= 0) updated[index] = renamed else updated += renamed
+                store.replaceAll(updated)
+                if (wasActive) store.setActive(name)
                 changed()
                 if ((root as? DashNode.Leaf)?.kind == DashTile.Kind.CAR_APP) chooseCarApp(name)
             }
             .setNeutralButton("Delete") { _, _ ->
                 materialise()
                 store.delete(tab.name)
-                if (store.list().isEmpty()) {
-                    // Never leave the car with no tabs. list() would fall back
-                    // to the shipped set anyway, but a store that is empty
-                    // because the driver deleted everything should say so by
-                    // showing the shipped set rather than by looking broken.
-                    toast("The shipped tabs are back")
-                }
+                // hasSaved(), not list().isEmpty(). list() substitutes the
+                // shipped set when storage is empty and its own KDoc says it is
+                // "never empty", so the old condition was dead code — and
+                // deleting the last tab silently resurrected six of them, which
+                // reads as the delete having failed.
+                if (!store.hasSaved()) toast("The shipped tabs are back")
                 changed()
             }
             .setNegativeButton("Cancel", null)
@@ -388,6 +408,10 @@ internal class TabsCard(
 
     private fun changed() {
         refresh()
+        // A car session already running reads the store only once, when its
+        // surface is built. Without this the driver renames a tab on the phone
+        // and the car keeps showing the old pill.
+        DashLayoutStore.announceChanged()
         onChanged()
     }
 

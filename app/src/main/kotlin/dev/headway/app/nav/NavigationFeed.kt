@@ -169,10 +169,28 @@ object NavigationFeed {
         publish(null)
     }
 
-    /** Clears everything; for a listener disconnect. */
+    /** Clears everything, whatever its source. */
     fun clear() {
         if (current == null) return
         publish(null)
+    }
+
+    /**
+     * Clears only a step that came from a notification.
+     *
+     * The ownership rule, in one place rather than re-derived by each caller.
+     * The notification listener rebuilds its whole model from
+     * `getActiveNotifications` on every notification event on the phone — a
+     * message, a media repost, a battery update — and a structured `Trip` is
+     * invisible to that sweep, so an unconditional clear wiped a live route
+     * every few seconds and the Maps pane flickered empty for the whole drive.
+     *
+     * A structured step is ended by its own source: `navigationEnded`, or the
+     * session closing. See [CarAppTrips.withdraw].
+     */
+    fun clearScraped() {
+        if (current?.structured == true) return
+        clear()
     }
 
     private fun publish(step: NavigationStep?) {

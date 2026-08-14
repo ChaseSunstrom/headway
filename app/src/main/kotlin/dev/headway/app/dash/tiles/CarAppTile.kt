@@ -84,6 +84,19 @@ class CarAppTile(
     private var session: CarAppSession? = null
     private var renderer: TemplateRenderer? = null
 
+    /**
+     * The app the driver chose from the picker, if any.
+     *
+     * Held across [stop]/[start] because those are not "the driver left" — they
+     * are the pane being hidden and shown again, which happens on every
+     * Activity interruption when the dashboard is the mirrored fallback host:
+     * the power button, Home, an incoming call, or a template app launching an
+     * activity of its own. Without this the tile forgot the open app and came
+     * back to a picker; with the visibility bug below it came back to nothing
+     * at all. Cleared only by [leave].
+     */
+    private var chosen: TemplateApp? = null
+
     private val listener = CarAppSession.Listener { state, template -> paint(state, template) }
 
     override fun createView(context: Context): View {
@@ -108,9 +121,10 @@ class CarAppTile(
         if (running) return
         running = true
         apps = TemplateApps.installed(appContext)
-        val wanted = argument
+        val pinned = argument
             ?.let { ComponentName.unflattenFromString(it) }
             ?.let { component -> apps.firstOrNull { it.service == component } }
+        val wanted = chosen ?: pinned
         if (wanted != null) open(wanted) else renderPicker()
     }
 
@@ -130,6 +144,7 @@ class CarAppTile(
     private fun open(app: TemplateApp) {
         closeSession()
         val frame = stack ?: return
+        chosen = app
         picker?.visibility = View.GONE
 
         val next = CarAppSession(appContext, app, onStep)
@@ -153,8 +168,8 @@ class CarAppTile(
     }
 
     private fun leave() {
+        chosen = null
         closeSession()
-        picker?.visibility = View.VISIBLE
         renderPicker()
     }
 
@@ -205,6 +220,11 @@ class CarAppTile(
     private fun renderPicker() {
         val list = picker ?: return
         val context = list.context
+        // Unconditionally visible. open() hides it and only leave() used to
+        // show it again, so a stop()/start() cycle while an app was open filled
+        // an invisible view and left the pane a black rectangle with no app, no
+        // picker and no control of any kind.
+        list.visibility = View.VISIBLE
         list.removeAllViews()
 
         if (apps.isEmpty()) {

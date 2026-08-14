@@ -137,13 +137,27 @@ class DashboardPresentation(
         render()
     }
 
+    /** Held by identity so [onStop] removes exactly this one. */
+    private val layoutsChanged = DashLayoutStore.Listener {
+        // The editor is an Activity on the phone's main thread and this is a
+        // Presentation on the same looper, so a post is a hop rather than a
+        // thread change — but the contract of the listener does not promise a
+        // thread, and everything below touches views.
+        main.post { runCatching { reload() } }
+    }
+
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+
     override fun onStart() {
         super.onStart()
+        DashLayoutStore.observeChanges(layoutsChanged)
         live.forEach { runCatching { it.start() } }
         onStep("dashboard on the car display: ${describe()}")
     }
 
     override fun onStop() {
+        DashLayoutStore.unobserveChanges(layoutsChanged)
+        main.removeCallbacksAndMessages(null)
         // Tiles observe media sessions, notification streams and widget hosts.
         // One left running after the window goes is a listener for the life of
         // the process, and the only symptom is battery.
@@ -287,11 +301,46 @@ class DashboardPresentation(
      */
     private fun show(tab: DashLayout) {
         if (tab.name == layout.name) return
-        layout = tab
-        runCatching { store.setActive(tab.name) }
+        // Re-read rather than trust the pill. The bar is built once and the
+        // driver can edit the tab set from the phone mid-drive, so a pill may
+        // name a layout that no longer exists — and writing that name into the
+        // active pointer would send the *next* session to the default tab with
+        // no error anywhere. If the name has gone, reload instead of guessing.
+        val current = store.list().firstOrNull { it.name == tab.name }
+        if (current == null) {
+            onStep("dashboard: the ${tab.name} tab no longer exists; reloading the bar")
+            reload()
+            return
+        }
+        layout = current
+        runCatching { store.setActive(current.name) }
         tabBar?.let { fillTabs(it) }
-        onStep("dashboard: switched to the ${tab.name} tab")
+        onStep("dashboard: switched to the ${current.name} tab")
         render()
+    }
+
+    /**
+     * Re-reads the tab set after the driver edited it on the phone.
+     *
+     * A session lasts a whole drive and the store is read once, when the
+     * surface is built, so without this a tab renamed or deleted on the phone
+     * left the car showing pills for layouts that were gone.
+     *
+     * The pane tree is rebuilt only when the active layout actually changed:
+     * re-rendering on every edit would tear down and restart every tile —
+     * dropping a live car-app session and a media browser mid-list — for an
+     * edit that may only have touched a tab the driver is not looking at.
+     */
+    fun reload() {
+        tabs = store.list()
+        val wanted = store.active()
+        val same = wanted == layout
+        layout = wanted
+        tabBar?.let { fillTabs(it) }
+        if (!same) {
+            onStep("dashboard: tabs were edited; now showing ${layout.name}")
+            render()
+        }
     }
 
     /**

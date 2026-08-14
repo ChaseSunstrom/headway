@@ -175,8 +175,19 @@ object CarPhone {
         val hangUpIntent = runCatching {
             extras?.getParcelable(Notification.EXTRA_HANG_UP_INTENT, PendingIntent::class.java)
         }.getOrNull()
+        // A *ringing* CallStyle notification has no hang-up intent at all.
+        // `CallStyle.forIncomingCall(person, declineIntent, answerIntent)`
+        // stores the decline action under its own extra and leaves
+        // EXTRA_HANG_UP_INTENT null; only forOngoingCall and forScreeningCall
+        // set that one. Reading only the hang-up extra therefore made Decline a
+        // dead button on every incoming call — the driver taps it, the fallback
+        // needs a permission that is optional and usually not granted, and the
+        // phone keeps ringing.
+        val declineIntent = runCatching {
+            extras?.getParcelable(Notification.EXTRA_DECLINE_INTENT, PendingIntent::class.java)
+        }.getOrNull()
 
-        if (callType != 0 || answerIntent != null || hangUpIntent != null) {
+        if (callType != 0 || answerIntent != null || hangUpIntent != null || declineIntent != null) {
             val who = person?.name?.toString()
                 ?: extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()
                 ?: "Unknown caller"
@@ -187,7 +198,7 @@ object CarPhone {
                 // notification carries one too.
                 ringing = callType == CALL_TYPE_INCOMING,
                 answer = answerIntent,
-                hangUp = hangUpIntent,
+                hangUp = hangUpIntent ?: declineIntent,
                 source = sbn.packageName,
             )
         }

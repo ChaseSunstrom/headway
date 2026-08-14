@@ -18,6 +18,7 @@
 package dev.headway.app.dash
 
 import android.content.Context
+import java.util.concurrent.CopyOnWriteArrayList
 import android.content.SharedPreferences
 import dev.headway.app.ui.HeadwaySettings
 
@@ -63,6 +64,18 @@ import dev.headway.app.ui.HeadwaySettings
  * offering an `inAppStorage` factory beside it.
  */
 class DashLayoutStore(private val storage: Storage) {
+
+    /**
+     * Told when the tab set has been edited. See [Companion.announceChanged].
+     *
+     * Nested in the class rather than in the companion so that callers write
+     * `DashLayoutStore.Listener` — a classifier inside a companion object is
+     * reached as `DashLayoutStore.Companion.Listener`, which nothing should
+     * have to know.
+     */
+    fun interface Listener {
+        fun onLayoutsChanged()
+    }
 
     /**
      * Everything the driver has saved, or just [DEFAULT] when they have saved
@@ -322,6 +335,37 @@ class DashLayoutStore(private val storage: Storage) {
 
         /** The tab shown when nothing else is chosen. */
         val DEFAULT: DashLayout = DEFAULT_TABS.first { it.name == DEFAULT_NAME }
+
+        /**
+         * Told when the tab set has been edited, so a live car screen follows.
+         *
+         * The car reads the store once, when its surface is built, and a
+         * session lasts a whole drive — so a tab renamed or deleted on the
+         * phone left the car showing pills that no longer existed, and tapping
+         * one wrote a dead name into the active pointer, which sent the *next*
+         * drive to the default tab. Nothing else connects the two: the editor
+         * is an Activity on the phone and the dashboard is a Presentation on a
+         * virtual display, with no handle from either to the other.
+         *
+         * Deliberately fired by the editor alone, never by the store's own
+         * writes. `show()` on the car calls `setActive` on every tab switch,
+         * and a store that announced its own writes would make the car reload
+         * itself in response to its own tap.
+         */
+        private val listeners = CopyOnWriteArrayList<Listener>()
+
+        fun observeChanges(listener: Listener) {
+            listeners.addIfAbsent(listener)
+        }
+
+        fun unobserveChanges(listener: Listener) {
+            listeners.remove(listener)
+        }
+
+        /** Called by the tab editor after any change the car should see. */
+        fun announceChanged() {
+            listeners.forEach { runCatching { it.onLayoutsChanged() } }
+        }
 
         /** The store backed by the app's ordinary preferences. */
         fun of(context: Context): DashLayoutStore =

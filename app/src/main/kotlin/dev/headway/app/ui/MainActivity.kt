@@ -599,6 +599,9 @@ class MainActivity : AppCompatActivity() {
                     "Headway can already show and place calls",
                 )
             }
+            // Green here can still mean "one of the four is missing", and the
+            // button is the only way to ask for the rest.
+            .withPersistentAction()
         card.addView(phoneStatus.view)
 
         // No remedy button: this one installs itself and there is nothing for a

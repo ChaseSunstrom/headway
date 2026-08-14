@@ -59,13 +59,14 @@ class CommandEngine(
         // swallowed by a launch rule matching an app called "Home".
         matchGoHome(words)?.let { return it }
         matchVolume(words)?.let { return it }
-        matchMedia(words)?.let { return it }
-        // Before search, because "find the nearest petrol station" is a
-        // navigation request and "find" is also a search verb. Navigation is
-        // the more specific reading and the one that is dangerous to get wrong:
-        // typing a destination into whatever happens to be on screen is a
-        // driver looking at a phone.
+        // Navigation before media *and* before search, because it is the most
+        // specific rule of the three and the only one whose misfire is
+        // dangerous. "find the nearest petrol station" is a route, not a
+        // search; "navigate to the nearest bus stop" is a route, not a request
+        // to stop the music — and the media rule used to claim it, because it
+        // matched on the transcript merely *ending* with a media word.
         matchNavigate(words)?.let { return it }
+        matchMedia(words)?.let { return it }
         matchSearch(words)?.let { return it }
         matchLaunch(words)?.let { return it }
 
@@ -98,14 +99,39 @@ class CommandEngine(
         return VoiceCommand.Volume(direction, steps)
     }
 
+    /**
+     * A transport control.
+     *
+     * The leading and trailing forms exist because a small speech model prepends
+     * and appends junk — "uh pause", "pause please". What they must not do is
+     * capture a phrase that merely happens to end in a media word: MEDIA_PHRASES
+     * contains bare "stop", "next" and "back", and matching those as a suffix
+     * turned "navigate to the nearest bus stop" into a command to stop the
+     * music. So a trailing match is only accepted when what precedes it is
+     * itself filler, and a leading one only when what follows is.
+     */
     private fun matchMedia(words: List<String>): VoiceCommand? {
         val joined = words.joinToString(" ")
         for ((phrase, action) in MEDIA_PHRASES) {
-            if (joined == phrase || joined.startsWith("$phrase ") || joined.endsWith(" $phrase")) {
+            if (joined == phrase) return VoiceCommand.Media(action)
+            if (joined.endsWith(" $phrase") &&
+                isFiller(joined.removeSuffix(" $phrase"))
+            ) {
+                return VoiceCommand.Media(action)
+            }
+            if (joined.startsWith("$phrase ") &&
+                isFiller(joined.removePrefix("$phrase "))
+            ) {
                 return VoiceCommand.Media(action)
             }
         }
         return null
+    }
+
+    /** Whether every word is one a speech model glued on rather than meaning. */
+    private fun isFiller(text: String): Boolean {
+        val parts = text.split(' ').filter { it.isNotEmpty() }
+        return parts.isNotEmpty() && parts.all { it in MEDIA_FILLER }
     }
 
     /**
@@ -272,6 +298,18 @@ class CommandEngine(
 
         /** Words left over after the verb that are not part of a place name. */
         val FILLER_PREFIXES = setOf("to", "the", "a", "an")
+
+        /**
+         * Words that may surround a transport command without changing it.
+         *
+         * Short and closed on purpose. Anything not on this list is content,
+         * and content means the phrase is not a transport command however it
+         * happens to end.
+         */
+        val MEDIA_FILLER = setOf(
+            "please", "now", "the", "music", "song", "track", "it", "uh", "um",
+            "and", "ok", "okay", "just", "this",
+        )
 
         val NUMBER_WORDS = mapOf(
             "one" to 1, "two" to 2, "three" to 3, "four" to 4, "five" to 5,

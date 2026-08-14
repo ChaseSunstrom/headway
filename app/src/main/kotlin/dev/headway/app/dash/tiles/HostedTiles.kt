@@ -320,7 +320,13 @@ class WidgetTile(
             if (hook != null) {
                 hook(intent)
             } else {
-                startOnPhoneDisplay(context, intent, onStep)
+                // The phone's own screen, always. This is a *system consent
+                // dialog* the user has to approve, not app content meant for
+                // the car, and startOnPhoneDisplay now resolves to the
+                // simulated display when one is in use — where the dialog would
+                // appear on a half-size preview window that swallows touches
+                // for panning, i.e. nowhere the user can reach.
+                startOnUserDisplay(context, intent, onStep)
             }
             onStep("asked the user to allow Headway to host widgets")
         }
@@ -1140,6 +1146,29 @@ private fun messageView(context: Context, message: String): TextView {
  * @return false when the system refused the start, which is logged rather than
  *   thrown: one app that will not open must not take the dashboard with it.
  */
+/**
+ * Starts something the *user* has to interact with, on the screen in their hand.
+ *
+ * Separate from [startOnPhoneDisplay] because the two have opposite audiences.
+ * App content goes wherever the car is looking; a system consent dialog, a
+ * Settings page or a permission sheet goes to display 0, because that is the
+ * only display the person holding the phone can actually touch.
+ */
+internal fun startOnUserDisplay(
+    context: Context,
+    intent: Intent,
+    onStep: (String) -> Unit,
+): Boolean {
+    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val options = ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY)
+    val started = runCatching { context.startActivity(intent, options.toBundle()) }
+    started.exceptionOrNull()?.let { error ->
+        val what = intent.component?.flattenToShortString() ?: intent.action ?: "an activity"
+        onStep("could not start $what on the phone screen: $error")
+    }
+    return started.isSuccess
+}
+
 internal fun startOnPhoneDisplay(
     context: Context,
     intent: Intent,

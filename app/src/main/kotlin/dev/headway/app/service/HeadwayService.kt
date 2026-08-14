@@ -1301,8 +1301,20 @@ open class HeadwayService : Service() {
             CarLauncherActivity.intent(this, width, height, dpi)
         }
         val what = if (dashboard) "dashboard" else "launcher"
-        runCatching { startActivity(intent) }
-            .onSuccess { step("car $what shown on the mirrored screen") }
+        // Onto whichever display the car is actually being fed from. This
+        // branch runs only when the projection is the source, and with ADR
+        // 0008's switch on that projection is recording the simulated display —
+        // so starting the launcher on display 0 put Headway's own surface, "the
+        // default cast content", on a display nobody is capturing. The car
+        // showed an empty 720x480 rectangle with no way to tap anything, which
+        // looks exactly like a dead session despite frames flowing.
+        val target = dev.headway.app.video.CarAppDisplay.displayId
+        if (target != android.view.Display.DEFAULT_DISPLAY) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        }
+        val options = android.app.ActivityOptions.makeBasic().setLaunchDisplayId(target)
+        runCatching { startActivity(intent, options.toBundle()) }
+            .onSuccess { step("car $what shown on display #$target") }
             .onFailure { step("could not show the car $what: $it") }
     }
 

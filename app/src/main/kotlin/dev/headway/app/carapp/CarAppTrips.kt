@@ -70,7 +70,13 @@ object CarAppTrips {
         val destination = trip.destinationTravelEstimates.firstOrNull()
 
         val cue = step?.cue?.plain()
-        val road = step?.road?.plain() ?: trip.currentRoad?.plain()
+        // Deliberately no fallback to trip.currentRoad. Step.getRoad() is the
+        // road the manoeuvre leads *onto*; Trip.getCurrentRoad() is the one the
+        // car is already on. The composed instruction below reads "<do this> ·
+        // <that road>", so substituting one for the other produces "Turn right
+        // · Main Street" while the driver is on Main Street — an instruction
+        // that points at the wrong road, which is worse than no road at all.
+        val road = step?.road?.plain()
         val maneuver = step?.maneuver?.type?.let { describeManeuver(it) }
 
         // The instruction, in the order a driver reads it: what to do, then

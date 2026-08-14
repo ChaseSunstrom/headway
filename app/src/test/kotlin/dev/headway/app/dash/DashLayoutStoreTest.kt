@@ -375,6 +375,81 @@ class DashLayoutStoreTest {
         assertEquals(DashLayoutStore.DEFAULT_TABS, store.list())
     }
 
+    /**
+     * The primitives the tab editor's rename is built from.
+     *
+     * Rename used to be delete-then-save, which had two defects that only show
+     * up in sequence: `delete` clears the active pointer when it removes the
+     * active layout, and `save` appends an unrecognised name to the end. So a
+     * renamed tab jumped to the far right of the car's tab bar and, if the
+     * driver was on it, the next drive opened on the default tab instead. This
+     * pins the behaviour the fixed version relies on.
+     */
+    @Test
+    fun `delete clears the active pointer and save appends an unknown name`() {
+        val store = DashLayoutStore(FakeStorage())
+        store.replaceAll(DashLayoutStore.DEFAULT_TABS)
+        store.setActive("Maps")
+        assertEquals("Maps", store.active().name)
+
+        store.delete("Maps")
+        assertNotEquals(
+            "Maps",
+            store.active().name,
+            "delete must drop the pointer it invalidated",
+        )
+
+        store.save(DashLayout("Navigation", DashNode.Leaf(DashTile.Kind.MAPS)))
+        assertEquals(
+            "Navigation",
+            store.list().last().name,
+            "an unknown name goes to the end, which is why rename must not use save",
+        )
+    }
+
+    /**
+     * Replacing in place keeps the position, which is what rename needs.
+     */
+    @Test
+    fun `replaceAll can rename in place without moving the tab`() {
+        val store = DashLayoutStore(FakeStorage())
+        store.replaceAll(DashLayoutStore.DEFAULT_TABS)
+        store.setActive("Maps")
+
+        val updated = DashLayoutStore.DEFAULT_TABS.toMutableList()
+        updated[0] = DashLayout("Navigation", updated[0].root)
+        store.replaceAll(updated)
+        store.setActive("Navigation")
+
+        assertEquals("Navigation", store.list().first().name, "the tab moved")
+        assertEquals("Navigation", store.active().name, "the active tab was lost")
+        assertEquals(
+            DashLayoutStore.DEFAULT_TABS.size,
+            store.list().size,
+            "renaming changed the tab count",
+        )
+    }
+
+    /**
+     * Saving over an existing name is a merge, which is why rename must refuse
+     * it rather than call through.
+     */
+    @Test
+    fun `saving under a name already in use replaces that layout`() {
+        val store = DashLayoutStore(FakeStorage())
+        store.replaceAll(DashLayoutStore.DEFAULT_TABS)
+        val before = store.list().size
+
+        store.save(DashLayout("Maps", DashNode.Leaf(DashTile.Kind.PHONE)))
+
+        assertEquals(before, store.list().size, "save is keyed on the name")
+        assertEquals(
+            DashNode.Leaf(DashTile.Kind.PHONE),
+            store.list().first { it.name == "Maps" }.root,
+            "the existing Maps layout should have been overwritten in place",
+        )
+    }
+
     // --- the store's bookkeeping ---------------------------------------------
 
     @Test

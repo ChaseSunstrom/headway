@@ -276,6 +276,18 @@ object Phone {
         }
         private var action: TextView? = null
 
+        /**
+         * Keeps the remedy button on screen even when the row reads green.
+         *
+         * The default coupling — hide the button once the state is GOOD — is
+         * right for a row that is either granted or not. It is wrong for one
+         * that is partly granted: the phone-permission row went green, named
+         * the permission still missing, and hid the only button that could ask
+         * for it, leaving the user to find "Open Headway's system settings"
+         * further down the card and guess which toggle.
+         */
+        private var alwaysOfferAction: Boolean = false
+
         val view: LinearLayout = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -289,6 +301,13 @@ object Phone {
                 },
                 LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f),
             )
+        }
+
+        /** Keeps [withAction]'s button visible in every state. See the field. */
+        fun withPersistentAction(): StatusRow {
+            alwaysOfferAction = true
+            action?.visibility = View.VISIBLE
+            return this
         }
 
         /** Adds the remedy button. Called once, at build time. */
@@ -313,7 +332,8 @@ object Phone {
             stateView.setTextColor(
                 if (level == Level.GOOD) Headway.TEXT_MUTED else colourOf(level),
             )
-            action?.visibility = if (level == Level.GOOD) View.GONE else View.VISIBLE
+            action?.visibility =
+                if (level == Level.GOOD && !alwaysOfferAction) View.GONE else View.VISIBLE
         }
     }
 

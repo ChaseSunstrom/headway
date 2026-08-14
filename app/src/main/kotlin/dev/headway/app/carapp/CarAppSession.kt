@@ -226,6 +226,14 @@ class CarAppSession(
             appContext.bindService(intent, binding, Context.BIND_AUTO_CREATE)
         }
         if (started.getOrDefault(false) != true) {
+            // Unbind even though the bind "failed". ContextImpl registers the
+            // ServiceDispatcher in LoadedApk.mServices *before* it asks
+            // ActivityManager, so a false return still leaves a dispatcher
+            // holding a strong reference to this ServiceConnection and, through
+            // it, to this session. Clearing the field first would make close()
+            // unable to reach it, which is how a pinned app that has since been
+            // uninstalled leaks one session per start/stop cycle.
+            runCatching { appContext.unbindService(binding) }
             connection = null
             fail("could not bind ${app.label}: ${started.exceptionOrNull() ?: "refused"}")
             return
@@ -252,6 +260,12 @@ class CarAppSession(
         surfaceCallback = null
         surface?.release()
         surface = null
+
+        // Directly, not posted: main's queue was just emptied above, so a post
+        // would never run. The source check inside withdraw makes it a no-op
+        // when another app owns the current step, so closing a media app cannot
+        // clear a map app's route.
+        CarAppTrips.withdraw(app.packageName)
 
         if (running != null) {
             // Best effort and in order. An app that has already died throws
@@ -427,7 +441,28 @@ class CarAppSession(
         send("onStableAreaChanged") { callback.onStableAreaChanged(stable, NoopCallback) }
     }
 
-    /** The surface is going away; the app must stop drawing before it does. */
+    /**
+     * The surface is going away, and the app must stop drawing before it does.
+     *
+     * ## Why this blocks
+     *
+     * `SurfaceHolder.Callback.surfaceDestroyed` is a contract: the platform
+     * releases the underlying buffer queue as soon as it returns, and the client
+     * must have stopped touching the surface by then. But every
+     * `ISurfaceCallback` method is declared `oneway`, and the library's own stub
+     * then *posts* `onSurfaceDestroyed` to the app's main thread. So the plain
+     * fire-and-forget version returned long before the app had even dequeued the
+     * callback, let alone stopped its render thread — and the app's next
+     * `lockCanvas` hit a released queue and threw `IllegalArgumentException` on
+     * its own main thread, a crash in somebody else's process caused by Headway.
+     *
+     * The acknowledgement closes that window. It is bounded rather than
+     * unconditional because an app that is already wedged must not take the car
+     * screen down with it; on timeout Headway proceeds and the app gets the old
+     * behaviour, which is the worst case rather than the normal one.
+     *
+     * @return once the app has acknowledged, or after [SURFACE_ACK_MILLIS].
+     */
     fun surfaceGone() {
         val callback = surfaceCallback
         val handle = surface
@@ -442,7 +477,26 @@ class CarAppSession(
             )
         }.getOrNull()
         if (container != null) {
-            send("onSurfaceDestroyed") { callback.onSurfaceDestroyed(container, NoopCallback) }
+            val acknowledged = java.util.concurrent.CountDownLatch(1)
+            // A bare stub, not callback(): that one hops to the main thread,
+            // and this is called *from* the main thread inside
+            // surfaceDestroyed, so waiting on a main-thread post would
+            // deadlock until the timeout every single time.
+            val ack = object : IOnDoneCallback.Stub() {
+                override fun onSuccess(response: Bundleable?) = acknowledged.countDown()
+                override fun onFailure(response: Bundleable?) = acknowledged.countDown()
+            }
+            send("onSurfaceDestroyed") { callback.onSurfaceDestroyed(container, ack) }
+            val settled = runCatching {
+                acknowledged.await(SURFACE_ACK_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            }.getOrDefault(false)
+            if (!settled) {
+                SessionLog.shared.warn(
+                    TAG,
+                    "${app.packageName} did not acknowledge onSurfaceDestroyed in " +
+                        "${SURFACE_ACK_MILLIS}ms; releasing anyway",
+                )
+            }
         }
         handle.release()
     }
@@ -587,7 +641,14 @@ class CarAppSession(
         }
 
         override fun navigationEnded() {
-            main.post { onStep("car app: ${app.label} stopped navigating") }
+            main.post {
+                if (closed) return@post
+                onStep("car app: ${app.label} stopped navigating")
+                // Without this nothing ever ends a structured trip, and the
+                // last maneuver stays pinned to the Maps pane — and to the
+                // head unit's cluster — for the rest of the drive.
+                CarAppTrips.withdraw(app.packageName)
+            }
         }
 
         /**
@@ -633,12 +694,22 @@ class CarAppSession(
      */
     private fun callback(what: String, onDone: (Any?) -> Unit): IOnDoneCallback {
         val issued = generation
-        // Every step gets its own deadline, armed here rather than at each call
-        // site. An app that binds and then stops answering produces no callback
-        // at all -- the same silent stall the media browser had -- and only the
-        // first step was guarded when the deadline was armed by hand. This runs
-        // before the binder call because the callback is constructed first.
-        armWatchdog(STEP_TIMEOUT_MILLIS, "${app.label} did not answer $what")
+        // Every *handshake* step gets its own deadline, armed here rather than
+        // at each call site: an app that binds and then stops answering
+        // produces no callback at all, which is the silent stall the media
+        // browser was rewritten to avoid, and only the first step was guarded
+        // when the deadline was armed by hand.
+        //
+        // Deliberately not once a template is on screen. A redraw shares this
+        // path, and publishing TIMED_OUT for a late one tears the pane down to
+        // "did not answer" *and* releases the map surface — so a five-second GC
+        // pause in a navigating app cost the driver their map and forced the
+        // app to rebuild its whole renderer against a fresh Surface when the
+        // reply arrived a moment later. A slow redraw is a hiccup; the previous
+        // screen staying up is the right thing to do about it.
+        if (state != HostState.RUNNING) {
+            armWatchdog(STEP_TIMEOUT_MILLIS, "${app.label} did not answer $what")
+        }
         return object : IOnDoneCallback.Stub() {
             override fun onSuccess(response: Bundleable?) {
                 val payload = response?.let { runCatching { it.get() }.getOrNull() }
@@ -789,6 +860,15 @@ class CarAppSession(
          * it may be waiting on the app's process to start at all.
          */
         const val STEP_TIMEOUT_MILLIS = 5_000L
+
+        /**
+         * How long [surfaceGone] blocks for the app to stop drawing.
+         *
+         * A quarter of a second: long enough for a binder round trip and one
+         * main-thread hop in a healthy app, short enough that a wedged one does
+         * not visibly stall the car screen on the way out.
+         */
+        const val SURFACE_ACK_MILLIS = 250L
 
         /** The token every watchdog is posted under, so one cancels the last. */
         private val WATCHDOG = Any()
