@@ -51,6 +51,11 @@ include(":headunit-emulator")
 // Android so the whole voice pipeline is executable in CI with a real model.
 include(":core-voice")
 
+// Pure JVM: what the car screen decides before it draws -- layouts, panes,
+// palettes and the arithmetic that puts an app's picture inside a pane. Off
+// Android so every one of those rules is executable in CI. See ADR 0010.
+include(":core-dash")
+
 // --- Android modules --------------------------------------------------------
 // Added to the build as each lands with real content, so that every commit
 // configures and every commit's tests run.
