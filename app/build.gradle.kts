@@ -301,6 +301,7 @@ dependencies {
     implementation(project(":core-input"))
     implementation(project(":core-audio"))
     implementation(project(":core-voice"))
+    implementation(project(":core-dash"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

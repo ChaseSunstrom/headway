@@ -112,6 +112,23 @@ class TouchTransform(
     val carHeight: Int,
     val phoneWidth: Int,
     val phoneHeight: Int,
+    /**
+     * Where the target's picture actually sits inside the car frame, when that
+     * is not "centred, as large as it will go".
+     *
+     * ## Why this exists
+     *
+     * Since ADR 0010 an app's picture is not the whole car screen: it is one
+     * *pane* of a dashboard, at whatever rectangle the driver's layout gives it.
+     * The centred aspect-fit this class computes for itself is exactly right for
+     * a full-screen mirror and exactly wrong for a pane in the corner — every
+     * touch would be offset by the pane's position and scaled by its size, with
+     * no error anywhere, which is the failure mode that is hardest to see.
+     *
+     * Null keeps the original behaviour, so the full-screen path is unchanged
+     * and unaffected.
+     */
+    explicitContent: CarRect? = null,
 ) {
     init {
         require(carWidth > 0 && carHeight > 0) { "car size must be positive: ${carWidth}x$carHeight" }
@@ -120,14 +137,11 @@ class TouchTransform(
         }
     }
 
-    /** Uniform scale from phone pixels to car pixels. Less than 1 when the phone is the larger surface. */
-    val scale: Double =
-        minOf(carWidth.toDouble() / phoneWidth, carHeight.toDouble() / phoneHeight)
-
-    /** Where the mirrored phone screen sits inside the car's frame. */
-    val contentRect: CarRect = run {
-        val width = phoneWidth * scale
-        val height = phoneHeight * scale
+    /** Where the target's picture sits inside the car's frame. */
+    val contentRect: CarRect = explicitContent ?: run {
+        val fit = minOf(carWidth.toDouble() / phoneWidth, carHeight.toDouble() / phoneHeight)
+        val width = phoneWidth * fit
+        val height = phoneHeight * fit
         CarRect(
             left = (carWidth - width) / 2.0,
             top = (carHeight - height) / 2.0,
@@ -135,6 +149,18 @@ class TouchTransform(
             height = height,
         )
     }
+
+    /**
+     * Uniform scale from target pixels to car pixels. Less than 1 when the
+     * target is the larger surface.
+     *
+     * Derived from [contentRect] rather than the other way round, so that an
+     * explicit rectangle and the computed one cannot disagree. A caller that
+     * supplies a rectangle whose aspect does not match the target is asking for
+     * a non-uniform scale, which this class does not do: the width decides, and
+     * the height comes out of the same number.
+     */
+    val scale: Double = contentRect.width / phoneWidth
 
     /** True when the bars run down the left and right sides (a portrait phone on a landscape screen). */
     val pillarboxed: Boolean get() = contentRect.left > BAR_EPSILON

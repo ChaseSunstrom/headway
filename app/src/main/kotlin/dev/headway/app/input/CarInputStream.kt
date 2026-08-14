@@ -23,9 +23,11 @@ import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaC
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.view.WindowManager
+import dev.headway.app.video.AppPaneHost
+import dev.headway.app.video.CarAppDisplay
+import dev.headway.dash.PaneRect
 import dev.headway.input.CarGesture
 import dev.headway.input.GestureBuilder
-import dev.headway.app.video.CarAppDisplay
 import dev.headway.input.GestureConfig
 import dev.headway.protocol.channel.CarInputEvent
 import dev.headway.protocol.channel.InputChannel
@@ -33,19 +35,20 @@ import dev.headway.protocol.channel.InputChannelException
 import dev.headway.protocol.channel.InputChannelMessage
 import dev.headway.protocol.channel.InputKeyCodes
 import dev.headway.protocol.channel.TouchSurface
+import dev.headway.protocol.channel.CarRect
 import dev.headway.protocol.channel.TouchTransform
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.MessageChannel
 import dev.headway.protocol.session.HeadUnitProfile
 import dev.headway.video.VideoResolution
+import java.io.EOFException
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.io.EOFException
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Everything between "the driver touched the car's screen" and "the phone
@@ -474,7 +477,7 @@ class CarInputStream(
             )
         }
 
-        val mapped = transform.map(touch)
+        val mapped = activeTransform().map(touch)
         if (mapped == null) {
             // A touch in the bar, or a lift with nothing left to deliver. Counted
             // rather than logged: a palm on the blank strip would otherwise fill
@@ -486,6 +489,53 @@ class CarInputStream(
         val gesture = builder.accept(mapped) ?: return
         submit(gesture)
     }
+
+    /**
+     * The transform in force for this touch.
+     *
+     * Two shapes, and which one applies changes as the driver rearranges the
+     * dashboard. When an app pane holds a picture, the app occupies *that
+     * rectangle* of the car screen and the map is car frame -> pane -> app
+     * display. When none does, the session is on the fallback path where the car
+     * shows a raw capture of the phone, and the map is the whole-screen one
+     * built at [Companion.of].
+     *
+     * Memoised on the published rectangle, because a divider drag changes it
+     * sixty times a second and building a `TouchTransform` per touch would
+     * allocate on the input path for no reason. The rectangle is published by
+     * the shell whenever the view tree settles — see `AppPaneHost.pictureRect`.
+     */
+    private fun activeTransform(): TouchTransform {
+        val rect = AppPaneHost.pictureRect
+        if (rect.width <= 0 || rect.height <= 0) return transform
+        val cached = paneTransform
+        if (cached != null && paneRect == rect) return cached
+        val sourceWidth = AppPaneHost.sourceWidth
+        val sourceHeight = AppPaneHost.sourceHeight
+        if (sourceWidth <= 0 || sourceHeight <= 0) return transform
+        val built = runCatching {
+            TouchTransform(
+                carWidth = transform.carWidth,
+                carHeight = transform.carHeight,
+                phoneWidth = sourceWidth,
+                phoneHeight = sourceHeight,
+                explicitContent = CarRect(
+                    left = rect.left.toDouble(),
+                    top = rect.top.toDouble(),
+                    width = rect.width.toDouble(),
+                    height = rect.height.toDouble(),
+                ),
+            )
+        }.getOrNull() ?: return transform
+        paneRect = rect
+        paneTransform = built
+        onStep("input: touches inside the app pane map $rect -> ${sourceWidth}x$sourceHeight")
+        return built
+    }
+
+    /** The rectangle [paneTransform] was built for. */
+    private var paneRect: PaneRect? = null
+    private var paneTransform: TouchTransform? = null
 
     private fun submit(gesture: CarGesture) {
         // Re-read every time: an unbind between two touches is normal (the user

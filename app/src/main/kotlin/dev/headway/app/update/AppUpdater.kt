@@ -22,13 +22,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import dev.headway.app.BuildConfig
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Raised when an update cannot be fetched or handed to the installer. */
 class UpdateException(message: String, cause: Throwable? = null) :

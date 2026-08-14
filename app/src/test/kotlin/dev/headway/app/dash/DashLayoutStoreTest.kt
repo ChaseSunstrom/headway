@@ -17,6 +17,9 @@
 
 package dev.headway.app.dash
 
+import dev.headway.dash.DashLayout
+import dev.headway.dash.DashNode
+import dev.headway.dash.PaneKind
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
@@ -58,31 +61,39 @@ class DashLayoutStoreTest {
     // --- the shipped default -------------------------------------------------
 
     @Test
-    fun `the default is a library beside now-playing stacked over the app grid`() {
+    fun `the default is the app grid beside a clock stacked over now-playing`() {
         val root = DashLayoutStore.DEFAULT.root as? DashNode.Split
             ?: error("the default must divide the screen")
 
         assertEquals(DashNode.Orientation.HORIZONTAL, root.orientation)
-        assertEquals(DashNode.Leaf(DashTile.Kind.BROWSE), root.first)
+        assertEquals(DashNode.Leaf(PaneKind.LAUNCHER), root.first)
 
         val column = root.second as? DashNode.Split
             ?: error("the second pane must be the stacked column")
 
         assertEquals(DashNode.Orientation.VERTICAL, column.orientation)
-        assertEquals(DashNode.Leaf(DashTile.Kind.NOW_PLAYING), column.first)
-        assertEquals(DashNode.Leaf(DashTile.Kind.LAUNCHER), column.second)
+        assertEquals(DashNode.Leaf(PaneKind.CLOCK), column.first)
+        assertEquals(DashNode.Leaf(PaneKind.NOW_PLAYING), column.second)
 
-        // No mirror pane at all. ADR 0006 made mirroring a mode rather than a
-        // pane: the dashboard is drawn on a display of its own at the car's
-        // resolution, and no other app's window can be placed on it, so a hole
-        // through to the phone screen is not a thing that can exist there. A
-        // default still asking for one would render as the app grid via
-        // DashboardPresentation's substitution -- correct, but by accident.
+        // No legacy mirror pane. It meant "a hole through which the whole
+        // mirrored phone screen shows", which the drawn dashboard cannot make;
+        // ADR 0010 replaced it with an app pane that hosts a real app inside
+        // itself. A shipped default still naming the old kind would resolve to
+        // an app pane through PaneKind.canonical -- correct, but by accident.
         assertEquals(
             0,
-            DashLayoutStore.DEFAULT.leaves().count { it.kind == DashTile.Kind.MIRROR },
-            "the shipped default must not ask for a hole the drawn dashboard cannot make",
+            DashLayoutStore.DEFAULT.leaves().count { it.kind == PaneKind.LEGACY_MIRROR },
+            "the shipped default must not name a pane kind that only exists for old files",
         )
+    }
+
+    @Test
+    fun `exactly one shipped layout is an app pane, and it is the one apps open into`() {
+        val appLayouts = DashLayoutStore.DEFAULT_TABS.filter { layout ->
+            layout.leaves().any { PaneKind.isApp(it.kind) }
+        }
+        assertEquals(1, appLayouts.size, "apps need somewhere to go, and only one somewhere")
+        assertEquals(DashLayoutStore.APP_LAYOUT_NAME, appLayouts.single().name)
     }
 
     @Test
@@ -107,7 +118,7 @@ class DashLayoutStoreTest {
 
     @Test
     fun `a nested tree survives encodeAll and decodeAll unchanged`() {
-        val layouts = listOf(sample(), DashLayout("Second", DashNode.Leaf(DashTile.Kind.CLOCK)))
+        val layouts = listOf(sample(), DashLayout("Second", DashNode.Leaf(PaneKind.CLOCK)))
 
         val decoded = DashLayout.decodeAll(DashLayout.encodeAll(layouts))
 
@@ -135,16 +146,16 @@ class DashLayoutStoreTest {
 
         val after = before.withRatio(PATH_INNER, 0.25f)
 
-        assertEquals(0.25f, after.splitAt(PATH_INNER).ratio, "the addressed divider did not move")
-        assertEquals(before.splitAt(emptyList()).ratio, after.splitAt(emptyList()).ratio, "the root moved")
+        assertEquals(0.25f, after.splitNodeAt(PATH_INNER).ratio, "the addressed divider did not move")
+        assertEquals(before.splitNodeAt(emptyList()).ratio, after.splitNodeAt(emptyList()).ratio, "the root moved")
         assertEquals(
-            before.splitAt(PATH_LEFT).ratio,
-            after.splitAt(PATH_LEFT).ratio,
+            before.splitNodeAt(PATH_LEFT).ratio,
+            after.splitNodeAt(PATH_LEFT).ratio,
             "the left column moved",
         )
         assertEquals(
-            before.splitAt(PATH_RIGHT).ratio,
-            after.splitAt(PATH_RIGHT).ratio,
+            before.splitNodeAt(PATH_RIGHT).ratio,
+            after.splitNodeAt(PATH_RIGHT).ratio,
             "the right column moved",
         )
         // Structure and content are untouched; only one number changed.
@@ -157,8 +168,8 @@ class DashLayoutStoreTest {
         // below cannot pass by coincidence.
         val after = sample().withRatio(emptyList(), 0.45f)
 
-        assertEquals(0.45f, after.splitAt(emptyList()).ratio)
-        assertEquals(sample().splitAt(PATH_INNER).ratio, after.splitAt(PATH_INNER).ratio)
+        assertEquals(0.45f, after.splitNodeAt(emptyList()).ratio)
+        assertEquals(sample().splitNodeAt(PATH_INNER).ratio, after.splitNodeAt(PATH_INNER).ratio)
     }
 
     @Test
@@ -181,35 +192,35 @@ class DashLayoutStoreTest {
 
         assertEquals(
             DashNode.MIN_RATIO,
-            layout.withRatio(PATH_INNER, 0f).splitAt(PATH_INNER).ratio,
+            layout.withRatio(PATH_INNER, 0f).splitNodeAt(PATH_INNER).ratio,
             "a divider dragged to the left edge must pin at the minimum",
         )
         assertEquals(
             DashNode.MAX_RATIO,
-            layout.withRatio(PATH_INNER, 1f).splitAt(PATH_INNER).ratio,
+            layout.withRatio(PATH_INNER, 1f).splitNodeAt(PATH_INNER).ratio,
             "a divider dragged to the right edge must pin at the maximum",
         )
         // A gesture that overshoots the widget, which is the case the clamp
         // exists for -- a fling does not stop at the edge of the view.
         assertEquals(
             DashNode.MIN_RATIO,
-            layout.withRatio(PATH_INNER, -4f).splitAt(PATH_INNER).ratio,
+            layout.withRatio(PATH_INNER, -4f).splitNodeAt(PATH_INNER).ratio,
         )
         assertEquals(
             DashNode.MAX_RATIO,
-            layout.withRatio(PATH_INNER, 9f).splitAt(PATH_INNER).ratio,
+            layout.withRatio(PATH_INNER, 9f).splitNodeAt(PATH_INNER).ratio,
         )
         // Exactly on the bound is inside it, not outside.
         assertEquals(
             DashNode.MIN_RATIO,
-            layout.withRatio(PATH_INNER, DashNode.MIN_RATIO).splitAt(PATH_INNER).ratio,
+            layout.withRatio(PATH_INNER, DashNode.MIN_RATIO).splitNodeAt(PATH_INNER).ratio,
         )
         assertEquals(
             DashNode.MAX_RATIO,
-            layout.withRatio(PATH_INNER, DashNode.MAX_RATIO).splitAt(PATH_INNER).ratio,
+            layout.withRatio(PATH_INNER, DashNode.MAX_RATIO).splitNodeAt(PATH_INNER).ratio,
         )
         // And a legal value is passed through untouched.
-        assertEquals(0.5f, layout.withRatio(PATH_INNER, 0.5f).splitAt(PATH_INNER).ratio)
+        assertEquals(0.5f, layout.withRatio(PATH_INNER, 0.5f).splitNodeAt(PATH_INNER).ratio)
     }
 
     @Test
@@ -224,13 +235,13 @@ class DashLayoutStoreTest {
             root = DashNode.Split(
                 orientation = DashNode.Orientation.HORIZONTAL,
                 ratio = 0.99f,
-                first = DashNode.Leaf(DashTile.Kind.MIRROR),
-                second = DashNode.Leaf(DashTile.Kind.CLOCK),
+                first = DashNode.Leaf(PaneKind.LEGACY_MIRROR),
+                second = DashNode.Leaf(PaneKind.CLOCK),
             ),
         )
 
         val decoded = DashLayout.decodeAll(DashLayout.encodeAll(listOf(extreme))).single()
-        val split = decoded.splitAt(emptyList())
+        val split = decoded.splitNodeAt(emptyList())
 
         assertEquals(0.99f, split.ratio, "the stored value was rewritten on load")
         assertEquals(DashNode.MAX_RATIO, split.clampedRatio, "the render-time guard did not clamp")
@@ -298,7 +309,7 @@ class DashLayoutStoreTest {
         tabs.forEach { tab ->
             kinds(tab.root).forEach { kind ->
                 assertTrue(
-                    kind in DashTile.Kind.ALL,
+                    kind in PaneKind.ALL,
                     "the ${tab.name} tab asks for '$kind', which no factory builds",
                 )
             }
@@ -399,7 +410,7 @@ class DashLayoutStoreTest {
             "delete must drop the pointer it invalidated",
         )
 
-        store.save(DashLayout("Navigation", DashNode.Leaf(DashTile.Kind.MAPS)))
+        store.save(DashLayout("Navigation", DashNode.Leaf(PaneKind.MAPS)))
         assertEquals(
             "Navigation",
             store.list().last().name,
@@ -440,11 +451,11 @@ class DashLayoutStoreTest {
         store.replaceAll(DashLayoutStore.DEFAULT_TABS)
         val before = store.list().size
 
-        store.save(DashLayout("Maps", DashNode.Leaf(DashTile.Kind.PHONE)))
+        store.save(DashLayout("Maps", DashNode.Leaf(PaneKind.PHONE)))
 
         assertEquals(before, store.list().size, "save is keyed on the name")
         assertEquals(
-            DashNode.Leaf(DashTile.Kind.PHONE),
+            DashNode.Leaf(PaneKind.PHONE),
             store.list().first { it.name == "Maps" }.root,
             "the existing Maps layout should have been overwritten in place",
         )
@@ -484,8 +495,8 @@ class DashLayoutStoreTest {
     @Test
     fun `save replaces by name and keeps the entry where it was`() {
         val store = DashLayoutStore(FakeStorage())
-        val first = DashLayout("First", DashNode.Leaf(DashTile.Kind.CLOCK))
-        val last = DashLayout("Last", DashNode.Leaf(DashTile.Kind.LAUNCHER))
+        val first = DashLayout("First", DashNode.Leaf(PaneKind.CLOCK))
+        val last = DashLayout("Last", DashNode.Leaf(PaneKind.LAUNCHER))
         store.save(first)
         store.save(sample())
         store.save(last)
@@ -500,8 +511,8 @@ class DashLayoutStoreTest {
     @Test
     fun `setActive selects a saved layout and an unknown name falls back`() {
         val store = DashLayoutStore(FakeStorage())
-        val first = DashLayout("First", DashNode.Leaf(DashTile.Kind.CLOCK))
-        val second = DashLayout("Second", DashNode.Leaf(DashTile.Kind.LAUNCHER))
+        val first = DashLayout("First", DashNode.Leaf(PaneKind.CLOCK))
+        val second = DashLayout("Second", DashNode.Leaf(PaneKind.LAUNCHER))
         store.save(first)
         store.save(second)
 
@@ -512,7 +523,7 @@ class DashLayoutStoreTest {
         // the layout arrives, and then picks it up.
         store.setActive("Third")
         assertEquals(first, store.active(), "an unknown name must fall back to the first saved layout")
-        val third = DashLayout("Third", DashNode.Leaf(DashTile.Kind.MESSAGES))
+        val third = DashLayout("Third", DashNode.Leaf(PaneKind.MESSAGES))
         store.save(third)
         assertEquals(third, store.active())
     }
@@ -521,7 +532,7 @@ class DashLayoutStoreTest {
     fun `delete forgets the layout and the pointer to it`() {
         val storage = FakeStorage()
         val store = DashLayoutStore(storage)
-        val keep = DashLayout("Keep", DashNode.Leaf(DashTile.Kind.CLOCK))
+        val keep = DashLayout("Keep", DashNode.Leaf(PaneKind.CLOCK))
         store.save(keep)
         store.save(sample())
         store.setActive(sample().name)
@@ -536,7 +547,7 @@ class DashLayoutStoreTest {
         )
 
         // Reusing the name must not silently make the new layout active.
-        val reused = DashLayout(sample().name, DashNode.Leaf(DashTile.Kind.WIDGET, WIDGET_ID))
+        val reused = DashLayout(sample().name, DashNode.Leaf(PaneKind.WIDGET, WIDGET_ID))
         store.save(reused)
         assertEquals(keep, store.active())
     }
@@ -584,18 +595,18 @@ class DashLayoutStoreTest {
             first = DashNode.Split(
                 orientation = DashNode.Orientation.VERTICAL,
                 ratio = 0.30f,
-                first = DashNode.Leaf(DashTile.Kind.CLOCK),
-                second = DashNode.Leaf(DashTile.Kind.LAUNCHER),
+                first = DashNode.Leaf(PaneKind.CLOCK),
+                second = DashNode.Leaf(PaneKind.LAUNCHER),
             ),
             second = DashNode.Split(
                 orientation = DashNode.Orientation.VERTICAL,
                 ratio = 0.70f,
-                first = DashNode.Leaf(DashTile.Kind.NOW_PLAYING),
+                first = DashNode.Leaf(PaneKind.NOW_PLAYING),
                 second = DashNode.Split(
                     orientation = DashNode.Orientation.HORIZONTAL,
                     ratio = 0.40f,
-                    first = DashNode.Leaf(DashTile.Kind.MESSAGES),
-                    second = DashNode.Leaf(DashTile.Kind.WIDGET, WIDGET_ID),
+                    first = DashNode.Leaf(PaneKind.MESSAGES),
+                    second = DashNode.Leaf(PaneKind.WIDGET, WIDGET_ID),
                 ),
             ),
         ),
@@ -609,7 +620,7 @@ class DashLayoutStoreTest {
      * navigated with the code under test would agree with it about a wrong
      * answer.
      */
-    private fun DashLayout.splitAt(path: List<Boolean>): DashNode.Split {
+    private fun DashLayout.splitNodeAt(path: List<Boolean>): DashNode.Split {
         var node: DashNode = root
         path.forEach { goSecond ->
             val split = node as? DashNode.Split ?: error("no divider along $path")

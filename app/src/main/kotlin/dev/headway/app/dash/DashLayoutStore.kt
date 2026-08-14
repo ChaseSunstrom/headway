@@ -18,9 +18,14 @@
 package dev.headway.app.dash
 
 import android.content.Context
-import java.util.concurrent.CopyOnWriteArrayList
 import android.content.SharedPreferences
 import dev.headway.app.ui.HeadwaySettings
+import dev.headway.dash.DashLayout
+import dev.headway.dash.Rail
+import dev.headway.dash.RailItem
+import dev.headway.dash.DashNode
+import dev.headway.dash.PaneKind
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * The dashboards the driver has saved, and which one is on the car screen.
@@ -74,7 +79,15 @@ class DashLayoutStore(private val storage: Storage) {
      * have to know.
      */
     fun interface Listener {
-        fun onLayoutsChanged()
+        /**
+         * @param source whatever the writer passed to [Companion.announceChanged],
+         *   so a listener can recognise its own edit and not rebuild itself in
+         *   response to it. The car shell both writes layouts and draws them;
+         *   without this it would tear down and re-inflate every pane — dropping
+         *   a live car-app session and a media browser mid-list — on each nudge
+         *   of a divider.
+         */
+        fun onLayoutsChanged(source: Any?)
     }
 
     /**
@@ -94,10 +107,10 @@ class DashLayoutStore(private val storage: Storage) {
      * because a name went stale is a black screen in a moving car.
      *
      * The middle step is why [DEFAULT] is consulted by name rather than the
-     * first tab simply being taken. Since the shipped set became five tabs its
-     * first entry is Maps, and a driver who has never chosen would land on a
-     * pane reading "No route running" — technically correct and a poor thing for
-     * a car to open on. Media is the tab with something to show on every drive.
+     * first tab simply being taken: the shipped set can be reordered by a later
+     * build, and "wherever the driver left off, else the one we call the
+     * default, else whatever exists" is the only ordering of those fallbacks
+     * that never opens on an empty pane.
      */
     fun active(): DashLayout {
         val all = list()
@@ -182,6 +195,32 @@ class DashLayoutStore(private val storage: Storage) {
         storage.write(mapOf(KEY_ACTIVE_LAYOUT to name))
     }
 
+    /**
+     * The rail: what the driver pinned across the top of the car screen, in
+     * their order.
+     *
+     * Seeded from the layouts they have rather than left empty, because an empty
+     * rail is a car screen with two buttons on it and no way to reach the second
+     * layout. Pruned on the way out, so a pin naming a layout they deleted is
+     * gone rather than dead — see `Rail.prune`; the caller supplies the set of
+     * installed packages because this class has no `PackageManager`.
+     */
+    fun rail(installedPackages: Set<String>): List<RailItem> {
+        val stored = Rail.decodeAll(runCatching { storage.read(KEY_RAIL) }.getOrNull())
+        val names = list().map { it.name }
+        val pruned = Rail.prune(stored, names.toSet(), installedPackages)
+        return pruned.ifEmpty { Rail.seed(names) }
+    }
+
+    /** Records the rail exactly as given, order included. */
+    fun setRail(items: List<RailItem>) {
+        storage.write(mapOf(KEY_RAIL to Rail.encodeAll(items)))
+    }
+
+    /** Whether the driver has arranged a rail of their own. */
+    fun hasRail(): Boolean =
+        Rail.decodeAll(runCatching { storage.read(KEY_RAIL) }.getOrNull()).isNotEmpty()
+
     /** The name recorded by [setActive], or null if there is none or it is unreadable. */
     private fun activeName(): String? = runCatching { storage.read(KEY_ACTIVE_LAYOUT) }.getOrNull()
 
@@ -221,8 +260,11 @@ class DashLayoutStore(private val storage: Storage) {
         /** The name of the layout to show. */
         const val KEY_ACTIVE_LAYOUT: String = "dash_active_layout"
 
+        /** The pinned rail; see `Rail.encodeAll`. */
+        const val KEY_RAIL: String = HeadwaySettings.KEY_RAIL
+
         /** The tab a fresh install lands on. */
-        const val DEFAULT_NAME: String = "Media"
+        const val DEFAULT_NAME: String = "Home"
 
         /**
          * Width given to the browse pane in the Media tab.
@@ -263,23 +305,23 @@ class DashLayoutStore(private val storage: Storage) {
          * already keeps *named* layouts and an active name, so a tab is a
          * layout and the tab bar is a picker over [list].
          *
-         * ## Why these six
+         * ## Why these five
          *
-         * They are the destinations a car has. Maps and Media are where the
-         * driver spends the drive; Phone and Messages are what a car is
-         * legally allowed to help with; Car apps is every third-party app that
-         * publishes a car interface, drawn by Headway rather than mirrored; and
-         * Apps is the door to anything none of the others model, including
-         * full-screen mirroring.
+         * They are the destinations a car has, and each one is a *layout* the
+         * driver can edit, rename, unpin or throw away — not a fixture. The
+         * shipped set is an opening offer.
          *
          * ```
-         * Maps      one pane, the map, full width
-         * Media     library ∥ (now playing / apps)
-         * Phone     recent calls ∥ now playing
-         * Car apps  the template host, full width
-         * Messages  conversations, full width
-         * Apps      the grid, full width
+         * Home    the app grid ∥ (clock / now playing)
+         * Drive   the map ∥ (now playing / messages)
+         * Media   library ∥ (now playing / apps)
+         * Phone   recent calls ∥ now playing
+         * App     one pane, an app in it, full width
          * ```
+         *
+         * `App` is the one that would not have been possible before ADR 0010:
+         * its single pane hosts a real third-party app's own rendering, which
+         * is where a tap on the rail or in the grid now sends one.
          *
          * ## Why this is never written to storage
          *
@@ -293,20 +335,44 @@ class DashLayoutStore(private val storage: Storage) {
          */
         val DEFAULT_TABS: List<DashLayout> = listOf(
             DashLayout(
-                name = "Maps",
-                root = DashNode.Leaf(DashTile.Kind.MAPS),
-            ),
-            DashLayout(
                 name = DEFAULT_NAME,
                 root = DashNode.Split(
                     orientation = DashNode.Orientation.HORIZONTAL,
-                    ratio = DEFAULT_BROWSE_SHARE,
-                    first = DashNode.Leaf(DashTile.Kind.BROWSE),
+                    ratio = 0.58f,
+                    first = DashNode.Leaf(PaneKind.LAUNCHER),
+                    second = DashNode.Split(
+                        orientation = DashNode.Orientation.VERTICAL,
+                        ratio = 0.42f,
+                        first = DashNode.Leaf(PaneKind.CLOCK),
+                        second = DashNode.Leaf(PaneKind.NOW_PLAYING),
+                    ),
+                ),
+            ),
+            DashLayout(
+                name = "Drive",
+                root = DashNode.Split(
+                    orientation = DashNode.Orientation.HORIZONTAL,
+                    ratio = 0.62f,
+                    first = DashNode.Leaf(PaneKind.MAPS),
                     second = DashNode.Split(
                         orientation = DashNode.Orientation.VERTICAL,
                         ratio = DEFAULT_NOW_PLAYING_SHARE,
-                        first = DashNode.Leaf(DashTile.Kind.NOW_PLAYING),
-                        second = DashNode.Leaf(DashTile.Kind.LAUNCHER),
+                        first = DashNode.Leaf(PaneKind.NOW_PLAYING),
+                        second = DashNode.Leaf(PaneKind.MESSAGES),
+                    ),
+                ),
+            ),
+            DashLayout(
+                name = "Media",
+                root = DashNode.Split(
+                    orientation = DashNode.Orientation.HORIZONTAL,
+                    ratio = DEFAULT_BROWSE_SHARE,
+                    first = DashNode.Leaf(PaneKind.BROWSE),
+                    second = DashNode.Split(
+                        orientation = DashNode.Orientation.VERTICAL,
+                        ratio = DEFAULT_NOW_PLAYING_SHARE,
+                        first = DashNode.Leaf(PaneKind.NOW_PLAYING),
+                        second = DashNode.Leaf(PaneKind.LAUNCHER),
                     ),
                 ),
             ),
@@ -315,23 +381,24 @@ class DashLayoutStore(private val storage: Storage) {
                 root = DashNode.Split(
                     orientation = DashNode.Orientation.HORIZONTAL,
                     ratio = 0.55f,
-                    first = DashNode.Leaf(DashTile.Kind.PHONE),
-                    second = DashNode.Leaf(DashTile.Kind.NOW_PLAYING),
+                    first = DashNode.Leaf(PaneKind.PHONE),
+                    second = DashNode.Leaf(PaneKind.NOW_PLAYING),
                 ),
             ),
             DashLayout(
-                name = "Car apps",
-                root = DashNode.Leaf(DashTile.Kind.CAR_APP),
-            ),
-            DashLayout(
-                name = "Messages",
-                root = DashNode.Leaf(DashTile.Kind.MESSAGES),
-            ),
-            DashLayout(
-                name = "Apps",
-                root = DashNode.Leaf(DashTile.Kind.LAUNCHER),
+                name = APP_LAYOUT_NAME,
+                root = DashNode.Leaf(PaneKind.APP),
             ),
         )
+
+        /**
+         * The layout an app opens into when the one on screen has no app pane.
+         *
+         * One pane, the whole screen, the app in it. It is what "full screen"
+         * means now that there is no full-screen *mode* — a layout like any
+         * other, which the driver can rename, re-split or unpin.
+         */
+        const val APP_LAYOUT_NAME: String = "App"
 
         /** The tab shown when nothing else is chosen. */
         val DEFAULT: DashLayout = DEFAULT_TABS.first { it.name == DEFAULT_NAME }
@@ -362,9 +429,14 @@ class DashLayoutStore(private val storage: Storage) {
             listeners.remove(listener)
         }
 
-        /** Called by the tab editor after any change the car should see. */
-        fun announceChanged() {
-            listeners.forEach { runCatching { it.onLayoutsChanged() } }
+        /**
+         * Called after any change the other surfaces should see.
+         *
+         * @param source the object that made the edit, or null when it has no
+         *   identity worth reporting. Listeners compare it against themselves.
+         */
+        fun announceChanged(source: Any? = null) {
+            listeners.forEach { runCatching { it.onLayoutsChanged(source) } }
         }
 
         /** The store backed by the app's ordinary preferences. */

@@ -21,7 +21,6 @@ import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
-import java.util.concurrent.atomic.AtomicReference
 import android.os.SystemClock
 import android.view.MotionEvent
 import dev.headway.app.ui.theme.CarMetrics
@@ -30,6 +29,7 @@ import dev.headway.protocol.channel.TouchAction
 import dev.headway.protocol.channel.TouchSurface
 import dev.headway.video.EncoderConfiguration
 import dev.headway.video.ScreenEncoder
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The car screen as its own display, rendered at the head unit's own resolution.
@@ -86,7 +86,7 @@ import dev.headway.video.ScreenEncoder
  */
 class CarSurface private constructor(
     private val display: CarDisplay,
-    private val presentation: DashboardPresentation,
+    private val presentation: CarShell,
     private val encoder: ScreenEncoder,
     val metrics: CarMetrics,
     private val onStep: (String) -> Unit,
@@ -142,13 +142,24 @@ class CarSurface private constructor(
      * are already the view tree's coordinates. That is the whole point of this
      * class, and it is why the letterbox arithmetic that used to sit here is
      * gone rather than simplified.
+     *
+     * @return false when the touch is not the dashboard's to handle — either it
+     *   is not a touchscreen report, or it landed inside the live app pane. The
+     *   caller forwards those; everything else is dispatched here.
      */
-    fun deliver(touch: CarInputEvent.Touch) {
-        if (touch.surface != TouchSurface.TOUCHSCREEN) return
+    fun deliver(touch: CarInputEvent.Touch): Boolean {
+        if (touch.surface != TouchSurface.TOUCHSCREEN) return false
         // The pointer whose state changed, falling back to the first one down.
         // A touchpad or a report with an out-of-range action_index would
         // otherwise dereference nothing.
-        val point = touch.changedPointer ?: touch.pointers.firstOrNull() ?: return
+        val point = touch.changedPointer ?: touch.pointers.firstOrNull() ?: return false
+
+        // A touch inside the live app pane's picture is not Headway's: it
+        // belongs to another app, on another display, and has to be forwarded
+        // through the accessibility service rather than dispatched into this
+        // window. Refusing it here is what sends it down that path -- see
+        // `CarInputStream.deliverDirect` and ADR 0010.
+        if (presentation.claimsAppTouch(point.x, point.y)) return false
         val action = when (touch.action) {
             TouchAction.DOWN, TouchAction.POINTER_DOWN -> MotionEvent.ACTION_DOWN
             TouchAction.MOVED -> MotionEvent.ACTION_MOVE
@@ -179,14 +190,22 @@ class CarSurface private constructor(
             event.recycle()
             if (handled) touchesDelivered++ else touchesDropped++
         }
+        // True the moment the event is queued, not when it is dispatched: the
+        // caller has to decide *now* whether to forward it instead, and the
+        // dispatch happens a hop later on the main thread. The pane test above
+        // is the real decision; this only reports it.
+        return true
     }
 
     /** Whether the surface is on screen and taking touches. */
     val isShowing: Boolean get() = presentation.isShowing
 
+    /** The car screen itself, for the parts of the session that talk to it. */
+    val shell: CarShell get() = presentation
+
     fun describe(): String =
         "car surface: ${metrics.describe()}, $touchesDelivered touch(es) delivered, " +
-            "$touchesDropped unhandled"
+            "$touchesDropped unhandled; " + runCatching { presentation.describe() }.getOrDefault("")
 
     /**
      * Tears the surface down, in the order that avoids a black frame.
@@ -220,8 +239,8 @@ class CarSurface private constructor(
          *    starts frames flowing.
          *
          * @return null when the platform refuses the display, which is a real
-         *   answer and not an error: the caller falls back to mirroring and the
-         *   log says why.
+         *   answer and not an error: the caller falls back to a raw capture of
+         *   the phone and the log says why.
          */
         fun create(
             context: Context,
@@ -237,7 +256,7 @@ class CarSurface private constructor(
 
             val displayManager = context.getSystemService(DisplayManager::class.java)
             if (displayManager == null) {
-                onStep("car surface: no DisplayManager, falling back to mirroring")
+                onStep("car surface: no DisplayManager, so there is no car display to draw on")
                 return null
             }
 
@@ -302,7 +321,7 @@ class CarSurface private constructor(
          * … that has not called Looper.prepare()` — from the *constructor*, not
          * from `show()`. `HeadwayService`'s scope is
          * `Dispatchers.Default`, a pool thread with no looper, so
-         * `DashboardPresentation(...)` threw before `show` was ever reached.
+         * `CarShell(...)` threw before `show` was ever reached.
          *
          * What made it expensive to find is that it threw *silently*. Nothing
          * caught it, so no "car surface:" line was written; the last thing in
@@ -322,9 +341,9 @@ class CarSurface private constructor(
             display: android.view.Display,
             metrics: CarMetrics,
             onStep: (String) -> Unit,
-        ): DashboardPresentation? {
-            fun build(): DashboardPresentation? = runCatching {
-                DashboardPresentation(context, display, metrics, onStep).also { it.show() }
+        ): CarShell? {
+            fun build(): CarShell? = runCatching {
+                CarShell(context, display, metrics, onStep).also { it.show() }
             }.getOrElse {
                 onStep("car surface: the dashboard window was refused ($it)")
                 null
@@ -333,7 +352,7 @@ class CarSurface private constructor(
             if (Looper.myLooper() == Looper.getMainLooper()) return build()
 
             val done = java.util.concurrent.CountDownLatch(1)
-            val built = AtomicReference<DashboardPresentation?>(null)
+            val built = AtomicReference<CarShell?>(null)
             Handler(Looper.getMainLooper()).post {
                 built.set(build())
                 done.countDown()

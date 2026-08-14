@@ -35,6 +35,7 @@ import dev.headway.app.carapp.TemplateApps
 import dev.headway.app.carapp.TemplateRenderer
 import dev.headway.app.dash.DashTile
 import dev.headway.app.ui.theme.Headway
+import dev.headway.dash.PaneKind
 
 /**
  * A third-party app's own interface, drawn by Headway.
@@ -72,7 +73,7 @@ class CarAppTile(
 
     private val appContext: Context = context.applicationContext
 
-    override val kind: String = DashTile.Kind.CAR_APP
+    override val kind: String = PaneKind.CAR_APP
 
     /** Everything: the map surface at the back, the template in front. */
     private var stack: FrameLayout? = null

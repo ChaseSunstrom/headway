@@ -56,12 +56,13 @@ import dev.headway.app.dash.DashTile
 import dev.headway.app.log.SessionLog
 import dev.headway.app.nav.NavigationFeed
 import dev.headway.app.phone.CarPhone
+import dev.headway.app.service.HeadwayService
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.ui.theme.HeadwayMark
 import dev.headway.app.ui.theme.ProgressRule
 import dev.headway.app.ui.theme.TransportButton
-import dev.headway.app.service.HeadwayService
+import dev.headway.dash.PaneKind
 import dev.headway.transport.LinkState
 import java.util.Date
 import java.util.concurrent.CopyOnWriteArrayList
@@ -115,7 +116,7 @@ class NowPlayingTile(context: Context) : DashTile {
     private val appContext: Context = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
 
-    override val kind: String = DashTile.Kind.NOW_PLAYING
+    override val kind: String = PaneKind.NOW_PLAYING
 
     private var art: ImageView? = null
     private var titleText: TextView? = null
@@ -624,7 +625,7 @@ class MessagesTile(context: Context) : DashTile {
     private val appContext: Context = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
 
-    override val kind: String = DashTile.Kind.MESSAGES
+    override val kind: String = PaneKind.MESSAGES
 
     private var rows: LinearLayout? = null
 
@@ -1261,7 +1262,7 @@ class ClockTile(context: Context) : DashTile {
     private val appContext: Context = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
 
-    override val kind: String = DashTile.Kind.CLOCK
+    override val kind: String = PaneKind.CLOCK
 
     private var clockText: TextView? = null
     private var dateText: TextView? = null
@@ -1273,7 +1274,7 @@ class ClockTile(context: Context) : DashTile {
     /**
      * Re-posts on the next whole second rather than every 1000 ms.
      *
-     * Same trick as `CarLauncherActivity`: a fixed interval drifts, and a clock
+     * A fixed interval drifts, and a clock
      * that changes a third of a second after the minute does looks broken to
      * anyone glancing between it and the car's own clock.
      */

@@ -18,6 +18,7 @@
 package dev.headway.app.service
 
 import aap_protobuf.aaw.StatusOuterClass.Status
+import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaCodecType
 import aap_protobuf.service.wifiprojection.message.AccessPointTypeOuterClass.AccessPointType
 import android.annotation.SuppressLint
 import android.app.Notification
@@ -34,35 +35,32 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaCodecType
 import dev.headway.app.BuildConfig
 import dev.headway.app.R
 import dev.headway.app.audio.CarAudioStream
+import dev.headway.app.dash.CarShell
+import dev.headway.app.dash.CarSurface
 import dev.headway.app.input.CarInputStream
 import dev.headway.app.input.HeadwayAccessibilityService
 import dev.headway.app.link.BluetoothCarLink
-import dev.headway.app.log.SessionLog
-import dev.headway.app.link.CarWifiException
 import dev.headway.app.link.CarCompanion
+import dev.headway.app.link.CarWifiException
 import dev.headway.app.link.CarWifiNetwork
 import dev.headway.app.link.PhoneCertificateStore
+import dev.headway.app.log.SessionLog
 import dev.headway.app.quirks.HeadUnitIdentity
 import dev.headway.app.quirks.HeadUnitQuirks
 import dev.headway.app.quirks.QuirkStore
+import dev.headway.app.ui.HeadwaySettings
+import dev.headway.app.video.AppPaneHost
+import dev.headway.app.video.CarAppDisplay
+import dev.headway.app.video.CarVideoStream
+import dev.headway.app.voice.CarVoiceStream
+import dev.headway.app.voice.PhoneMediaControl
 import dev.headway.protocol.control.ControlKeepalive
 import dev.headway.protocol.control.ControlMessageType
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.framing.MessageFragmenter
-import dev.headway.app.video.CarAppDisplay
-import dev.headway.app.video.CarSurfaceMode
-import dev.headway.app.video.CarVideoStream
-import dev.headway.app.dash.CarSurface
-import dev.headway.app.dash.DashboardActivity
-import dev.headway.app.ui.CarLauncherActivity
-import dev.headway.app.ui.HeadwaySettings
-import dev.headway.app.voice.CarVoiceStream
-import dev.headway.app.voice.PhoneMediaControl
-import dev.headway.app.voice.VoiceOverlay
 import dev.headway.protocol.io.ChannelDemultiplexer
 import dev.headway.protocol.io.FramedConnection
 import dev.headway.protocol.io.MessageChannel
@@ -70,15 +68,16 @@ import dev.headway.protocol.session.AapSession
 import dev.headway.protocol.session.AuthenticationRejectedException
 import dev.headway.protocol.session.HeadUnitProfile
 import dev.headway.protocol.session.PhoneIdentity
-import dev.headway.video.EncoderConfiguration
-import dev.headway.video.ScreenEncoder
 import dev.headway.transport.LinkState
 import dev.headway.transport.SessionSupervisor
 import dev.headway.transport.TcpTransport
-import dev.headway.transport.wireless.CarEndpoint
 import dev.headway.transport.tls.AapTls
 import dev.headway.transport.tls.TlsSession
+import dev.headway.transport.wireless.CarEndpoint
+import dev.headway.video.EncoderConfiguration
+import dev.headway.video.ScreenEncoder
 import dev.headway.voice.VoiceCommand
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -89,7 +88,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Marks a failure that happened while joining the car's access point.
@@ -1158,14 +1156,12 @@ open class HeadwayService : Service() {
             // straight into its view tree at the car's own coordinates. The
             // transform, the gesture builder and the accessibility grant are
             // all only needed to aim at somebody else's window.
+            // Returns false for a touch that landed inside the live app pane,
+            // which is how it reaches the gesture path instead — see
+            // `CarSurface.deliver` and ADR 0010.
             deliverDirect = { touch ->
                 val surface = video?.surface
-                if (surface != null && surface.isShowing) {
-                    surface.deliver(touch)
-                    true
-                } else {
-                    false
-                }
+                surface != null && surface.isShowing && surface.deliver(touch)
             },
             onStep = ::step,
         )
@@ -1187,27 +1183,10 @@ open class HeadwayService : Service() {
             startListening = { voice.requestListening() }
         }
 
-        // The two ways a driver can start talking to Headway from inside
-        // another app. The launcher's own Voice button covers only Headway's
-        // own screen, which is not where anyone is when they want it.
-        // Constructed here, shown after video negotiates: its size depends on
-        // the geometry the head unit chooses, which is not known until then.
-        // Home is offered whenever the dashboard is the car's default surface,
-        // because that is exactly when there is somewhere to go back *to*. It is
-        // the only control that exists once the car is showing a real app: an
-        // overlay is the sole surface Headway may draw over somebody else's
-        // window, so without this, opening Maps would be a one-way trip.
-        val homeAvailable = HeadwaySettings.dashboardOnCarScreen(this@HeadwayService)
-        val overlay = VoiceOverlay(
-            context = applicationContext,
-            onPressed = { voice?.requestListening() },
-            onHome = if (homeAvailable) {
-                { CarVideoStream.showOnCar(CarSurfaceMode.DASHBOARD) }
-            } else {
-                null
-            },
-            onStep = ::step,
-        )
+        // The rail's microphone. `CarShell` has no handle on the voice pipeline
+        // and is constructed by `CarSurface` deep inside video bring-up, so the
+        // hook is installed here, where both exist.
+        CarShell.onVoiceRequested = voice?.let { stream -> { stream.requestListening() } }
 
         val pump = launch { demux.pump() }
         try {
@@ -1246,22 +1225,27 @@ open class HeadwayService : Service() {
             // itself, and must say so.
             startSubsystem("video") { video?.start(this) }
             if (video?.surface != null) {
-                // The car has its own display and its own UI on it, so nothing
-                // is put on the phone: a dashboard mirrored there as well would
-                // be a second copy nobody is looking at.
+                // The car has its own display and its own UI on it, and nothing
+                // is put on the phone: no activity is started, no window is
+                // added, and the driver's screen is theirs. That is a
+                // requirement rather than a nicety — a session that comes up on
+                // its own when the car appears must not take the phone over.
                 step("car screen is Headway's own display; the phone screen is left alone")
+                // The one projection this grant allows now belongs to the app
+                // pane. In the fallback path it belongs to the encoder instead,
+                // which is why this is inside the branch.
+                AppPaneHost.attach(
+                    context = applicationContext,
+                    projection = projection,
+                    densityDpi = video.negotiated?.densityDpi ?: 160,
+                    onStep = ::step,
+                )
             } else {
-                showCarLauncher(video?.negotiated)
+                step(
+                    "no car display, so the car is being sent a raw capture of the phone " +
+                        "screen: no panes, no rail, no app pane"
+                )
             }
-            // Shown either way. While the dashboard is up this window is on
-            // display 0, which the car is not looking at, so it costs nothing
-            // and is already in place the instant the driver taps an app and
-            // the car switches to mirroring — which is the one moment it is
-            // both needed and impossible to add, since adding a window is
-            // main-thread work and that switch happens under the driver's
-            // finger.
-            runCatching { overlay.show(voiceButtonSizePx(video?.negotiated)) }
-                .onFailure { step("the voice button could not be shown: $it") }
             runCatching { coverPhoneScreen() }
                 .onFailure { step("the phone screen could not be covered: $it") }
             startSubsystem("audio") { audio?.start(this) }
@@ -1286,7 +1270,8 @@ open class HeadwayService : Service() {
             audio?.let { runCatching { step(it.describe()) } }
             input?.let { runCatching { step(it.describe()) } }
             voice?.let { runCatching { step(it.describe()) } }
-            runCatching { overlay.hide() }
+            runCatching { CarShell.onVoiceRequested = null }
+            runCatching { AppPaneHost.detach() }
             runCatching { HeadwayAccessibilityService.instance.value?.hideBlackout() }
             runCatching { video?.stop() }
             runCatching { audio?.stop() }
@@ -1355,75 +1340,6 @@ open class HeadwayService : Service() {
      * that Headway injects input but never reads the screen. Honouring that
      * promise costs dictation into third-party apps. Tracked in `BLOCKERS.md`.
      */
-    /**
-     * Puts Headway's launcher on the car screen when the session comes up.
-     *
-     * CLAUDE.md says the launcher is "the default cast content", and it was
-     * nothing of the kind: the only code that built its intent was the `GoHome`
-     * voice command, which needs the launcher's own Voice button to reach, which
-     * needs the launcher to be on screen. Nothing ever started it, so a real
-     * drive mirrored the phone's home screen and the log recorded zero
-     * utterances and zero touches — with nothing on the car screen worth
-     * touching, that is exactly what it should have recorded.
-     *
-     * The geometry comes from the configuration the head unit chose, which is
-     * what `carMinimumTargetPx` was written to consume and what nothing had ever
-     * passed it.
-     */
-    private fun showCarLauncher(configuration: EncoderConfiguration?) {
-        val width = configuration?.width ?: 0
-        val height = configuration?.height ?: 0
-        val dpi = configuration?.densityDpi ?: 0
-        val dashboard = HeadwaySettings.dashboardOnCarScreen(this)
-        val intent = if (dashboard) {
-            DashboardActivity.intent(this, width, height, dpi)
-        } else {
-            CarLauncherActivity.intent(this, width, height, dpi)
-        }
-        val what = if (dashboard) "dashboard" else "launcher"
-        // Onto whichever display the car is actually being fed from. This
-        // branch runs only when the projection is the source, and with ADR
-        // 0008's switch on that projection is recording the simulated display —
-        // so starting the launcher on display 0 put Headway's own surface, "the
-        // default cast content", on a display nobody is capturing. The car
-        // showed an empty 720x480 rectangle with no way to tap anything, which
-        // looks exactly like a dead session despite frames flowing.
-        val target = dev.headway.app.video.CarAppDisplay.displayId
-        if (target != android.view.Display.DEFAULT_DISPLAY) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
-        }
-        val options = android.app.ActivityOptions.makeBasic().setLaunchDisplayId(target)
-        runCatching { startActivity(intent, options.toBundle()) }
-            .onSuccess { step("car $what shown on display #$target") }
-            .onFailure { step("could not show the car $what: $it") }
-    }
-
-    /**
-     * How large the floating microphone button has to be to be hittable.
-     *
-     * The car rescales the mirrored phone display down to its own panel, so a
-     * button sized in phone pixels shrinks by that ratio before a finger ever
-     * reaches it. This inverts the scale: 48 dp at the *car's* density, divided
-     * by the projection ratio, then doubled — CLAUDE.md says to assume imprecise
-     * touches, and this one is pressed without looking.
-     */
-    private fun voiceButtonSizePx(configuration: EncoderConfiguration? = null): Int {
-        val density = resources.displayMetrics.density
-        val phoneMinimum = (MIN_TOUCH_TARGET_DP * density).toInt()
-        val carWidth = configuration?.width ?: 0
-        val carHeight = configuration?.height ?: 0
-        val carDpi = configuration?.densityDpi ?: 0
-        if (carWidth <= 0 || carHeight <= 0 || carDpi <= 0) return phoneMinimum * 2
-
-        val phoneWidth = resources.displayMetrics.widthPixels.toDouble()
-        val phoneHeight = resources.displayMetrics.heightPixels.toDouble()
-        val scale = minOf(carWidth / phoneWidth, carHeight / phoneHeight)
-        if (scale <= 0.0) return phoneMinimum * 2
-
-        val carTargetPx = MIN_TOUCH_TARGET_DP * carDpi / 160.0
-        return maxOf(phoneMinimum, (carTargetPx / scale).toInt()) * 2
-    }
-
     private fun voiceExecutor(
         scope: CoroutineScope,
         audio: CarAudioStream?,
@@ -1933,13 +1849,6 @@ open class HeadwayService : Service() {
 
         /** How often a running stream reports itself. */
         private const val FRAME_SUMMARY_INTERVAL_MILLIS = 5_000L
-
-        /**
-         * The platform's minimum touch target, and CLAUDE.md's floor for the
-         * car surfaces. Duplicated from `CarLauncherActivity` rather than shared
-         * because both are leaf definitions of the same platform constant.
-         */
-        private const val MIN_TOUCH_TARGET_DP = 48.0
 
         /** Same 64-byte truncation the RFCOMM logger uses, for the same reason. */
         internal fun hex(bytes: ByteArray, limit: Int = 64): String {

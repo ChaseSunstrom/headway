@@ -38,7 +38,6 @@ import dev.headway.app.media.MediaApp
 import dev.headway.app.media.MediaApps
 import dev.headway.app.phone.CarPhone
 import dev.headway.app.video.OverlayDisplay
-import dev.headway.app.voice.VoiceOverlay
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -282,7 +281,6 @@ object SelfTest {
         line("car-connection provider answers", providerState(context) != null, describeProvider(context))
         line("notification listener", NowPlayingTile.notificationAccessGranted(context))
         line("accessibility (car touchscreen)", HeadwayAccessibilityService.isEnabled(context))
-        line("display over other apps", VoiceOverlay.canDraw(context))
         listOf(
             "read the call log" to Manifest.permission.READ_CALL_LOG,
             "read contacts" to Manifest.permission.READ_CONTACTS,

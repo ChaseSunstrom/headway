@@ -18,6 +18,7 @@
 package dev.headway.app.ui
 
 import android.Manifest
+import android.companion.CompanionDeviceManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -45,113 +46,29 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.ContextCompat
 import dev.headway.app.BuildConfig
+import dev.headway.app.dash.tiles.NowPlayingTile
+import dev.headway.app.diag.SelfTest
 import dev.headway.app.input.HeadwayAccessibilityService
+import dev.headway.app.link.CarCompanion
 import dev.headway.app.log.SessionLog
+import dev.headway.app.quirks.QuirkStore
+import dev.headway.app.service.HeadwayService
+import dev.headway.app.ui.theme.HeadwayMark
+import dev.headway.app.ui.theme.Phone
 import dev.headway.app.update.AppUpdater
 import dev.headway.app.update.AvailableRelease
 import dev.headway.app.update.ReleaseCatalog
 import dev.headway.app.update.UpdateException
 import dev.headway.app.update.UpdateReceiver
-import android.companion.CompanionDeviceManager
-import dev.headway.app.dash.tiles.NowPlayingTile
-import dev.headway.app.diag.SelfTest
-import dev.headway.app.link.CarCompanion
-import dev.headway.app.quirks.QuirkStore
-import dev.headway.app.service.HeadwayService
-import dev.headway.app.ui.theme.HeadwayMark
-import dev.headway.app.ui.theme.Phone
-import dev.headway.app.voice.SpeechModelInstaller
 import dev.headway.app.video.OverlayDisplay
-import dev.headway.app.voice.VoiceOverlay
+import dev.headway.app.voice.SpeechModelInstaller
 import dev.headway.transport.LinkState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-/**
- * Persisted user choices, in one place so the two activities cannot disagree.
- *
- * `SharedPreferences` rather than DataStore: four scalars, no migration story
- * needed, and one fewer dependency in an app that has to be auditable for
- * F-Droid.
- */
-object HeadwaySettings {
-
-    const val PREFS_NAME: String = "headway"
-
-    /** Set once the user has seen the driving-safety notice. */
-    const val KEY_SAFETY_NOTICE_ACCEPTED: String = "safety_notice_accepted"
-
-    /**
-     * The optional restriction CLAUDE.md describes: "provide an optional
-     * 'parked-only for video apps' toggle (off by default, user's choice — this
-     * is a user-freedom project, not a nanny)".
-     */
-    const val KEY_PARKED_ONLY_VIDEO: String = "parked_only_video"
-
-    /** Package names shown on the car launcher grid. */
-    const val KEY_PINNED_APPS: String = "pinned_apps"
-
-    /**
-     * Which surface the car shows when a session comes up: the multi-pane
-     * dashboard, or the plain app grid.
-     *
-     * Defaults to the dashboard, because it is a superset — one of its panes is
-     * the app grid, and the mirror pane is one tap from the plain phone screen.
-     * A driver who dislikes it turns this off and gets exactly what build 79
-     * gave them.
-     */
-    const val KEY_CAR_SURFACE_DASHBOARD: String = "car_surface_dashboard"
-
-    /**
-     * The package the Maps pane opens, and whose notification it trusts.
-     *
-     * Unset by default, in which case the first app that handles `geo:` is used
-     * — see `MapsTile.mapApps`. Stored rather than resolved fresh each time
-     * because "whichever the platform lists first" is stable enough to look
-     * deliberate and not stable enough to *be* deliberate, and a driver who
-     * picked Organic Maps should not get HERE WeGo after an update reorders the
-     * resolver.
-     */
-    const val KEY_MAP_APP: String = "map_app"
-
-    /**
-     * Whether a third-party app should render on a simulated secondary display
-     * rather than be mirrored from the phone's screen.
-     *
-     * Off by default because it needs a Developer options toggle first, and a
-     * switch that silently does nothing until the driver has been somewhere
-     * else in Settings is worse than one they have to find. `CarAppDisplay` has
-     * the derivation and the two costs.
-     */
-    const val KEY_NATIVE_APP_DISPLAY: String = "native_app_display"
-
-    /**
-     * Cover the phone screen, and the simulated display's preview, while driving.
-     *
-     * Off by default. It is the only way to hide the preview window Developer
-     * options puts on the phone — Android has no setting for it and the window
-     * cannot be closed, because it *is* the simulated display's output surface.
-     * Covering needs a `TYPE_ACCESSIBILITY_OVERLAY`, which only the
-     * accessibility service can add, so this does nothing until that is granted.
-     *
-     * Default off because it covers the status bar too, and a black screen the
-     * driver did not ask for looks exactly like a phone that has crashed.
-     */
-    const val KEY_BLANK_PHONE_SCREEN: String = "blank_phone_screen"
-
-    fun of(context: Context): SharedPreferences =
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-    fun parkedOnlyVideo(context: Context): Boolean =
-        of(context).getBoolean(KEY_PARKED_ONLY_VIDEO, false)
-
-    fun dashboardOnCarScreen(context: Context): Boolean =
-        of(context).getBoolean(KEY_CAR_SURFACE_DASHBOARD, true)
-}
 
 /**
  * The phone-side setup screen.
@@ -196,7 +113,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var permissionStatus: Phone.StatusRow
     private lateinit var accessibilityStatus: Phone.StatusRow
     private lateinit var notificationStatus: Phone.StatusRow
-    private lateinit var overlayStatus: Phone.StatusRow
     private lateinit var speechStatus: Phone.StatusRow
     private lateinit var pairingStatus: Phone.StatusRow
     private lateinit var phoneStatus: Phone.StatusRow
@@ -614,10 +530,6 @@ class MainActivity : AppCompatActivity() {
         notificationStatus = Phone.StatusRow(this, "Now playing and messages")
             .withAction("Turn on") { openNotificationAccess() }
         card.addView(notificationStatus.view)
-
-        overlayStatus = Phone.StatusRow(this, "Voice button over other apps")
-            .withAction("Allow") { openOverlaySettings() }
-        card.addView(overlayStatus.view)
 
         phoneStatus = Phone.StatusRow(this, "Calls and contacts")
             .withAction("Grant") {
@@ -1286,16 +1198,6 @@ class MainActivity : AppCompatActivity() {
             },
         )
 
-        val overlay = VoiceOverlay.canDraw(this)
-        overlayStatus.set(
-            if (overlay) Phone.Level.GOOD else Phone.Level.WARN,
-            if (overlay) {
-                "On — the mic button is reachable from any app"
-            } else {
-                "Off — the voice button only appears on Headway's own screens"
-            },
-        )
-
         // Checked on every resume rather than once: the unpack runs in the
         // background from onCreate, so the first read of this is usually "not
         // yet" and the true answer arrives seconds later.
@@ -1643,7 +1545,7 @@ class MainActivity : AppCompatActivity() {
         // scans are throttled with the screen off and there is nothing to press.
         // In the capture that prompted all this, the activity stopped fourteen
         // seconds into a seventy-five second wait with no other explanation.
-        // CarLauncherActivity already does this for the car screen; the phone
+        // The car screen already does this for itself; the phone
         // screen needs it for exactly as long as the join does.
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // Ask for screen capture before the session, not during it. See
@@ -1753,24 +1655,6 @@ class MainActivity : AppCompatActivity() {
         }
         startActivity(intent)
         toast("Find Headway in the list and switch it on")
-    }
-
-    /**
-     * Opens the draw-over-other-apps page for the voice button.
-     *
-     * `SYSTEM_ALERT_WINDOW` is a user-granted special access, not a privileged
-     * permission, and it is the only way the mic button survives the driver
-     * opening Maps — a button on Headway's own surface disappears the moment
-     * anything else is in front.
-     */
-    private fun openOverlaySettings() {
-        val intent = VoiceOverlay.permissionIntent(this).setFlags(0)
-        if (intent.resolveActivity(packageManager) == null) {
-            toast("This device has no overlay settings screen")
-            return
-        }
-        startActivity(intent)
-        toast("Allow Headway to display over other apps")
     }
 
     private fun exportLog() {

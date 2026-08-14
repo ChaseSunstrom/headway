@@ -29,6 +29,10 @@ import dev.headway.protocol.io.Transport
 import dev.headway.transport.StreamTransport
 import dev.headway.transport.wireless.CarNetworkCredentials
 import dev.headway.transport.wireless.WirelessHandshake
+import java.io.EOFException
+import java.io.IOException
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -36,10 +40,6 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import java.io.EOFException
-import java.io.IOException
-import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 
 /** Raised when the Bluetooth half of the link cannot be established. */
 class BluetoothCarLinkException(message: String, cause: Throwable? = null) :

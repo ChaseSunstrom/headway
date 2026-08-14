@@ -380,3 +380,69 @@ class TouchTransformTest {
         assertNull(t.map(touch))
     }
 }
+
+/**
+ * The pane case: an app's picture is a rectangle inside the car frame that the
+ * driver's layout chose, not the whole screen. See ADR 0010.
+ */
+class TouchTransformPaneTest {
+
+    /** An 800x480 car panel; the app pane occupies the right two-thirds. */
+    private val pane = CarRect(left = 264.0, top = 40.0, width = 520.0, height = 347.0)
+
+    private val transform = TouchTransform(
+        carWidth = 800,
+        carHeight = 480,
+        phoneWidth = 720,
+        phoneHeight = 480,
+        explicitContent = pane,
+    )
+
+    @Test
+    fun `the picture is where the layout put it, not centred`() {
+        assertEquals(264.0, transform.contentRect.left, 0.001)
+        assertEquals(40.0, transform.contentRect.top, 0.001)
+        assertEquals(520.0, transform.contentRect.width, 0.001)
+    }
+
+    @Test
+    fun `the scale follows the pane rather than the panel`() {
+        assertEquals(520.0 / 720.0, transform.scale, 0.0001)
+    }
+
+    @Test
+    fun `the corners of the pane map to the corners of the app display`() {
+        val topLeft = transform.toPhone(pane.left, pane.top)!!
+        assertEquals(0.0, topLeft.x, 0.5)
+        assertEquals(0.0, topLeft.y, 0.5)
+
+        val bottomRight = transform.toPhone(pane.right, pane.bottom)!!
+        assertEquals(720.0, bottomRight.x, 1.0)
+        assertEquals(480.0, bottomRight.y, 1.0)
+    }
+
+    @Test
+    fun `a touch on the dashboard outside the pane belongs to no app`() {
+        // Left of the pane: another pane of the dashboard lives there.
+        assertNull(transform.toPhone(100.0, 200.0))
+        // Above it: the rail.
+        assertNull(transform.toPhone(400.0, 10.0))
+        // Below it.
+        assertNull(transform.toPhone(400.0, 470.0))
+    }
+
+    @Test
+    fun `the centre of the pane is the centre of the app`() {
+        val middle = transform.toPhone(pane.left + pane.width / 2, pane.top + pane.height / 2)!!
+        assertEquals(360.0, middle.x, 1.0)
+        assertEquals(240.0, middle.y, 1.0)
+    }
+
+    @Test
+    fun `without an explicit rectangle nothing about the old behaviour changes`() {
+        val fullScreen = TouchTransform(800, 480, 1080, 2404)
+        assertEquals(minOf(800.0 / 1080, 480.0 / 2404), fullScreen.scale, 1e-9)
+        assertEquals(0.0, fullScreen.contentRect.top, 1e-9)
+        assertTrue(fullScreen.pillarboxed)
+    }
+}

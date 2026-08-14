@@ -23,7 +23,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import dev.headway.app.dash.tiles.MapsTile
-import dev.headway.app.ui.CarLauncherActivity
+import dev.headway.app.dash.CarShell
 import dev.headway.protocol.channel.MicrophoneChannel
 import dev.headway.protocol.channel.MicrophoneChannelException
 import dev.headway.protocol.channel.MicrophoneFormat
@@ -35,6 +35,9 @@ import dev.headway.voice.CommandEngine
 import dev.headway.voice.InstalledApp
 import dev.headway.voice.SpeechRecognizer
 import dev.headway.voice.VoiceCommand
+import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.sqrt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -46,9 +49,6 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.sqrt
 
 /**
  * Everything between "the driver pressed Voice" and "the phone did what they
@@ -74,7 +74,7 @@ import kotlin.math.sqrt
  * ## Push to talk, not always on — deliberately
  *
  * A voice session begins when the driver asks for one: the Voice button on
- * Headway's car launcher ([CarLauncherActivity.onVoiceRequested], installed by
+ * The car screen's microphone button ([CarShell.onVoiceRequested], installed by
  * [start]) or a steering-wheel voice key routed into [requestListening]. There
  * is **no wake word and no always-listening mode, and adding one is a non-goal**.
  *
@@ -208,7 +208,7 @@ class CarVoiceStream(
             opened
         }
 
-        CarLauncherActivity.onVoiceRequested = { requestListening() }
+        CarShell.onVoiceRequested = { requestListening() }
         onStep("voice ready: ${channel.format}, window ${setup.maxUnacked ?: "unstated"}")
         return true
     }
@@ -351,7 +351,7 @@ class CarVoiceStream(
      * queue for the next session to misread (see the class KDoc).
      */
     fun stop() {
-        CarLauncherActivity.onVoiceRequested = null
+        CarShell.onVoiceRequested = null
         trigger?.cancel()
         trigger = null
         recognizerLoad?.cancel()
@@ -674,7 +674,7 @@ class CarVoiceStream(
          * Launching an app and returning to the launcher are both a
          * `startActivity`, and both are things the car launcher already does for
          * a touch — the flags are the same ones
-         * [CarLauncherActivity] uses, for the same reasons. Media, volume and
+         * the car screen uses, for the same reasons. Media, volume and
          * search are deliberately *not* handled here: transport controls belong
          * to the session's media handling and typing belongs to the accessibility
          * service, and a caller that owns those can pass its own executor to
@@ -682,21 +682,28 @@ class CarVoiceStream(
          * "pause" showing up in the log with nothing after it is diagnosable.
          *
          * One honest caveat: Android's background-activity-start rules mean a
-         * `startActivity` from a service is only guaranteed while Headway has a
-         * visible activity — which, during a mirroring session, it does, because
-         * the car launcher is on screen. A session where the driver has left
-         * Headway entirely may have the launch silently ignored by the platform;
-         * the call reports success either way, and there is no unprivileged API
-         * that reports otherwise.
+         * `startActivity` from a service can be refused when Headway has no
+         * visible activity. Since ADR 0010 there deliberately is none — a
+         * session that comes up on its own must not take the phone's screen —
+         * so a launch onto the app display may be silently ignored by the
+         * platform. The call reports success either way and there is no
+         * unprivileged API that reports otherwise; `B-018` tracks it.
          */
         fun defaultExecutor(context: Context, onStep: (String) -> Unit): (VoiceCommand) -> Unit =
             { command ->
                 when (command) {
                     is VoiceCommand.LaunchApp -> {
                         val target = command.packageName
+                        val shell = CarShell.active()
                         val intent = target?.let { context.packageManager.getLaunchIntentForPackage(it) }
                         if (intent == null) {
                             onStep("voice: nothing installed matches \"${command.query}\"")
+                        } else if (shell != null) {
+                            // Into the app pane, exactly as a tap on the grid
+                            // would. The shell also brings a layout with an app
+                            // pane forward if the one on screen has none.
+                            shell.openApp(target)
+                            onStep("voice: opened $target in the app pane")
                         } else {
                             intent.addFlags(
                                 Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
@@ -710,11 +717,13 @@ class CarVoiceStream(
                     }
 
                     VoiceCommand.GoHome -> {
-                        val started = runCatching { context.startActivity(CarLauncherActivity.intent(context)) }
-                        onStep(
-                            if (started.isSuccess) "voice: returned to the car launcher"
-                            else "voice: could not open the car launcher (${started.exceptionOrNull()})"
-                        )
+                        val shell = CarShell.active()
+                        if (shell == null) {
+                            onStep("voice: there is no car screen to go home to")
+                        } else {
+                            shell.goHome()
+                            onStep("voice: back to the home layout")
+                        }
                     }
 
                     is VoiceCommand.Navigate -> {

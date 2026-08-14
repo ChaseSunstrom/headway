@@ -48,12 +48,14 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import dev.headway.app.dash.DashNode
+import dev.headway.app.dash.CarShell
 import dev.headway.app.dash.DashTile
-import dev.headway.app.video.CarAppDisplay
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
-import dev.headway.app.video.CarSurfaceMode
+import dev.headway.app.video.CarAppDisplay
 import dev.headway.app.video.CarVideoStream
+import dev.headway.dash.DashNode
+import dev.headway.dash.PaneKind
 import kotlin.math.max
 
 /**
@@ -138,7 +140,7 @@ class WidgetTile(
     private val onStep: (String) -> Unit = {},
 ) : DashTile {
 
-    override val kind: String get() = DashTile.Kind.WIDGET
+    override val kind: String get() = PaneKind.WIDGET
 
     private var container: FrameLayout? = null
     private var hostView: AppWidgetHostView? = null
@@ -406,7 +408,7 @@ class WidgetTile(
 
         /** The leaf a picker should add to the layout once it has bound a widget. */
         fun leafFor(widgetId: Int, provider: ComponentName): DashNode.Leaf =
-            DashNode.Leaf(DashTile.Kind.WIDGET, argumentFor(widgetId, provider))
+            DashNode.Leaf(PaneKind.WIDGET, argumentFor(widgetId, provider))
 
         /**
          * The id in a saved argument, or [AppWidgetManager.INVALID_APPWIDGET_ID].
@@ -665,7 +667,7 @@ internal object SharedWidgetHost {
  *
  * ## Why the pins are read rather than owned
  *
- * The same `SharedPreferences` key as `CarLauncherActivity`,
+ * The same `SharedPreferences` key the phone's pinned-app editor writes,
  * `HeadwaySettings.KEY_PINNED_APPS`, with the same meaning: absent means the user
  * has never chosen, which shows everything. Sharing the key rather than the code
  * is deliberate — the two surfaces have genuinely different sizing problems, and
@@ -679,7 +681,7 @@ internal object SharedWidgetHost {
  *
  * ## Sizing, which is simpler here than in the launcher activity
  *
- * `CarLauncherActivity` computes phone pixels backwards from the car's geometry
+ * The car screen computes its pixels from the car's own geometry
  * because it draws on display 0 and is then scaled into the car panel. A tile
  * draws on the car's display directly, at the density the head unit negotiated,
  * so 48 dp here is 48 dp there and no back-computation is needed. The multiplier
@@ -691,7 +693,7 @@ class LauncherTile(
     private val onStep: (String) -> Unit = {},
 ) : DashTile {
 
-    override val kind: String get() = DashTile.Kind.LAUNCHER
+    override val kind: String get() = PaneKind.LAUNCHER
 
     private var grid: GridLayout? = null
     private var preferences: SharedPreferences? = null
@@ -801,7 +803,7 @@ class LauncherTile(
      * One app: icon over label, the whole cell tappable.
      *
      * The label stays even though the icon is recognisable, for the reason
-     * `CarLauncherActivity` gives — two similar icons at car viewing distance
+     * the grid gives — two similar icons at car viewing distance
      * through glare are a wrong-app launch at speed.
      */
     private fun buildTile(context: Context, entry: AppEntry): View {
@@ -844,32 +846,32 @@ class LauncherTile(
         return cell
     }
 
+    /**
+     * Opens an app from the grid — into a pane, not over everything.
+     *
+     * This used to launch the activity and then hand the *whole* car screen to a
+     * capture of the phone, destroying the dashboard for as long as the app was
+     * open. ADR 0010 replaced that: the shell puts the app's picture in an app
+     * pane and the panes around it keep working. The shell owns the decision
+     * because it is the thing that knows which pane is live and whether the
+     * layout on screen has one at all.
+     */
     private fun launch(context: Context, entry: AppEntry) {
-        val intent = context.packageManager.getLaunchIntentForPackage(entry.packageName)
-        if (intent == null) {
-            onStep("${entry.packageName} can no longer be launched; refreshing the grid")
-            populate()
+        val shell = CarShell.active()
+        if (shell == null) {
+            // No car screen: this grid is being drawn somewhere else, so the
+            // best that can be done is to start the app where it would go.
+            val intent = context.packageManager.getLaunchIntentForPackage(entry.packageName)
+            if (intent == null) {
+                onStep("${entry.packageName} can no longer be launched; refreshing the grid")
+                populate()
+                return
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            startOnPhoneDisplay(context, intent, onStep)
             return
         }
-        // The same pair the launcher activity uses: NEW_TASK because the caller is
-        // not an activity, and RESET_TASK_IF_NEEDED so returning to a running app
-        // lands on what the driver last saw rather than a fresh copy.
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-        if (!startOnPhoneDisplay(context, intent, onStep)) return
-        onStep("launched ${entry.packageName} from the dashboard grid")
-
-        // And hand the car screen to it. Without this the app opens on the
-        // phone, out of sight, and the dashboard sits there looking as though
-        // the tap did nothing — which is exactly what the first drive with a
-        // drawn dashboard felt like. The app cannot be placed *on* the
-        // dashboard's display (ADR 0004), so the whole screen goes to it and
-        // the floating Home button brings the dashboard back.
-        //
-        // Ordered after the launch so the mirror's first frame already has the
-        // app in it rather than the launcher it is leaving.
-        if (!CarVideoStream.showOnCar(CarSurfaceMode.MIRROR)) {
-            onStep("could not give the car screen to ${entry.packageName}; it is open on the phone")
-        }
+        shell.openApp(entry.packageName)
     }
 
     /** Null pins means "the driver has never chosen", which shows everything. */
@@ -929,7 +931,7 @@ class LauncherTile(
         /** The platform minimum, and the floor everything else is scaled from. */
         const val MIN_TOUCH_TARGET_DP = 48f
 
-        /** Matches `CarLauncherActivity` so the two grids look like one product. */
+        /** Sized from the car's own geometry, like every other target here. */
         const val TILE_MULTIPLIER = 2.4
         const val TILE_RADIUS = 0.14f
         const val ICON_FRACTION = 0.45
@@ -964,7 +966,7 @@ class LauncherTile(
  * A mirror shows display 0, and there is exactly one display 0. Two mirror panes
  * would be two views of the same picture at two sizes — no more information, half
  * the dashboard spent on a duplicate, and a driver reasonably expecting the
- * second one to show something else. `DashTile.Kind.MIRROR` says the dashboard
+ * second one to show something else. `PaneKind.MIRROR` says the dashboard
  * enforces the limit; nothing about a second instance of this class is unsafe, it
  * is simply never what was wanted.
  *
@@ -977,7 +979,7 @@ class LauncherTile(
  */
 class MirrorTile(editMode: Boolean = false) : DashTile {
 
-    override val kind: String get() = DashTile.Kind.MIRROR
+    override val kind: String get() = PaneKind.MIRROR
 
     private var view: FrameLayout? = null
     private var label: TextView? = null
@@ -1085,9 +1087,9 @@ class MirrorTile(editMode: Boolean = false) : DashTile {
 
 // The shared palette, not a fourth copy of it. See `CarStyle`'s note in
 // ContentTiles.kt for what having several copies had already cost.
-private val TILE_BACKGROUND: Int = Headway.GROUND
-private val TILE_TEXT: Int = Headway.TEXT
-private val TILE_DIM: Int = Headway.TEXT_MUTED
+private val TILE_BACKGROUND: Int get() = Headway.GROUND
+private val TILE_TEXT: Int get() = Headway.TEXT
+private val TILE_DIM: Int get() = Headway.TEXT_MUTED
 private const val MESSAGE_SP = 16f
 private const val MESSAGE_PADDING_DP = 16f
 

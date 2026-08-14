@@ -35,6 +35,9 @@ import dev.headway.app.dash.DashTile
 import dev.headway.app.dash.tiles.MapsTile
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.ui.theme.Phone
+import dev.headway.dash.DashLayout
+import dev.headway.dash.DashNode
+import dev.headway.dash.PaneKind
 
 /**
  * Tab management, on the phone, where there is a keyboard.
@@ -161,7 +164,7 @@ internal class TabsCard(
 
     /** "Maps", or "Music and podcasts + Now playing", for the summary column. */
     private fun describe(node: DashNode): String = when (node) {
-        is DashNode.Leaf -> DashTile.Kind.describe(node.kind)
+        is DashNode.Leaf -> PaneKind.describe(node.kind)
         is DashNode.Split -> describe(node.first) + " + " + describe(node.second)
     }
 
@@ -183,7 +186,7 @@ internal class TabsCard(
                 // A new tab starts as the app grid, which is the one pane that
                 // is useful with nothing configured and is the door to
                 // everything else.
-                store.save(DashLayout(name, DashNode.Leaf(DashTile.Kind.LAUNCHER)))
+                store.save(DashLayout(name, DashNode.Leaf(PaneKind.LAUNCHER)))
                 changed()
             }
             .setNegativeButton("Cancel", null)
@@ -199,7 +202,7 @@ internal class TabsCard(
      */
     private fun editTab(tab: DashLayout) {
         val field = nameField(tab.name)
-        val kinds = DashTile.Kind.ALL
+        val kinds = PaneKind.ALL
         val current = (tab.root as? DashNode.Leaf)?.kind
         var chosen = kinds.indexOf(current).takeIf { it >= 0 } ?: -1
 
@@ -225,7 +228,7 @@ internal class TabsCard(
             .setTitle(tab.name)
             .setView(column)
             .setSingleChoiceItems(
-                kinds.map { DashTile.Kind.describe(it) }.toTypedArray(),
+                kinds.map { PaneKind.describe(it) }.toTypedArray(),
                 chosen,
             ) { _, which -> chosen = which }
             .setPositiveButton("Save") { _, _ ->
@@ -262,7 +265,7 @@ internal class TabsCard(
                 store.replaceAll(updated)
                 if (wasActive) store.setActive(name)
                 changed()
-                if ((root as? DashNode.Leaf)?.kind == DashTile.Kind.CAR_APP) chooseCarApp(name)
+                if ((root as? DashNode.Leaf)?.kind == PaneKind.CAR_APP) chooseCarApp(name)
             }
             .setNeutralButton("Delete") { _, _ ->
                 materialise()
@@ -330,7 +333,7 @@ internal class TabsCard(
             .setSingleChoiceItems(labels.toTypedArray(), selected) { dialog, which ->
                 val argument = apps.getOrNull(which - 1)?.service?.flattenToString()
                 materialise()
-                store.save(DashLayout(name, DashNode.Leaf(DashTile.Kind.CAR_APP, argument)))
+                store.save(DashLayout(name, DashNode.Leaf(PaneKind.CAR_APP, argument)))
                 changed()
                 dialog.dismiss()
             }

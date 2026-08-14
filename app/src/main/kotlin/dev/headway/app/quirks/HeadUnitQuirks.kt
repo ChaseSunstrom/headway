@@ -21,11 +21,11 @@ import aap_protobuf.service.control.message.ServiceDiscoveryResponseOuterClass.S
 import android.content.Context
 import dev.headway.protocol.channel.CarPoint
 import dev.headway.protocol.control.VersionHandshake
+import java.io.File
+import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
-import java.io.File
-import java.util.Locale
 
 /**
  * Corrections applied to touch coordinates arriving from the head unit.

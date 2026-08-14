@@ -35,6 +35,7 @@ import dev.headway.app.media.CarMediaBrowser
 import dev.headway.app.media.MediaApp
 import dev.headway.app.media.MediaApps
 import dev.headway.app.ui.theme.Headway
+import dev.headway.dash.PaneKind
 
 /**
  * Browse any media app's library, and start something playing.
@@ -70,7 +71,7 @@ class MediaBrowseTile(
 
     private val appContext: Context = context.applicationContext
 
-    override val kind: String = DashTile.Kind.BROWSE
+    override val kind: String = PaneKind.BROWSE
 
     private var header: LinearLayout? = null
     private var headerLabel: TextView? = null

@@ -18,6 +18,9 @@
 package dev.headway.app.ui.theme
 
 import android.animation.ValueAnimator
+import dev.headway.dash.CarPalette
+import dev.headway.dash.CarTheme
+import dev.headway.dash.ThemeChoice
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -42,20 +45,22 @@ import android.widget.TextView
  * speed-lines shorthand for forward motion. That is the whole visual idea, and
  * everything here is derived from it rather than invented alongside it:
  *
- * - **One accent, used sparingly.** [ACCENT] is the icon's cyan, unchanged. A
+ * - **One accent, used sparingly.** [ACCENT] is the icon's cyan by default. A
  *   second accent would compete with it; state that needs to differ uses
- *   brightness, not hue.
+ *   brightness, not hue. The driver may swap which hue it is, or ask for none
+ *   at all — but never for two. See [HeadwayTheme] and ADR 0010.
  * - **Near-black, not black.** [GROUND] is a very dark blue-grey rather than
  *   `#000000`. Pure black against an OLED panel makes every edge a hard cutout
  *   and every dark UI look like a hole; a few points of lift gives surfaces
- *   something to sit on.
+ *   something to sit on. A driver who wants the true black anyway can have it —
+ *   `ThemeBase.MIDNIGHT` — because on a head unit at night that is a defensible
+ *   preference rather than a mistake.
  * - **Horizontal geometry.** Panels are wide and short, dividers are rules,
  *   progress is a bar. The icon is horizontal and a car screen is 800x480.
  *
  * ## Why this is Kotlin and not `themes.xml`
  *
- * Every car surface is built in code — `CarLauncherActivity` and
- * `DashboardActivity` construct their views directly, because the geometry has
+ * Every car surface is built in code — `CarShell` and its panes construct their views directly, because the geometry has
  * to be computed from the head unit's advertised resolution and density at run
  * time and no static dimension resource can know those. A palette split between
  * XML and Kotlin would be a palette that drifts.
@@ -70,32 +75,51 @@ import android.widget.TextView
 object Headway {
 
     // --- colour ---------------------------------------------------------------
+    //
+    // Every one of these reads the palette in force rather than holding a
+    // literal, so that a theme change is a re-render and not a restart. The
+    // *names* are unchanged from when they were constants, which is what let the
+    // whole app become themeable without editing a single call site.
 
-    /** The icon's cyan. The only accent in the product. */
-    val ACCENT: Int = Color.rgb(0x4F, 0xC3, 0xF7)
+    /** The accent. Cyan unless the driver chose otherwise; possibly no hue at all. */
+    val ACCENT: Int get() = palette.accent
 
     /** Accent at rest, for rules and inactive marks. */
-    val ACCENT_DIM: Int = Color.rgb(0x2A, 0x6B, 0x8A)
+    val ACCENT_DIM: Int get() = palette.accentDim
+
+    /** What is legible on top of [ACCENT]. */
+    val ON_ACCENT: Int get() = palette.onAccent
 
     /** Page background. */
-    val GROUND: Int = Color.rgb(0x0B, 0x0E, 0x11)
+    val GROUND: Int get() = palette.ground
 
     /** A panel sitting on [GROUND]. */
-    val SURFACE: Int = Color.rgb(0x15, 0x1A, 0x1F)
+    val SURFACE: Int get() = palette.surface
 
     /** A panel that is pressed, focused, or otherwise raised. */
-    val SURFACE_RAISED: Int = Color.rgb(0x1E, 0x25, 0x2C)
+    val SURFACE_RAISED: Int get() = palette.surfaceRaised
 
     /** Hairline between panels. */
-    val OUTLINE: Int = Color.rgb(0x2A, 0x32, 0x3A)
+    val OUTLINE: Int get() = palette.outline
 
-    val TEXT: Int = Color.rgb(0xEC, 0xEF, 0xF1)
-    val TEXT_MUTED: Int = Color.rgb(0x90, 0xA4, 0xAE)
+    val TEXT: Int get() = palette.text
+    val TEXT_MUTED: Int get() = palette.textMuted
 
     /** Reserved for genuine faults. Nothing decorative is ever this colour. */
-    val WARN: Int = Color.rgb(0xFF, 0xB3, 0x4D)
-    val FAULT: Int = Color.rgb(0xFF, 0x6B, 0x6B)
-    val GOOD: Int = Color.rgb(0x66, 0xD9, 0x9A)
+    val WARN: Int get() = palette.warn
+    val FAULT: Int get() = palette.fault
+    val GOOD: Int get() = palette.good
+
+    /**
+     * The palette every colour above reads.
+     *
+     * Held in a `@Volatile` field rather than resolved per call from
+     * preferences: these are read dozens of times while inflating one pane, on
+     * the thread that is drawing the car screen, and a `SharedPreferences` hit
+     * per colour would be absurd. [HeadwayTheme] owns writing it.
+     */
+    @Volatile
+    internal var palette: CarPalette = CarTheme.palette(ThemeChoice.DEFAULT)
 
     // --- motion ---------------------------------------------------------------
 

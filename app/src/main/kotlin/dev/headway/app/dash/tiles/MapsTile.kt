@@ -28,13 +28,14 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.LinearLayout
 import android.widget.TextView
+import dev.headway.app.dash.CarShell
 import dev.headway.app.dash.DashTile
 import dev.headway.app.nav.NavigationFeed
 import dev.headway.app.nav.NavigationStep
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
-import dev.headway.app.video.CarSurfaceMode
 import dev.headway.app.video.CarVideoStream
+import dev.headway.dash.PaneKind
 
 /**
  * The next turn, and one tap to the map itself.
@@ -68,7 +69,7 @@ class MapsTile(
 
     private val appContext: Context = context.applicationContext
 
-    override val kind: String = DashTile.Kind.MAPS
+    override val kind: String = PaneKind.MAPS
 
     private var instruction: TextView? = null
     private var distance: TextView? = null
@@ -187,15 +188,19 @@ class MapsTile(
             onStep("maps: ${chosen.second} can no longer be launched")
             return
         }
+        // Into the app pane, where the map is drawn by the map app itself and
+        // the panes around it keep working. The shell owns the decision; before
+        // ADR 0010 this handed the whole car screen to a capture and the
+        // dashboard ceased to exist for the rest of the journey.
+        val shell = CarShell.active()
+        if (shell != null) {
+            shell.openApp(chosen.first)
+            onStep("maps: opened ${chosen.second} in the app pane")
+            return
+        }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         if (!startOnPhoneDisplay(appContext, intent, onStep)) return
         onStep("maps: opened ${chosen.second}")
-        // And hand the car screen over. The map is the one thing a driver wants
-        // full size, and the app draws it itself — which is the only way any
-        // third-party UI reaches the car at all.
-        if (!CarVideoStream.showOnCar(CarSurfaceMode.MIRROR)) {
-            onStep("maps: could not give the car screen to ${chosen.second}")
-        }
     }
 
     /**
@@ -265,7 +270,9 @@ class MapsTile(
                 }
             }
             onStep("maps: navigating to '$query'")
-            CarVideoStream.showOnCar(CarSurfaceMode.MIRROR)
+            // The map app is now in front on the app display; bring that pane
+            // forward if the layout on screen has one.
+            intent.`package`?.let { CarShell.active()?.openApp(it) }
             return true
         }
     }

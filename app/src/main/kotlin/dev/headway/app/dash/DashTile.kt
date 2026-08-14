@@ -19,6 +19,7 @@ package dev.headway.app.dash
 
 import android.content.Context
 import android.view.View
+import dev.headway.dash.DashNode
 
 /**
  * One pane's worth of content on the car dashboard.
@@ -82,95 +83,13 @@ interface DashTile {
     fun describe(): String
 
     /**
-     * The tile kinds Headway ships.
+     * How this tile behaves while the driver is rearranging the layout.
      *
-     * Strings rather than an enum because they are persisted in saved layouts:
-     * a layout written by a build that had a kind this one does not must fail
-     * to resolve one pane, not fail to parse the file.
+     * Default: nothing. Most tiles are already inert under an edit overlay —
+     * they draw text and take taps that the overlay swallows. The one that is
+     * not is the app pane, whose picture is a `SurfaceView` punched through the
+     * window: an overlay drawn over it would be invisible, so it detaches its
+     * surface for the duration and shows a card the driver can actually see.
      */
-    object Kind {
-        /** Now playing, from `MediaSessionManager`. Any media app. */
-        const val NOW_PLAYING = "now_playing"
-
-        /**
-         * Browse a media app's library, from `MediaBrowserService`.
-         *
-         * The pane that makes Headway able to *start* something rather than only
-         * control what is already going, and the closest thing in the product to
-         * what Android Auto does with a music app: walk the tree the app
-         * publishes and draw it here. See `MediaBrowseTile`.
-         */
-        const val BROWSE = "browse"
-
-        /**
-         * The map, and the controls that go with it.
-         *
-         * Turn-by-turn drawn from whatever the navigating app publishes, plus a
-         * one-tap hand-off to that app full screen. See `MapsTile`.
-         */
-        const val MAPS = "maps"
-
-        /**
-         * Recent calls, contacts and whatever call is in progress.
-         *
-         * Android Auto's phone screen is a model rather than a rendering of the
-         * dialer, and so is this one. See `PhoneTile`.
-         */
-        const val PHONE = "phone"
-
-        /**
-         * A third-party app's own car interface, drawn by Headway.
-         *
-         * The template host: the app publishes `androidx.car.app` templates and
-         * Headway renders them with its own widgets at the car's size. This is
-         * what Android Auto does with a navigation or messaging app, and it is
-         * the only route by which another app's *interface* reaches the car
-         * screen without mirroring the phone. See `CarAppTile`.
-         *
-         * The argument is the flattened `ComponentName` of the app's
-         * `CarAppService`; with none, the pane offers a picker.
-         */
-        const val CAR_APP = "car_app"
-
-        /** Recent notifications with inline reply, from `NotificationListenerService`. */
-        const val MESSAGES = "messages"
-
-        /** An app's own `RemoteViews`, hosted with `AppWidgetHost`. */
-        const val WIDGET = "widget"
-
-        /** Headway's pinned-app grid. */
-        const val LAUNCHER = "launcher"
-
-        /** Clock, date, and link status. */
-        const val CLOCK = "clock"
-
-        /**
-         * A hole showing the mirrored phone screen.
-         *
-         * At most one per layout, and the dashboard enforces that: two holes
-         * would both show the same display, which is confusing rather than
-         * useful.
-         */
-        const val MIRROR = "mirror"
-
-        /** Everything, in the order a picker should offer them. */
-        val ALL: List<String> = listOf(
-            NOW_PLAYING, BROWSE, MAPS, PHONE, CAR_APP, MESSAGES, WIDGET, LAUNCHER, CLOCK, MIRROR,
-        )
-
-        /** A human name for a picker or a log line. */
-        fun describe(kind: String): String = when (kind) {
-            NOW_PLAYING -> "Now playing"
-            BROWSE -> "Music and podcasts"
-            MAPS -> "Maps"
-            PHONE -> "Phone"
-            CAR_APP -> "Car app"
-            MESSAGES -> "Messages"
-            WIDGET -> "Widget"
-            LAUNCHER -> "Apps"
-            CLOCK -> "Clock"
-            MIRROR -> "Phone screen"
-            else -> kind
-        }
-    }
+    fun onEditingChanged(editing: Boolean) = Unit
 }

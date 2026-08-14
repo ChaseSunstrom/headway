@@ -30,16 +30,16 @@ import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import dev.headway.transport.wireless.CarEndpoint
 import dev.headway.transport.wireless.CarNetworkCredentials
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.net.Socket
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Raised when the phone cannot join, or stay on, the car's access point.

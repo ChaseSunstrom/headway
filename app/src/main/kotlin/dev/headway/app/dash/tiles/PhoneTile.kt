@@ -32,6 +32,7 @@ import dev.headway.app.phone.CarPhone
 import dev.headway.app.phone.LiveCall
 import dev.headway.app.phone.RecentCall
 import dev.headway.app.ui.theme.Headway
+import dev.headway.dash.PaneKind
 
 /**
  * The phone pane: whoever is calling, and everyone who called before.
@@ -68,7 +69,7 @@ class PhoneTile(
 
     private val appContext: Context = context.applicationContext
 
-    override val kind: String = DashTile.Kind.PHONE
+    override val kind: String = PaneKind.PHONE
 
     private var callColumn: LinearLayout? = null
     private var callerLabel: TextView? = null

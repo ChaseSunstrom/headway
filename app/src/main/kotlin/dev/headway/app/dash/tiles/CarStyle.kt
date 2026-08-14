@@ -34,7 +34,7 @@ import dev.headway.app.ui.theme.HeadwayMark
 /**
  * The look every tile shares, and the reason the numbers here are plain dp.
  *
- * `CarLauncherActivity` has to compute its touch targets backwards from the car,
+ * the car screen has to compute its touch targets from the car's own density,
  * because it draws on display 0 and the car sees a scaled, letterboxed copy — a
  * 48 dp button there does not arrive as 48 dp. The dashboard is the opposite
  * case. Its views live on the `CarDisplay` virtual display, which is created at
@@ -45,7 +45,7 @@ import dev.headway.app.ui.theme.HeadwayMark
  * ## The palette is not this file's any more
  *
  * It used to be: a private set of six ARGB literals, copied from
- * `CarLauncherActivity`'s own private set of six ARGB literals, with
+ * a second private set of six ARGB literals, with
  * `MainActivity` holding a third that had already drifted a shade. Three copies
  * of one palette is three chances to change two of them. Everything here now
  * defers to [Headway], which derives from the launcher icon, and the only thing
@@ -58,13 +58,17 @@ import dev.headway.app.ui.theme.HeadwayMark
  */
 internal object CarStyle {
 
-    val BACKGROUND: Int = Headway.GROUND
-    val SURFACE: Int = Headway.SURFACE_RAISED
-    val TEXT: Int = Headway.TEXT
-    val DIM: Int = Headway.TEXT_MUTED
-    val ACCENT: Int = Headway.ACCENT
-    val GOOD: Int = Headway.GOOD
-    val BAD: Int = Headway.FAULT
+    // Accessors, not stored values. A stored one is read once when this object
+    // is first touched and then never again, which would freeze whichever
+    // palette happened to be in force at class-load time -- so a theme change
+    // would repaint the shell and leave every tile in the old colours.
+    val BACKGROUND: Int get() = Headway.GROUND
+    val SURFACE: Int get() = Headway.SURFACE_RAISED
+    val TEXT: Int get() = Headway.TEXT
+    val DIM: Int get() = Headway.TEXT_MUTED
+    val ACCENT: Int get() = Headway.ACCENT
+    val GOOD: Int get() = Headway.GOOD
+    val BAD: Int get() = Headway.FAULT
 
     /**
      * The size of anything a driver taps.
