@@ -68,9 +68,77 @@ class HeadUnitQuirksTest {
         assertEquals(6, defaults.announcedVersionMinor)
         // AACS VideoChannelHandler.cpp L73-L74 key-int-max.
         assertEquals(25, defaults.keyframeIntervalFrames)
-        // A2DP is the default media path per CLAUDE.md; AAP media audio is opt-in.
-        assertFalse(defaults.mediaAudioOverAap)
+        // Media audio goes over AAP, not A2DP. CLAUDE.md L75 says the opposite
+        // and rests on a premise that is false on the target vehicle: the head
+        // unit disables its A2DP route the moment projection starts, so
+        // "coexists with the AAP session" is silence rather than a fallback.
+        // Gearhead's own capture from this unit does the same thing —
+        // "disabling A2dp route while in projection" — and then streams the
+        // driver's music over the AAP MEDIA channel. ADR 0005 records the
+        // reversal and the evidence.
+        assertTrue(defaults.mediaAudioOverAap)
         assertTrue(defaults.touch.isIdentity)
+    }
+
+    /**
+     * A quirk file written before the default flipped must not pin the old one.
+     *
+     * This is the case that made the fix invisible on a real drive. The phone
+     * had a version-1 file on it — written by an earlier build, containing
+     * `"mediaAudioOverAap": false` because that was the default at the time and
+     * every knob is serialised whether or not the user chose it. Flipping the
+     * default in code changed nothing for that phone: the file said false, the
+     * parser believed it, and the car stayed silent.
+     *
+     * The schema version is what distinguishes "the user turned this off" from
+     * "a build that no longer exists wrote down its own default". Below
+     * [QuirkStore.MEDIA_ROUTE_DEFAULT_CHANGED_IN] the key is ignored and
+     * this build's default wins; at or above it, the file is authoritative
+     * because a file at that version could only have got its value from someone
+     * choosing it.
+     */
+    @Test
+    fun aPreVersionTwoFileDoesNotPinTheOldMediaDefault() {
+        file.writeText(
+            """
+            {
+              "version": 1,
+              "profiles": [
+                { "make": "*", "model": "*", "mediaAudioOverAap": false }
+              ]
+            }
+            """.trimIndent(),
+        )
+        val loaded = QuirkStore(file).load()
+        val quirks = QuirkStore.resolve(loaded.profiles, HeadUnitIdentity(make = "Chevrolet"))
+        assertTrue(
+            "a version-1 file must not hold media audio on the old default",
+            quirks.mediaAudioOverAap,
+        )
+        // Said out loud rather than applied silently: a driver reading the log
+        // has to be able to see that a value in their file was overridden.
+        assertTrue(
+            "the override must be reported",
+            loaded.warnings.any { it.contains("media audio", ignoreCase = true) },
+        )
+    }
+
+    /** At the current schema version the file wins, because someone chose it. */
+    @Test
+    fun aCurrentVersionFileCanStillTurnMediaAudioOff() {
+        file.writeText(
+            """
+            {
+              "version": ${QuirkStore.SCHEMA_VERSION},
+              "profiles": [
+                { "make": "*", "model": "*", "mediaAudioOverAap": false }
+              ]
+            }
+            """.trimIndent(),
+        )
+        val loaded = QuirkStore(file).load()
+        val quirks = QuirkStore.resolve(loaded.profiles, HeadUnitIdentity(make = "Chevrolet"))
+        assertFalse(quirks.mediaAudioOverAap)
     }
 
     @Test
