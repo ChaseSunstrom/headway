@@ -288,6 +288,35 @@ data class HeadUnitQuirks(
      */
     val suggestCarNetwork: Boolean = false,
 
+    /**
+     * Send `VideoFocusRequestNotification` (0x8007) once the stream is running.
+     *
+     * On by default, and the first quirk here that exists to settle an argument
+     * with a specific car rather than to accommodate one.
+     *
+     * The message asks the head unit to actually put the projection on its
+     * display. Without it, a 2021 Chevrolet Infotainment 3 unit accepted Start
+     * and acknowledged 1434 frames over fifteen seconds while its own screen
+     * stayed on "Connecting Android Auto phone" — decoding every frame and
+     * showing none. openauto's head unit volunteers the corresponding
+     * `VideoFocusNotification` unprompted
+     * (`openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp`
+     * L120-L125), which is why the emulator never showed the gap.
+     *
+     * But the drive that first carried this message is also the drive where the
+     * same unit closed the TCP connection 464 ms after Start, twice, having
+     * received nothing. Two changes landed together — this, and sending Start
+     * before the picture source existed — and only the second is definitely a
+     * bug. That one is fixed; this stays adjustable so the remaining
+     * possibility can be tested from a text file instead of a rebuild.
+     *
+     * Set `"videoFocusRequest": false` if the car drops the link about half a
+     * second after connecting. If it then stays up but shows "Connecting", the
+     * message is needed and something about *how* it is sent is wrong; if it
+     * still drops, this was never the cause.
+     */
+    val videoFocusRequest: Boolean = true,
+
     val touch: TouchQuirks = TouchQuirks(),
 ) {
 
@@ -300,7 +329,7 @@ data class HeadUnitQuirks(
         "mediaAudioOverAap=$mediaAudioOverAap keyframe=$keyframeIntervalFrames " +
         "hiddenSsid=$hiddenSsid pinBssid=${pinBssid ?: "auto"} " +
         "announceWifiChannel=$announceWifiChannel certificate=${certificate ?: "auto"} " +
-        "suggestCarNetwork=$suggestCarNetwork " +
+        "suggestCarNetwork=$suggestCarNetwork videoFocusRequest=$videoFocusRequest " +
         "touch=${if (touch.isIdentity) "identity" else touch.toString()}"
 
     companion object {
@@ -604,6 +633,7 @@ class QuirkStore(
         private const val KEY_PIN_BSSID = "pinBssid"
         private const val KEY_CERTIFICATE = "certificate"
         private const val KEY_SUGGEST_CAR_NETWORK = "suggestCarNetwork"
+        private const val KEY_VIDEO_FOCUS_REQUEST = "videoFocusRequest"
         private const val KEY_TOUCH = "touch"
 
         private const val KEY_INVERT_X = "invertX"
@@ -838,6 +868,9 @@ class QuirkStore(
                             ?: defaults.certificate,
                     suggestCarNetwork = json.optBoolean(
                         KEY_SUGGEST_CAR_NETWORK, defaults.suggestCarNetwork,
+                    ),
+                    videoFocusRequest = json.optBoolean(
+                        KEY_VIDEO_FOCUS_REQUEST, defaults.videoFocusRequest,
                     ),
                     touch = touch,
                 ),

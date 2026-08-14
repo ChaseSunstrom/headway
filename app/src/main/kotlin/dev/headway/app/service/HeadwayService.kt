@@ -1104,6 +1104,7 @@ open class HeadwayService : Service() {
             connectionFor = { id -> demux.channel(id) },
             projection = projection,
             surfaceFactory = surfaceFactory,
+            requestFocus = sessionQuirks.videoFocusRequest,
             onStep = ::step,
         )
         if (video == null) {

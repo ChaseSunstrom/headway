@@ -116,6 +116,14 @@ class CarVideoStream(
      * `Config` reply partway through [start].
      */
     private val surfaceFactory: ((EncoderConfiguration, ScreenEncoder.Sink) -> CarSurface?)? = null,
+    /**
+     * Whether to ask the head unit to put the projection on its display.
+     *
+     * The `videoFocusRequest` quirk. Defaults on; see `HeadUnitQuirks` for the
+     * two competing explanations of a 464 ms disconnect that this exists to let
+     * one drive distinguish.
+     */
+    private val requestFocus: Boolean = true,
     private val onStep: (String) -> Unit = {},
 ) {
 
@@ -205,51 +213,29 @@ class CarVideoStream(
                 "window ${response.maxUnacked ?: 1}"
         )
 
-        // Asking for the screen. openauto volunteers a `VideoFocusNotification`
-        // by chaining it onto the Config response
-        // (`openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp`
-        // L120-L125), so against the emulator the projection appears without
-        // this and its absence was invisible. A real 2021 Chevrolet
-        // Infotainment 3 unit volunteers nothing: it answered Config, accepted
-        // Start, and acknowledged 1434 frames over fifteen seconds while its
-        // screen stayed on "Connecting Android Auto phone". Every one of those
-        // frames was decoded and thrown away, because nothing had asked the unit
-        // to put the projection on the display.
-        //
-        // Sent before Start, which is where the documented sequence puts the
-        // notification, and not waited for: nothing in the protocol obliges a
-        // head unit to answer, and blocking here would spend the ~15 s deadline
-        // on a reply that may never come. The answer, when it arrives, is
-        // recorded by the channel as it skips past it looking for
-        // acknowledgements.
-        channel.requestVideoFocus(
-            mode = VideoFocusMode.VIDEO_FOCUS_PROJECTED,
-            reason = VideoFocusReason.PHONE_SCREEN_OFF,
-        )
-
-        channel.sendStart(sessionId = sessionId, configurationIndex = index)
-
         val videoPump = VideoPump(channel, onStep)
         pump = videoPump
-
-        // The car-native surface first. It draws the dashboard at the head
-        // unit's own resolution, so nothing is scaled and the phone's screen is
-        // not in the picture; mirroring is the fallback, not the plan. See
-        // CarSurface for why that inversion happened.
         streamScope = scope
 
-        val native = surfaceFactory?.invoke(encoderConfiguration, videoPump)
-        if (native != null) {
-            surface = native
-            mode = CarSurfaceMode.DASHBOARD
-            pumpJob = scope.launch { videoPump.pump() }
-            publishSwitch()
-            onStep("video stream started from the car display")
-            return true
-        }
-
-        val token = projection
-        if (token == null) {
+        // Build the picture source BEFORE telling the head unit to start.
+        //
+        // This ordering is not a preference, it is the bug. A real 2021
+        // Chevrolet Infotainment 3 unit closed the TCP connection 464 ms after
+        // Start, twice in one drive, having received no frame — because
+        // creating the car surface goes through `Dialog.show`, which must run on
+        // the main thread, which `CarSurface.showOnMainThread` waits up to three
+        // seconds for. Start had already gone out. The unit was told "video is
+        // beginning", heard nothing, and hung up while the session thread was
+        // still parked on a `CountDownLatch`.
+        //
+        // Doing it this way means Start is the last thing before pixels rather
+        // than the first thing after a promise: by the time it is sent, either a
+        // surface exists and is drawing, or the encoder is already capturing, or
+        // we have returned false without claiming a stream at all. The pump job
+        // is launched after Start so nothing is transmitted before the head unit
+        // has been told the session id it belongs to.
+        val source = openSource(encoderConfiguration, videoPump)
+        if (source == null) {
             onStep(
                 "no car display and no screen capture grant, so there is nothing to send. " +
                     "The car will stay on its connecting screen"
@@ -257,19 +243,84 @@ class CarVideoStream(
             return false
         }
 
+        channel.sendStart(sessionId = sessionId, configurationIndex = index)
+
+        pumpJob = scope.launch { videoPump.pump() }
+        if (source == SourceKind.MIRROR) {
+            val screenEncoder = encoder
+            if (screenEncoder != null) {
+                sourceJob = scope.launch { screenEncoder.encodeUntilStopped() }
+            }
+        }
+        publishSwitch()
+        onStep(
+            if (source == SourceKind.DASHBOARD) {
+                "video stream started from the car display"
+            } else {
+                "video stream started by mirroring the phone screen"
+            }
+        )
+
+        // Asking for the screen, once there is a screen to ask about.
+        //
+        // openauto volunteers a `VideoFocusNotification` by chaining it onto the
+        // Config response
+        // (`openauto/src/autoapp/Service/MediaSink/VideoMediaSinkService.cpp`
+        // L120-L125), so against the emulator the projection appears without
+        // this and its absence was invisible. The Chevrolet unit volunteers
+        // nothing: on build 84 it answered Config, accepted Start, and
+        // acknowledged 1434 frames over fifteen seconds while its screen stayed
+        // on "Connecting Android Auto phone" — every frame decoded and thrown
+        // away, because nothing had asked it to put the projection on the
+        // display.
+        //
+        // After Start rather than before it, and behind a quirk, because the
+        // request is also the prime suspect for that same unit hanging up: the
+        // 464 ms disconnect appeared in the first drive that carried this
+        // message, and build 84 without it streamed for fifteen seconds. Which
+        // of the two it was — this or the Start-before-pixels stall above — one
+        // drive now distinguishes, because the stall is gone and this can be
+        // turned off from the quirk file without a rebuild.
+        if (requestFocus) {
+            channel.requestVideoFocus(
+                mode = VideoFocusMode.VIDEO_FOCUS_PROJECTED,
+                reason = VideoFocusReason.PHONE_SCREEN_OFF,
+            )
+        } else {
+            onStep("video focus request suppressed by the videoFocusRequest quirk")
+        }
+        return true
+    }
+
+    private enum class SourceKind { DASHBOARD, MIRROR }
+
+    /**
+     * Gets pixels flowing into [videoPump], or returns null if nothing can.
+     *
+     * The car-native surface first: it draws the dashboard at the head unit's
+     * own resolution, so nothing is scaled and the phone's screen is not in the
+     * picture. Mirroring is the fallback, not the plan — see `CarSurface` for
+     * why that inversion happened.
+     */
+    private fun openSource(
+        encoderConfiguration: EncoderConfiguration,
+        videoPump: VideoPump,
+    ): SourceKind? {
+        val native = surfaceFactory?.invoke(encoderConfiguration, videoPump)
+        if (native != null) {
+            surface = native
+            mode = CarSurfaceMode.DASHBOARD
+            return SourceKind.DASHBOARD
+        }
+
+        val token = projection ?: return null
         val screenEncoder = ScreenEncoder(encoderConfiguration, onStep = onStep)
         encoder = screenEncoder
-
         // The order matters: the encoder must have a sink before it produces
         // anything, and startCapture begins producing immediately.
         screenEncoder.startCapture(token, videoPump)
-
         mode = CarSurfaceMode.MIRROR
-        sourceJob = scope.launch { screenEncoder.encodeUntilStopped() }
-        pumpJob = scope.launch { videoPump.pump() }
-        publishSwitch()
-        onStep("video stream started by mirroring the phone screen")
-        return true
+        return SourceKind.MIRROR
     }
 
     /**
@@ -459,11 +510,12 @@ class CarVideoStream(
             connectionFor: (Int) -> MessageChannel,
             projection: MediaProjection?,
             surfaceFactory: ((EncoderConfiguration, ScreenEncoder.Sink) -> CarSurface?)? = null,
+            requestFocus: Boolean = true,
             onStep: (String) -> Unit = {},
         ): CarVideoStream? {
             val service = videoServiceOf(profile) ?: return null
             val channel = VideoChannel(connectionFor(service.id), service.id, onStep)
-            return CarVideoStream(channel, service, projection, surfaceFactory, onStep)
+            return CarVideoStream(channel, service, projection, surfaceFactory, requestFocus, onStep)
         }
     }
 }
