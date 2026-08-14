@@ -131,6 +131,18 @@ object HeadwaySettings {
      */
     const val KEY_HOLD_PROJECTION: String = "hold_projection"
 
+    /**
+     * The Bluetooth address of the car, once a session has reached its
+     * handshake.
+     *
+     * Remembered rather than asked for, and remembered from the *handshake*
+     * rather than from the driver's pick, so the address recorded is one that
+     * actually spoke Android Auto. `CarPresenceReceiver` compares against it:
+     * without it, every pair of headphones that connects would bring an AAP
+     * session up.
+     */
+    const val KEY_CAR_ADDRESS: String = "car_bluetooth_address"
+
     fun of(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -145,4 +157,15 @@ object HeadwaySettings {
 
     fun holdProjection(context: Context): Boolean =
         of(context).getBoolean(KEY_HOLD_PROJECTION, true)
+
+    fun carAddress(context: Context): String? =
+        runCatching { of(context).getString(KEY_CAR_ADDRESS, null) }.getOrNull()
+            ?.takeIf { it.isNotBlank() }
+
+    /** Called once a session has reached the car's Bluetooth handshake. */
+    fun rememberCar(context: Context, address: String) {
+        if (address.isBlank()) return
+        if (carAddress(context) == address) return
+        runCatching { of(context).edit().putString(KEY_CAR_ADDRESS, address).apply() }
+    }
 }

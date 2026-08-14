@@ -674,6 +674,12 @@ open class HeadwayService : Service() {
             onStep = ::step,
         ).use { link ->
             val credentials = link.fetchCredentials()
+            // Remembered here, and only here: the address is now known to belong
+            // to something that speaks Android Auto over RFCOMM, which is what
+            // `CarPresenceReceiver` needs before it will start a session on its
+            // own. Recording the driver's pick instead would arm the automatic
+            // start against a device that may never have worked.
+            HeadwaySettings.rememberCar(this@HeadwayService, car.address)
             // From here to the end of the attempt, something has to keep
             // reading Bluetooth. The head unit does not go quiet once it has
             // handed over the credentials -- it pings, and it re-announces --
