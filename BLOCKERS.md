@@ -880,3 +880,38 @@ device-and-version question that no amount of source reading settles. One drive
 with the log exported answers it. If the answer is "refused", the fallback is a
 notification the driver taps once per drive, which is worse than automatic and
 better than a pane that never fills.
+
+
+---
+
+## B-019 — A VPN in lockdown mode can still keep Headway off the car's network
+
+**Status:** Open. Mitigated for the ordinary case; the remaining case needs one
+setting the driver owns.
+
+**Blocked:** The whole link, for a driver running an always-on VPN with "block
+connections without VPN" enabled.
+
+**Why:** A VPN becomes the process's default network. Anything not explicitly
+bound to another one goes into the tunnel, and the car's access point has no
+route to a VPN concentrator — so the Bluetooth handshake succeeds, the Wi-Fi
+join succeeds, and the TCP connect times out with nothing naming the cause. A
+driver comparing against Android Auto has no reason to suspect it: Gearhead is a
+privileged system app and the platform exempts it.
+
+**Workaround shipped:** Headway now calls
+`ConnectivityManager.bindProcessToNetwork` for the car's network for the life of
+the session — which CLAUDE.md asked for and which nothing had ever called — so
+every socket in the process goes to the car whether or not a VPN is up, and the
+binding is undone when the network goes so the phone is not left without
+internet. The VPN is also named in the session log, with what to change.
+
+That is enough for a normal VPN. It is *not* enough under lockdown: netd drops
+non-VPN traffic for apps that are not exempt, and no unprivileged API exempts
+one — `CONNECTIVITY_USE_RESTRICTED_NETWORKS` is `signature|privileged`. The log
+now says so in as many words, and names the two settings that work: turn off
+"Block connections without VPN", or add Headway to the VPN app's excluded apps.
+
+**How to close it:** it cannot be closed from inside the app. What can be
+improved is the diagnosis, and that is done: the VPN line appears before the
+first connect attempt rather than after the failure.

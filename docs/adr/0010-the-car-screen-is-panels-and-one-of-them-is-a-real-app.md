@@ -64,7 +64,7 @@ exist continuously for the whole drive. There is no mode switch left to make.
 | Claim | Evidence |
 |---|---|
 | A projection can render into any `Surface` | `MediaProjection.createVirtualDisplay(..., Surface surface, ...)`: *"The surface to which the content of the virtual display should be rendered"* — API 21, no permission beyond the grant |
-| A pane can supply that `Surface` | `SurfaceView.getHolder().getSurface()`. Headway already does exactly this for a car app's own rendering: `CarAppSurfaceView` hands `holder.surface` to a third-party process (`CarAppSurfaceView.kt:116`) |
+| A pane can supply that `Surface` | A `TextureView`'s `SurfaceTexture`, wrapped in a `Surface`. See the amendment below — this began as a `SurfaceView` and a real drive showed why it could not stay one |
 | The picture can move between panes without asking the driver anything | `VirtualDisplay.setSurface(Surface)` — *"Sets the surface that backs the virtual display"* — **API 20**, public |
 | A pane that changes size does not need a new projection | `VirtualDisplay.resize(int,int,int)` — **API 21**, public |
 | ...but there may only ever be **one** such display | `createVirtualDisplay` throws `SecurityException` *"If the target SDK is U and up, and if this instance has already taken a recording through #createVirtualDisplay, but stop() wasn't invoked"* |
@@ -137,6 +137,45 @@ contrast on all eighteen; it caught two real defects the first time it ran.
 4. **The phone's screen must stay on** whenever the simulated display is in use —
    `OverlayDisplayWindow` forwards display 0's power state. Unchanged from ADR
    0008, and now the *only* remaining reason the phone screen is involved at all.
+
+## Amendment, 2026-08-14 — after the first drive
+
+Three things the derivation above got right in principle and wrong in practice.
+
+**The pane is a `TextureView`, not a `SurfaceView`.** A `SurfaceView` is not
+drawn by the window: it is a separate `SurfaceControl` layer that SurfaceFlinger
+composites onto the display, with a hole punched through the window where it
+sits. That is one more thing that has to hold on a *virtual* display whose output
+is a codec input surface, and when it does not the pane is a black rectangle with
+no error anywhere — which is exactly what the drive reported. A `TextureView`'s
+frames are drawn by the window in the same pass as every other pixel of the
+dashboard, so if the dashboard reaches the car then so does the app. It costs a
+GPU copy per frame, which at 800x480 is nothing, and it removes the z-order
+problem that made the old code hide the pane whenever anything had to be drawn
+over it.
+
+**The grant has to be reachable from the car.** Screen capture cannot be granted
+without an activity, and a link that comes up on its own has none — so an
+automatically connected session had app panes that said "screen sharing is off"
+and no way to turn it on. `ProjectionRequestActivity` is a transparent activity
+whose whole job is to ask and hand the result to the running service; tapping a
+dormant pane opens it.
+
+**The consent must not be allowed to capture the wrong thing.** The ordinary
+`createScreenCaptureIntent()` also offers "a single app", and a driver who picks
+it gets a capture of one app that never changes while Headway goes on launching
+things and mapping touches as though the whole screen were recorded — frames
+arrive, they are simply of the wrong thing.
+`MediaProjectionConfig.createConfigForDefaultDisplay()` (API 34) removes the
+choice. It is not applied on the simulated-display path, where the driver *must*
+be able to pick that display.
+
+**And the simulated display is no longer required.** Apps run on the phone's own
+screen by default: nothing to enable in Developer options, nothing to turn on and
+off per drive. The cost is a portrait picture in a landscape panel, which is why
+`PaneFit.cover` exists — crop to fill instead of fitting inside, chosen per taste
+from the car screen. The simulated display stays as the option that gives a
+car-shaped picture for anyone willing to pay its two costs.
 
 ## Consequences
 
