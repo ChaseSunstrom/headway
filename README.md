@@ -105,12 +105,12 @@ so a thumb steadying itself on the dashboard cannot rearrange your car.
 | Panel | What it is |
 |---|---|
 | **App** | **A real app, running, inside the panel** |
-| **Maps** | The next instruction, large, from whichever app is navigating |
+| **Maps** | The navigator's **own map**, drawn into the panel; the next instruction, large, when your map app has no car interface |
 | **Now playing / Music** | Any media app's library, walked and drawn by Headway, plus transport controls |
 | **Phone** | The live call, and the last twelve calls, from the call log |
 | **Car app** | A third-party app's *own* interface, drawn by Headway |
 | **Messages** | Conversations, with the app's own inline reply |
-| **Widget** | An app's own home-screen widget |
+| **Widget** | An app's own home-screen widget — **any number, all different apps, all at once** |
 | **All apps / Clock** | Headway's own |
 
 **The App panel is the one that changed.** Opening an app used to hand the whole
@@ -125,6 +125,31 @@ has the derivation and the four things it costs.
 
 There is no full-screen *mode* any more; "full screen" is a layout with one
 panel in it, which you can make, pin and reach in one tap.
+
+**Several different apps on screen at the same time** is what **Widget** and
+**Car app** panels are for. Screen capture is one grant, one virtual display,
+one app — Android allows a second of none of them — so a layout of four App
+panels has one live panel and three places to move it to. A layout of four
+Widget panels is four different apps drawing at once, live, by the apps
+themselves, with nothing captured. The panel picker says so where you choose.
+
+Adding a widget costs one tap on the phone the first time ever: Android makes an
+app prove it may host widgets, and the permission that skips that dialog is
+reserved for system apps. After that, widgets add with no phone interaction.
+
+**Which apps may appear at all is yours to decide, one app at a time**, on the
+phone, parked. Nothing is allowed by default. The app picker, the widget picker,
+the car-app list, the launcher grid and "open X" by voice all pass the same gate,
+so an app you have not allowed cannot reach the car screen by any route.
+
+**Sharing one app, not your whole screen.** When Android asks what to share,
+pick the single-app option. Android then excludes the status bar, the navigation
+bar and your notifications from what the car sees, and reports the app's own
+size — so the panel gets the app at the app's shape instead of a phone-shaped
+rectangle. Headway also blanks your phone for the drive in that case, which it
+will not do if you shared the whole screen, because then the black would be all
+the car got. The screen stays *on*: Android stops a shared app drawing when its
+display sleeps, so a phone that is on and black is the closest there is.
 
 **Themes**: three bases (dark, true black, light) and six accents, one of which
 is no accent at all. Changed from the car screen or from the phone.
@@ -153,6 +178,20 @@ install-time risks that come with it are in
 [ADR 0007](docs/adr/0007-headway-as-a-car-app-host.md) and BLOCKERS B-012 to
 B-014. If an app refuses anyway, the pane says which app and why, rather than
 sitting empty.
+
+### The Voice button, and what it listens with
+
+The car's cabin microphone, over the AAP AV-input channel, into a Vosk model that
+ships in the APK. No network, at any point: recognition happens on the phone and
+nothing is written to disk.
+
+A head unit that refuses to offer its microphone used to leave the button
+pressable and silent. Now it says so, and — if you grant Headway the microphone
+permission — it listens with the **phone's** microphone instead. That is a
+fallback and stays one: the cabin microphone is echo-cancelled, aimed at the
+driver and above the road noise, and a phone in a cup holder is none of those.
+The permission is never requested at launch; there is a row for it in the
+checklist on the setup screen, asked for only when you press it.
 
 ### Apps with no model at all
 
@@ -421,6 +460,25 @@ looks like on the panel.
    the setup screen has them, and the section above has why it works. Apps that
    publish a car interface of their own need none of this; check the **Car
    apps** tab first.
+
+### If you run a VPN
+
+Headway binds its whole process and every socket to the car's network, which is
+enough for an ordinary VPN. It is **not** enough for one set to *block
+connections without VPN* — Android's lockdown mode — where the kernel drops
+non-VPN traffic for every app that is not exempt, and there is no unprivileged
+way to be exempt: the permission Android Auto relies on
+(`CONNECTIVITY_USE_RESTRICTED_NETWORKS`) is reserved for system apps. The symptom
+is exact and misleading: Bluetooth completes, the Wi-Fi join completes, and then
+nothing.
+
+Two fixes, both in your VPN app, and the setup screen shows a card that names it
+and opens it when a VPN is running:
+
+- **Add Headway to the VPN's excluded / split-tunnelling apps.** The narrower of
+  the two: the rest of your phone stays on the VPN.
+- **Or turn off "Block connections without VPN"** (called always-on or lockdown
+  depending on the app).
 
 If it still does not connect, export the log (**Diagnostics → Export the
 session log**) and read the join lines. They now say what the
