@@ -6,4 +6,17 @@
         <item name="android:windowBackground">#FF000000</item>
         <item name="android:statusBarColor">#FF000000</item>
     </style>
+
+    <!--
+      For ProjectionRequestActivity, whose entire visible output is the system's
+      own consent sheet. A window background of any colour would flash over
+      whatever the driver was looking at.
+    -->
+    <style name="Theme.Headway.Invisible" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

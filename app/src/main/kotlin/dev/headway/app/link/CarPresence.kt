@@ -103,19 +103,18 @@ class CarPresenceReceiver : BroadcastReceiver() {
         if (!HeadwaySettings.autoConnect(context)) return
         val device = deviceOf(intent) ?: return
         val expected = HeadwaySettings.carAddress(context)
-        if (expected == null) {
-            // Nothing to compare against, and connecting to whatever Bluetooth
-            // device happens to be nearby would mean a pair of headphones
-            // bringing up an AAP session. The address is remembered the first
-            // time a session gets as far as the car's Bluetooth handshake.
-            SessionLog.shared.info(
-                TAG,
-                "${device.address} connected, but no car has been remembered yet; " +
-                    "press Connect once and this becomes automatic",
-            )
+        if (expected != null) {
+            if (!expected.equals(device.address, ignoreCase = true)) return
+        } else if (!advertisesAndroidAuto(context, device)) {
+            // Nothing remembered yet, so the device has to prove it is a car:
+            // it must advertise the Android Auto wireless RFCOMM service. That
+            // is the same test `BluetoothCarLink.bondedCars` uses to pick which
+            // paired device to talk to, so a pair of headphones cannot bring up
+            // an AAP session — and a driver who has never connected before still
+            // gets the first one for free, which "remember it at the handshake"
+            // alone did not give them.
             return
         }
-        if (!expected.equals(device.address, ignoreCase = true)) return
 
         SessionLog.shared.info(TAG, "the car's Bluetooth connected; starting the session")
         val started = runCatching { HeadwayService.start(context, carAddress = device.address) }
@@ -123,6 +122,32 @@ class CarPresenceReceiver : BroadcastReceiver() {
             SessionLog.shared.warn(TAG, "could not start on my own: $failure")
             notifyManualStart(context, failure)
         }
+    }
+
+    /**
+     * Whether [device] offers the service Headway speaks.
+     *
+     * Reading `uuids` needs `BLUETOOTH_CONNECT`, which Headway holds and the
+     * driver granted; without it this answers false and the receiver waits for a
+     * remembered address instead, which is the safe direction to fail in.
+     */
+    private fun advertisesAndroidAuto(context: Context, device: BluetoothDevice): Boolean {
+        if (context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            return false
+        }
+        val adapter = BluetoothCarLink.adapterOf(context) ?: return false
+        val cars = runCatching { BluetoothCarLink.bondedCars(adapter) }.getOrDefault(emptyList())
+        val match = cars.any { it.address.equals(device.address, ignoreCase = true) }
+        if (match) {
+            SessionLog.shared.info(
+                TAG,
+                "${device.address} advertises the Android Auto wireless service; treating it " +
+                    "as the car",
+            )
+        }
+        return match
     }
 
     @Suppress("DEPRECATION")

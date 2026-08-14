@@ -181,6 +181,20 @@
         </activity>
 
         <!--
+          Asks for screen sharing and finishes. Transparent, no UI, no history:
+          it exists because screen capture cannot be granted without an activity
+          and a session that comes up on its own has none. Reachable from the
+          car screen by tapping an app pane.
+        -->
+        <activity
+            android:name=".video.ProjectionRequestActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Headway.Invisible" />
+
+        <!--
           There is deliberately no car-facing *activity* any more.
 
           The car screen is a Presentation on a display Headway creates, drawn by

@@ -20,8 +20,9 @@ package dev.headway.app.dash.tiles
 import android.content.Context
 import android.graphics.Rect
 import android.view.Gravity
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -32,6 +33,7 @@ import dev.headway.app.dash.DashTile
 import dev.headway.app.ui.theme.CarMetrics
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.video.AppPaneHost
+import dev.headway.app.video.ProjectionRequestActivity
 import dev.headway.dash.PaneFit
 import dev.headway.dash.PaneKind
 import dev.headway.dash.PaneRect
@@ -42,15 +44,30 @@ import dev.headway.dash.PaneRect
  * ## How another app's pixels get in here
  *
  * They are not this app's pixels and this class never touches them. The pane
- * owns a `SurfaceView`; the session's one `MediaProjection` renders the display
- * the app is running on into that `SurfaceView`'s `Surface`; SurfaceFlinger
- * composes the result into the car display along with every other pane, and the
- * encoder sends the whole frame. Headway draws the frame around the picture and
- * nothing inside it. See [AppPaneHost] and ADR 0010.
+ * owns a `TextureView`; the session's one `MediaProjection` renders the display
+ * the app is running on into that view's `SurfaceTexture`; the car display's
+ * window draws it like any other view, and the encoder sends the whole frame.
+ * Headway draws the frame around the picture and nothing inside it. See
+ * [AppPaneHost] and ADR 0010.
  *
- * This is the same shape `CarAppSurfaceView` already uses to let a car app draw
- * its own map into a pane — a `SurfaceView`, a `holder.surface`, and somebody
- * else's rendering. The difference is only which "somebody else".
+ * ## Why a `TextureView` and not a `SurfaceView`
+ *
+ * A `SurfaceView` is not drawn by the window at all. It is a separate
+ * `SurfaceControl` layer that SurfaceFlinger composites onto the display, with
+ * a hole punched through the window where it sits. That works on a physical
+ * display and it is one more thing that has to be true on a *virtual* display
+ * whose output is a codec input surface — a second composition path, a second
+ * set of z-order rules, and a black rectangle if any of it is not honoured. On
+ * a car screen the symptom is indistinguishable from "the feature does not
+ * work", which is exactly what the first drive with this pane reported.
+ *
+ * A `TextureView` has none of that. Its frames arrive in a `SurfaceTexture` and
+ * are drawn *by the window*, in the ordinary view pass that produces every other
+ * pixel of the dashboard, so if the dashboard reaches the car then so does the
+ * app. It costs a GPU copy per frame, which on an 800x480 panel is nothing, and
+ * it buys two things besides certainty: anything drawn over the pane (the edit
+ * overlay, a sheet) is actually visible, and the pane can be hidden and shown
+ * without tearing a hole in the window.
  *
  * ## Live and dormant
  *
@@ -86,15 +103,18 @@ class AppPaneTile(
     override val kind: String get() = PaneKind.APP
 
     private lateinit var root: FrameLayout
-    private lateinit var surfaceView: SurfaceView
+    private lateinit var picture: TextureView
     private lateinit var dormantCard: View
+
+    /** The surface wrapping [picture]'s texture, owned here and released here. */
+    private var surface: Surface? = null
 
     /** Set by the shell. Only one app pane in a layout is ever true. */
     private var live = false
 
     private var editing = false
 
-    /** True between `surfaceCreated` and `surfaceDestroyed`. */
+    /** True while the texture exists and can be rendered into. */
     private var surfaceReady = false
 
     private var lastBoundWidth = 0
@@ -107,15 +127,30 @@ class AppPaneTile(
             // A tap on a dormant pane is the gesture that moves the picture here.
             // A tap on a live one never arrives: the shell routes touches inside
             // the picture to the app before the view tree sees them.
-            setOnClickListener { onFocusRequested(this@AppPaneTile) }
+            //
+            // With no grant at all the tap means something else, and it is the
+            // only way out of that state from the driver's seat: open the
+            // consent sheet on the phone. A pane that said "screen sharing is
+            // off" and did nothing when pressed was a dead end -- the driver
+            // would have had to disconnect and reconnect from the phone to get
+            // a dialog that this can raise directly.
+            setOnClickListener {
+                if (AppPaneHost.available) {
+                    onFocusRequested(this@AppPaneTile)
+                } else {
+                    onStep("app pane: asking for screen sharing")
+                    ProjectionRequestActivity.ask(context)
+                }
+            }
         }
 
-        surfaceView = SurfaceView(context).apply {
+        picture = TextureView(context).apply {
+            isOpaque = true
             visibility = View.GONE
-            holder.addCallback(holderCallback)
+            surfaceTextureListener = textureListener
         }
         root.addView(
-            surfaceView,
+            picture,
             FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.CENTER),
         )
 
@@ -131,32 +166,72 @@ class AppPaneTile(
         return root
     }
 
-    private val holderCallback = object : SurfaceHolder.Callback {
-        override fun surfaceCreated(holder: SurfaceHolder) {
+    private val textureListener = object : TextureView.SurfaceTextureListener {
+
+        override fun onSurfaceTextureAvailable(
+            texture: SurfaceTexture,
+            width: Int,
+            height: Int,
+        ) {
             surfaceReady = true
+            attach(texture, width, height)
         }
 
-        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-            surfaceReady = true
-            if (!shouldShowPicture()) return
-            // The first surface can arrive before the pane has been measured, in
-            // which case the view is still MATCH_PARENT and this size is the
-            // whole pane rather than the source's shape. Binding anyway is
-            // right — something on the car beats nothing — and this asks for the
-            // fit again so the next layout pass corrects it.
-            resizePicture()
-            if (AppPaneHost.bind(this@AppPaneTile, holder.surface, width, height)) {
-                lastBoundWidth = width
-                lastBoundHeight = height
-                dormantCard.visibility = View.GONE
-            } else {
-                showDormant()
-            }
+        override fun onSurfaceTextureSizeChanged(
+            texture: SurfaceTexture,
+            width: Int,
+            height: Int,
+        ) {
+            attach(texture, width, height)
         }
 
-        override fun surfaceDestroyed(holder: SurfaceHolder) {
+        /**
+         * @return true to let the platform release the texture. The surface
+         *   wrapping it is released here first — the virtual display is pointed
+         *   at it, and letting the texture go while a display is still rendering
+         *   into it is the one ordering that produces a dead pane rather than an
+         *   error.
+         */
+        override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
             surfaceReady = false
             AppPaneHost.unbind(this@AppPaneTile)
+            surface?.let { runCatching { it.release() } }
+            surface = null
+            return true
+        }
+
+        override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+    }
+
+    /**
+     * Points the projection at this pane's texture, at [width]x[height].
+     *
+     * The texture can become available before the pane has been measured, in
+     * which case the view is still MATCH_PARENT and this size is the whole pane
+     * rather than the source's shape. Binding anyway is right — something on the
+     * car beats nothing — and [resizePicture] asks for the fit again so the next
+     * layout pass corrects it.
+     */
+    private fun attach(texture: SurfaceTexture, width: Int, height: Int) {
+        if (!shouldShowPicture()) return
+        resizePicture()
+        // The texture's own buffer size has to match, or the picture is scaled
+        // twice: once by the projection into the buffer, and again by the view
+        // when it draws a buffer of a different size.
+        runCatching { texture.setDefaultBufferSize(width, height) }
+        val existing = surface
+        val target = if (existing != null && existing.isValid) {
+            existing
+        } else {
+            runCatching { existing?.release() }
+            Surface(texture).also { surface = it }
+        }
+        if (AppPaneHost.bind(this@AppPaneTile, target, width, height)) {
+            lastBoundWidth = width
+            lastBoundHeight = height
+            dormantCard.visibility = View.GONE
+        } else {
+            showDormant()
         }
     }
 
@@ -166,7 +241,9 @@ class AppPaneTile(
 
     override fun stop() {
         AppPaneHost.unbind(this)
-        if (::surfaceView.isInitialized) surfaceView.visibility = View.GONE
+        if (::picture.isInitialized) picture.visibility = View.GONE
+        surface?.let { runCatching { it.release() } }
+        surface = null
         surfaceReady = false
     }
 
@@ -213,12 +290,12 @@ class AppPaneTile(
      * recomputed from the layout.
      */
     fun pictureRect(): PaneRect {
-        if (!::surfaceView.isInitialized) return EMPTY
-        if (surfaceView.visibility != View.VISIBLE || !live) return EMPTY
+        if (!::picture.isInitialized) return EMPTY
+        if (picture.visibility != View.VISIBLE || !live) return EMPTY
         val location = IntArray(2)
-        surfaceView.getLocationInWindow(location)
-        val width = surfaceView.width
-        val height = surfaceView.height
+        picture.getLocationInWindow(location)
+        val width = picture.width
+        val height = picture.height
         if (width <= 0 || height <= 0) return EMPTY
         return PaneRect(location[0], location[1], location[0] + width, location[1] + height)
     }
@@ -236,10 +313,17 @@ class AppPaneTile(
         if (shouldShowPicture()) {
             dormantCard.visibility = View.GONE
             resizePicture()
-            surfaceView.visibility = View.VISIBLE
+            picture.visibility = View.VISIBLE
+            // A texture that already exists gets no fresh callback when the pane
+            // merely becomes live again, so the bind is re-driven here. Without
+            // it, a pane that lost focus and got it back would stay black.
+            val texture = picture.surfaceTexture
+            if (texture != null && picture.width > 0 && picture.height > 0) {
+                attach(texture, picture.width, picture.height)
+            }
         } else {
             AppPaneHost.unbind(this)
-            surfaceView.visibility = View.GONE
+            picture.visibility = View.GONE
             showDormant()
         }
     }
@@ -257,7 +341,7 @@ class AppPaneTile(
      * stretch for the length of the gesture.
      */
     private fun resizePicture() {
-        if (!::surfaceView.isInitialized) return
+        if (!::picture.isInitialized) return
         val paneWidth = root.width
         val paneHeight = root.height
         val sourceWidth = AppPaneHost.sourceWidth
@@ -265,12 +349,12 @@ class AppPaneTile(
         if (paneWidth <= 0 || paneHeight <= 0 || sourceWidth <= 0 || sourceHeight <= 0) return
         val fitted = PaneFit.fit(sourceWidth, sourceHeight, paneWidth, paneHeight)
         if (fitted.width <= 0 || fitted.height <= 0) return
-        val params = surfaceView.layoutParams as FrameLayout.LayoutParams
+        val params = picture.layoutParams as FrameLayout.LayoutParams
         if (params.width == fitted.width && params.height == fitted.height) return
         params.width = fitted.width
         params.height = fitted.height
         params.gravity = Gravity.CENTER
-        surfaceView.layoutParams = params
+        picture.layoutParams = params
     }
 
     private fun buildDormantCard(context: Context): View {
@@ -325,7 +409,7 @@ class AppPaneTile(
         label.text = app?.first ?: "App"
         hint.text = when {
             editing -> "This pane shows a running app"
-            !AppPaneHost.available -> "Screen sharing is off. Turn it on in Headway on the phone"
+            !AppPaneHost.available -> "Tap here, then allow screen sharing on the phone"
             AppPaneHost.live -> "Tap to bring the app here"
             app != null -> "Tap to open"
             else -> "Tap to choose an app"

@@ -53,6 +53,7 @@ import dev.headway.app.link.CarCompanion
 import dev.headway.app.log.SessionLog
 import dev.headway.app.quirks.QuirkStore
 import dev.headway.app.service.HeadwayService
+import dev.headway.app.video.ProjectionRequestActivity
 import dev.headway.app.ui.theme.HeadwayMark
 import dev.headway.app.ui.theme.HeadwayTheme
 import dev.headway.dash.ThemeAccent
@@ -1637,7 +1638,9 @@ class MainActivity : AppCompatActivity() {
         // requestProjection: the car's patience is about fifteen seconds.
         val projectionManager =
             getSystemService(android.media.projection.MediaProjectionManager::class.java)
-        val consent = runCatching { projectionManager?.createScreenCaptureIntent() }.getOrNull()
+        val consent = runCatching {
+            projectionManager?.let { ProjectionRequestActivity.captureIntentFor(this, it) }
+        }.getOrNull()
         if (consent == null) {
             SessionLog.shared.info(TAG, "no screen capture available on this device; " +
                 "connecting without video")

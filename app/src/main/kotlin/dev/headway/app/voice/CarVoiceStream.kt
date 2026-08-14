@@ -263,10 +263,12 @@ class CarVoiceStream(
         }
         utterances++
         closeRequested.set(false)
+        CarShell.active()?.setListening(true)
         try {
             val opened = channel.startCapture()
             if (!opened.ok) {
                 onStep("voice: the head unit would not open its microphone: status ${opened.status}")
+                CarShell.active()?.showVoiceMessage("The car would not open its microphone")
                 return null
             }
 
@@ -285,6 +287,7 @@ class CarVoiceStream(
 
             if (!endpointer.speechSeen) {
                 onStep("voice: no speech in ${endpointer.elapsedMicros / 1_000} ms of car audio")
+                CarShell.active()?.showVoiceMessage("Heard nothing")
                 return null
             }
             if (stt == null) {
@@ -295,10 +298,12 @@ class CarVoiceStream(
                     "voice: heard ${endpointer.elapsedMicros / 1_000} ms of speech but this phone has " +
                         "no on-device speech model, so nothing was transcribed"
                 )
+                CarShell.active()?.showVoiceMessage("No speech model on this phone")
                 return null
             }
 
             onStep("voice heard: \"$transcript\"")
+            CarShell.active()?.showVoiceMessage("\u201c$transcript\u201d")
             val command = engine.parse(transcript)
             if (command is VoiceCommand.Unrecognised) {
                 onStep("voice: \"$transcript\" matched no command")
@@ -311,9 +316,11 @@ class CarVoiceStream(
             // The channel refuses audio it cannot decode rather than guessing at
             // it. That kills voice for this session, not the session.
             onStep("voice: the microphone channel gave up: ${e.message}")
+            CarShell.active()?.showVoiceMessage("The car's microphone stopped")
             return null
         } finally {
             listening.set(false)
+            CarShell.active()?.setListening(false)
         }
     }
 

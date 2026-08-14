@@ -114,6 +114,7 @@ class CarShell(
     private lateinit var railItems: LinearLayout
     private lateinit var stage: FrameLayout
     private lateinit var overlayHost: FrameLayout
+    private lateinit var banners: FrameLayout
     private lateinit var micButton: CarGlyphButton
 
     private val store: DashLayoutStore by lazy { DashLayoutStore.of(context) }
@@ -140,11 +141,20 @@ class CarShell(
             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
         }
         stage = FrameLayout(context)
+        // Above the panes, below the sheets, and never clickable: a banner that
+        // took touches would be a target the driver could hit by accident while
+        // it was fading.
+        banners = FrameLayout(context).apply {
+            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+            isClickable = false
+            isFocusable = false
+        }
         overlayHost = FrameLayout(context).apply {
             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
             visibility = View.GONE
         }
         root.addView(column)
+        root.addView(banners)
         root.addView(overlayHost)
         setContentView(root)
 
@@ -258,6 +268,56 @@ class CarShell(
         home?.let { show(it) }
     }
 
+    /**
+     * Says something on the car screen for a couple of seconds.
+     *
+     * The voice pipeline's only outputs used to be the session log and a spoken
+     * reply, neither of which tells a driver in a moving car whether the
+     * microphone heard them. This is what "it works" looks like from the seat:
+     * the button fills, a line appears, and what was heard is quoted back.
+     */
+    fun showVoiceMessage(text: String) {
+        main.post { runCatching { banner(text) } }
+    }
+
+    private fun banner(text: String) {
+        if (!::banners.isInitialized) return
+        banners.removeAllViews()
+        val card = Headway.title(context, metrics.unit, text).apply {
+            gravity = Gravity.CENTER
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTextColor(Headway.ON_ACCENT)
+            val pad = metrics.gutter
+            setPadding(pad * 2, pad, pad * 2, pad)
+            background = Headway.panel(
+                radiusPx = metrics.touchTargetPx / 2f,
+                fill = Headway.ACCENT,
+                stroke = null,
+            )
+            layoutParams = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+                gravity = Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM
+                bottomMargin = metrics.gutter * 2
+                leftMargin = metrics.gutter
+                rightMargin = metrics.gutter
+            }
+        }
+        banners.addView(card)
+        Headway.revealIn(card)
+        main.postDelayed(
+            {
+                runCatching {
+                    card.animate()
+                        .alpha(0f)
+                        .setDuration(Headway.SETTLE_MILLIS)
+                        .withEndAction { runCatching { banners.removeView(card) } }
+                        .start()
+                }
+            },
+            BANNER_MILLIS,
+        )
+    }
+
     /** Reflects the voice pipeline's state in the rail's microphone. */
     fun setListening(listening: Boolean) {
         if (!::micButton.isInitialized) return
@@ -304,9 +364,15 @@ class CarShell(
         micButton = CarGlyphButton(context, metrics, CarGlyph.MIC, "Voice") {
             val request = onVoiceRequested
             if (request == null) {
+                // Never nothing. A button that does nothing when pressed is
+                // indistinguishable from a car screen that has frozen, and this
+                // is the one control a driver presses without looking.
                 onStep("voice: the microphone is not available in this session")
+                showVoiceMessage("Voice is not available on this connection")
             } else {
+                showVoiceMessage("Listening\u2026")
                 runCatching { request() }
+                    .onFailure { showVoiceMessage("Voice could not start") }
             }
         }
         bar.addView(micButton)
@@ -1044,6 +1110,9 @@ class CarShell(
         fun active(): CarShell? = shown
 
         private const val RAIL_TEXT = 0.30f
+
+        /** Long enough to read a short phrase at a glance, short enough not to linger. */
+        private const val BANNER_MILLIS = 2_600L
         private val EMPTY_RECT = PaneRect(0, 0, 0, 0)
     }
 }

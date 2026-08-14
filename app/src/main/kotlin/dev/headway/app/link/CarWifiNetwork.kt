@@ -296,6 +296,7 @@ class CarWifiNetwork(
                 network = joined
                 joinedSsid = spec.ssid
                 onStep("joined ${spec.ssid}")
+                bindProcess(joined)
                 available.complete(joined)
             }
 
@@ -556,6 +557,7 @@ class CarWifiNetwork(
             network = candidate
             joinedSsid = credentials.ssid
             adopted = true
+            bindProcess(candidate)
             // Fresh, because the session watchdog races awaitLost() and a
             // deferred left completed by an earlier attempt would fire the
             // watchdog immediately on a network that is perfectly healthy.
@@ -987,6 +989,86 @@ class CarWifiNetwork(
      * is only reachable on that network. Head units advertise a literal address,
      * so this normally resolves without a query at all.
      */
+    /**
+     * Points every socket this process opens at the car, until [close].
+     *
+     * ## Why this is not redundant with binding each socket
+     *
+     * A per-socket bind is enough when nothing else is competing for the
+     * default route. A **VPN** is exactly that competition: it becomes the
+     * process's default network, and anything that is not explicitly bound —
+     * a name lookup, a socket some library opens on its own, the fallback in
+     * [openSocket] when a bind throws — goes into the tunnel and reaches
+     * nothing, because the car's access point has no route to the VPN's
+     * concentrator and never will.
+     *
+     * `bindProcessToNetwork` moves the *default* to the car, so the failure
+     * mode inverts: everything reaches the car and nothing reaches the
+     * internet, which for the twenty minutes of a drive is precisely what
+     * Headway wants and precisely what it already assumed.
+     *
+     * Undone in [close]. Left set, the driver's phone has no internet after the
+     * car goes away, which would be a far worse bug than the one this fixes.
+     */
+    private fun bindProcess(joined: Network) {
+        val manager = connectivityManager ?: return
+        val bound = runCatching { manager.bindProcessToNetwork(joined) }.getOrDefault(false)
+        boundProcess = bound
+        if (bound) {
+            onStep("every socket in this process now goes to the car's network")
+        } else {
+            onStep(
+                "could not make the car's network this process's default; sockets are still " +
+                    "bound one by one, which works unless a VPN is capturing them"
+            )
+        }
+        describeVpn()?.let(onStep)
+    }
+
+    /** Restores the platform's own choice of default network. Idempotent. */
+    private fun unbindProcess() {
+        if (!boundProcess) return
+        boundProcess = false
+        runCatching { connectivityManager?.bindProcessToNetwork(null) }
+        onStep("the phone's normal network is the default again")
+    }
+
+    /** True while this process's default network is the car's. */
+    private var boundProcess = false
+
+    /**
+     * A line about the VPN, when there is one, or null.
+     *
+     * Worth saying out loud because a VPN is invisible in every other symptom:
+     * the Bluetooth handshake succeeds, the Wi-Fi join succeeds, and then the
+     * TCP connect times out with nothing anywhere naming the cause. A driver
+     * comparing against Android Auto — which is a privileged app the platform
+     * exempts — has no reason to suspect it.
+     */
+    private fun describeVpn(): String? {
+        val manager = connectivityManager ?: return null
+        val networks = runCatching { manager.allNetworks }.getOrNull() ?: return null
+        val vpn = networks.firstOrNull { candidate ->
+            val capabilities = runCatching { manager.getNetworkCapabilities(candidate) }.getOrNull()
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        } ?: return null
+        val capabilities = runCatching { manager.getNetworkCapabilities(vpn) }.getOrNull()
+        val bypassable = capabilities?.hasCapability(
+            NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
+        ) == true
+        return buildString {
+            append("a VPN is running. Headway has bound itself to the car's network, which is ")
+            append("normally enough")
+            if (!bypassable) {
+                append(
+                    ". If the link still fails, the VPN is set to block connections that do not " +
+                        "go through it -- turn off 'Block connections without VPN' (Android calls " +
+                        "it always-on lockdown), or add Headway to the VPN app's excluded apps"
+                )
+            }
+        }
+    }
+
     suspend fun openSocket(host: String, port: Int, connectTimeoutMillis: Int = 10_000): Socket {
         val joined = network ?: throw CarWifiException("not joined to the car's network")
         return withContext(Dispatchers.IO) {
@@ -1011,6 +1093,12 @@ class CarWifiNetwork(
             val socket = try {
                 joined.socketFactory.createSocket()
             } catch (e: Exception) {
+                // The unbound fallback below is right when the *user* joined the
+                // car's Wi-Fi by hand and it is the default route. It is exactly
+                // wrong under a VPN, where unbound means "into the tunnel", so
+                // say which case the driver is in rather than leaving a timeout
+                // to be interpreted.
+                describeVpn()?.let(onStep)
                 onStep(
                     "could not bind a socket to the car network ($joined): ${e.message}. " +
                         "Falling back to an unbound socket, which works when the phone's " +
@@ -1038,6 +1126,10 @@ class CarWifiNetwork(
      * down just because Bluetooth or TCP had a bad attempt.
      */
     private fun releaseRequest() {
+        // Before anything else: the process default must not be left pointing at
+        // a network that is going away, or the driver's phone has no internet
+        // until something else re-binds it.
+        unbindProcess()
         val released = synchronized(registrationLock) {
             stopWifiWatch()
             stopFailureListener()
