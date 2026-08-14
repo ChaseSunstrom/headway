@@ -126,9 +126,41 @@ install-time risks that come with it are in
 B-014. If an app refuses anyway, the pane says which app and why, rather than
 sitting empty.
 
-Full-screen mirroring is still there, as the escape hatch for anything none of
-the above models. It is one tap from the Apps tab and it is no longer the
-default.
+### Apps with no model at all
+
+A map, a browser, a video app — anything that publishes neither a media library
+nor a car template — used to have exactly one route to the car: mirroring the
+phone. That route is bad, and the arithmetic says how bad. The phone is
+1080×2404, the panel is 800×480, the platform min-scales, so the phone occupies
+**216 of 800 columns** and the rest is a black bar.
+
+There is a better one, and it needs a Developer options toggle rather than a
+permission. Android refuses to let an app place another app's window on a display
+*it* created — but a display **Settings** creates is trusted, and any app may be
+launched onto a trusted display. So:
+
+1. Settings → System → Developer options → **Simulate secondary displays** →
+   `720x480/142`. **Not** an entry labelled `(secure)`; those cannot be recorded
+   and produce a black car screen with no error.
+2. Same screen → **Disable screen-share protections for apps and notifications**,
+   or Android stops the capture every time the phone locks.
+3. Headway's setup screen → **Render apps on the car display**. Then when Android
+   asks what to share, pick the row named for that display — not "Entire screen".
+
+The app then lays itself out for 720×480 — its own fonts at that density, its own
+layout for that aspect — and Headway records that display rather than the phone.
+The car gets **720 of its 800 columns** at 1:1 pixels, with a 40-pixel bar each
+side. [ADR 0008](docs/adr/0008-native-app-rendering-on-a-simulated-display.md)
+has the derivation and the source citations.
+
+Two costs, both real and neither removable: the size list is fixed by Android and
+has no 800×480, hence the bars; and the phone's screen must stay on for the whole
+drive, because Android switches the simulated display off with it. Turn the
+brightness down. A half-size preview of the car screen also sits on the phone the
+whole time — that is Android's, not Headway's, and it cannot be hidden.
+
+Full-screen mirroring is still there, as the fallback when none of the above
+applies. It is one tap from the Apps tab and it is no longer the default.
 
 ## Building
 

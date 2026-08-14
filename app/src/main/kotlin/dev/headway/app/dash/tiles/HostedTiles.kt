@@ -49,6 +49,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import dev.headway.app.dash.DashNode
 import dev.headway.app.dash.DashTile
+import dev.headway.app.video.CarAppDisplay
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.video.CarSurfaceMode
@@ -1108,17 +1109,33 @@ private fun messageView(context: Context, message: String): TextView {
 }
 
 /**
- * Starts [intent] on the phone's own display, never on the dashboard's.
+ * Starts [intent] where the car can actually see it.
  *
- * The explicit display id is the whole point. A tile's context is a display
- * context for `CarDisplay`, and since Android 10 an activity started from a
- * display-associated context inherits that display — which
- * `ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay` then refuses for any
- * app that has not declared `android:allowEmbedded="true"` (ADR 0004, Finding 1).
- * The failure is a `SecurityException` at launch, or on some paths a silently
- * dropped start, and it would apply to every app the driver taps. Naming
- * [Display.DEFAULT_DISPLAY] sends it where it can actually run, where the mirror
- * pane is already showing display 0 to the car.
+ * ## Why the display id is named rather than left alone
+ *
+ * A tile's context is a display context for `CarDisplay`, and since Android 10
+ * an activity started from a display-associated context inherits that display —
+ * which `ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay` then refuses
+ * for any app that has not declared `android:allowEmbedded="true"` (ADR 0004,
+ * Finding 1). The failure is a `SecurityException` at launch, or on some paths a
+ * silently dropped start, and it would apply to every app the driver taps.
+ *
+ * ## Which display, and why it is not always the phone's
+ *
+ * [CarAppDisplay] decides. With no simulated secondary display it is
+ * [Display.DEFAULT_DISPLAY] — the phone's own screen, which the car is
+ * mirroring, and which is what every build before this one did.
+ *
+ * With one, the app is started *there* instead, and the difference is the whole
+ * point of ADR 0008: the app lays itself out for a 720x480 display, Headway
+ * captures that display rather than the phone's, and the car sees the app's real
+ * rendering at 1:1 pixels instead of a portrait phone squeezed into a quarter of
+ * the panel. That is legal because the simulated display is *trusted* — the
+ * embedding requirement above sits inside `if (!display.isTrusted())`, and
+ * `OverlayDisplayAdapter` marks a Settings-created display trusted.
+ *
+ * The name is kept for the same reason the mirror path is: this is still "not
+ * the dashboard's display", which is the property every caller depends on.
  *
  * @return false when the system refused the start, which is logged rather than
  *   thrown: one app that will not open must not take the dashboard with it.
@@ -1129,11 +1146,18 @@ internal fun startOnPhoneDisplay(
     onStep: (String) -> Unit,
 ): Boolean {
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    val options = ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY)
+    val target = CarAppDisplay.displayId
+    if (target != Display.DEFAULT_DISPLAY) {
+        // An app already open on the phone would otherwise be brought forward
+        // on display 0, which from the car looks exactly like the launch being
+        // ignored.
+        intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+    }
+    val options = ActivityOptions.makeBasic().setLaunchDisplayId(target)
     val started = runCatching { context.startActivity(intent, options.toBundle()) }
     started.exceptionOrNull()?.let { error ->
         val what = intent.component?.flattenToShortString() ?: intent.action ?: "an activity"
-        onStep("could not start $what: $error")
+        onStep("could not start $what on display #$target: $error")
     }
     return started.isSuccess
 }

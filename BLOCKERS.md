@@ -630,3 +630,45 @@ than rendering. Nothing else in the codebase depends on the provider.
 **How to close it:** it cannot be closed while both hosts are installed. The
 authority is a well-known string precisely so that whichever host is present can
 own it, and two hosts on one phone is a case the contract does not model.
+
+---
+
+## B-015 — Whether MediaProjection will record the simulated display on this build
+
+**Status:** Open. The route is built and gated; one device session settles it.
+
+**Blocked:** Confirming that the system's screen-capture chooser offers the
+simulated secondary display as its own row, so Headway can record *that* display
+instead of display 0.
+
+**Why:** Android 17's SystemUI lists one chooser row per connected display —
+`MediaProjectionPermissionUtils.kt` allows `Display.TYPE_OVERLAY` at L29-35 and
+`ShareToAppPermissionDialogDelegate.kt` builds the rows at L114-129 — but the
+whole list is behind an aconfig flag, `media_projection_connected_display`,
+checked at L83-85: `if (!Flags.mediaProjectionConnectedDisplay()) { return
+emptyList() }`. Whether that flag is enabled in the shipping GrapheneOS Pixel
+build is a release-config value, not a source constant, and cannot be read from
+the tree.
+
+Without the row, the driver can only grant "Entire screen", the projection
+records display 0, and the native-rendering path degrades to mirroring an app
+that is being drawn on a display nobody is capturing — a black or stale car
+screen rather than a graceful failure.
+
+The second unverified item, which the same session answers: whether the driver
+picked a usable simulated display at all. The Settings menu lists `(secure)`
+entries that look identical and carry `FLAG_SECURE`, which makes the display
+unrecordable.
+
+**Workaround shipped:** the whole route is behind a switch that is off by
+default, and `CarAppDisplay.resolve` logs which display it settled on — or that
+it found none — on every session. With the switch off, or with no simulated
+display present, every path is byte-for-byte what it was before ADR 0008.
+
+**How to close it:** on the setup screen, press "Show every display this phone
+has". It lists every display with its flags and says which are usable, which
+answers the `(secure)` question outright. Then press Connect with the switch on
+and look at the consent dialog: a row named for the simulated display means the
+flag is enabled and the route works. If only "Entire screen" and "A single app"
+are offered, the flag is off, and the honest answer is that this phone cannot do
+native rendering for apps without a car template — turn the switch back off.

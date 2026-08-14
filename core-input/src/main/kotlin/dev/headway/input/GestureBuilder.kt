@@ -18,6 +18,7 @@
 package dev.headway.input
 
 import android.accessibilityservice.GestureDescription
+import android.view.Display
 import android.content.Context
 import android.graphics.Path
 import android.view.ViewConfiguration
@@ -128,6 +129,21 @@ data class GestureConfig(
 
     /** `GestureDescription.getMaxStrokeCount()`: the platform's simultaneous-finger ceiling. */
     val maxStrokeCount: Int = GestureDescription.getMaxStrokeCount(),
+
+    /**
+     * Which display the injected gesture lands on.
+     *
+     * `Display.DEFAULT_DISPLAY` is the phone's own screen and is what every
+     * gesture went to before Headway could render an app on a display of its
+     * own. When the car is showing an app on a simulated secondary display
+     * (see `OverlayDisplay`), the touch has to be aimed *there* — a gesture
+     * dispatched to display 0 while the driver is looking at display 1 lands on
+     * whatever happens to be on the phone, which is both useless and alarming.
+     *
+     * `GestureDescription.Builder.setDisplayId` is public API since API 30 and
+     * needs no permission beyond the accessibility grant already held.
+     */
+    val displayId: Int = Display.DEFAULT_DISPLAY,
 ) {
     init {
         require(touchSlopPx >= 0f) { "touch slop must not be negative: $touchSlopPx" }
@@ -363,7 +379,7 @@ class GestureBuilder(
         }
 
         val sliceStart = live.minOf { it.samples.first().timeMicros }
-        val builder = GestureDescription.Builder()
+        val builder = GestureDescription.Builder().setDisplayId(config.displayId)
         val emitted = ArrayList<Pair<Track, GestureDescription.StrokeDescription>>(live.size)
         var points = 0
         var sliceMillis = 0L

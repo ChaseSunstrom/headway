@@ -52,6 +52,7 @@ import dev.headway.protocol.control.ControlKeepalive
 import dev.headway.protocol.control.ControlMessageType
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.framing.MessageFragmenter
+import dev.headway.app.video.CarAppDisplay
 import dev.headway.app.video.CarSurfaceMode
 import dev.headway.app.video.CarVideoStream
 import dev.headway.app.dash.CarSurface
@@ -315,6 +316,10 @@ open class HeadwayService : Service() {
         // The one place the car network is released. Everywhere else keeps it,
         // because everywhere else is a retry that wants it.
         releaseCarWifi()
+        // A display id outlives the display when the driver changes the
+        // Developer options entry, and a stale one aims every injected gesture
+        // into nothing.
+        CarAppDisplay.clear()
         publish(LinkState.Idle)
         super.onDestroy()
     }
@@ -1077,6 +1082,13 @@ open class HeadwayService : Service() {
         // panel used 216 of 800 columns and left the rest black. The surface is
         // built at the head unit's own resolution the moment it says what that
         // is; mirroring stays as a fallback and as a setting.
+        // Decided once, before anything reads it. The launcher uses it to pick
+        // which display an app starts on and CarInputStream uses it to build the
+        // touch transform and to aim the injected gesture, so resolving it after
+        // either of those would give the two halves different answers and put
+        // touches on a display nobody is looking at. See ADR 0008.
+        CarAppDisplay.resolve(this@HeadwayService, ::step)
+
         val wantDashboard = HeadwaySettings.dashboardOnCarScreen(this@HeadwayService)
         val surfaceFactory: ((EncoderConfiguration, ScreenEncoder.Sink) -> CarSurface?)? =
             if (wantDashboard) {

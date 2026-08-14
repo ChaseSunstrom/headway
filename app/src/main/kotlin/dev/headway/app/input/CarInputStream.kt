@@ -25,6 +25,7 @@ import android.content.Context
 import android.view.WindowManager
 import dev.headway.input.CarGesture
 import dev.headway.input.GestureBuilder
+import dev.headway.app.video.CarAppDisplay
 import dev.headway.input.GestureConfig
 import dev.headway.protocol.channel.CarInputEvent
 import dev.headway.protocol.channel.InputChannel
@@ -649,10 +650,20 @@ class CarInputStream(
 
             val panel = primaryTouchscreen(input) ?: return null
 
-            val phone = phoneDisplaySize(context)
+            // Where the driver's apps are actually drawn. Normally the
+            // phone's own screen, which the car mirrors; when Headway is
+            // rendering apps on a simulated secondary display (ADR 0008), that
+            // display instead -- and the difference is the whole transform,
+            // because a 720x480 target maps into an 800x480 panel one to one
+            // while a 1080x2404 one is squeezed into a fifth of the width.
+            val appDisplay = CarAppDisplay.active
+            val phone = appDisplay?.let { it.width to it.height } ?: phoneDisplaySize(context)
             if (phone == null) {
                 onStep("input: the platform reported no display size, so touches cannot be mapped")
                 return null
+            }
+            if (appDisplay != null) {
+                onStep("input: touches will be aimed at $appDisplay, not at the phone screen")
             }
 
             val car = carSurfaceOf(profile, panel, onStep)
@@ -675,7 +686,13 @@ class CarInputStream(
                 view = view,
                 transform = transform,
                 keycodes = input.keycodesSupportedList.toList(),
-                builder = GestureBuilder(GestureConfig.forDevice(context)),
+                // The gesture has to name the display too. A perfectly
+                // transformed touch dispatched to display 0 while the driver is
+                // looking at display 1 lands on whatever happens to be on the
+                // phone, which is both useless and alarming.
+                builder = GestureBuilder(
+                    GestureConfig.forDevice(context).copy(displayId = CarAppDisplay.displayId),
+                ),
                 onVoiceKey = onVoiceKey,
                 deliverDirect = deliverDirect,
                 onStep = onStep,

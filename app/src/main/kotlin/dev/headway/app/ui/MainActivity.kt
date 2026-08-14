@@ -57,6 +57,7 @@ import dev.headway.app.service.HeadwayService
 import dev.headway.app.ui.theme.HeadwayMark
 import dev.headway.app.ui.theme.Phone
 import dev.headway.app.voice.SpeechModelInstaller
+import dev.headway.app.video.OverlayDisplay
 import dev.headway.app.voice.VoiceOverlay
 import dev.headway.transport.LinkState
 import kotlinx.coroutines.CoroutineScope
@@ -111,6 +112,17 @@ object HeadwaySettings {
      * resolver.
      */
     const val KEY_MAP_APP: String = "map_app"
+
+    /**
+     * Whether a third-party app should render on a simulated secondary display
+     * rather than be mirrored from the phone's screen.
+     *
+     * Off by default because it needs a Developer options toggle first, and a
+     * switch that silently does nothing until the driver has been somewhere
+     * else in Settings is worse than one they have to find. `CarAppDisplay` has
+     * the derivation and the two costs.
+     */
+    const val KEY_NATIVE_APP_DISPLAY: String = "native_app_display"
 
     fun of(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -169,6 +181,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var speechStatus: Phone.StatusRow
     private lateinit var pairingStatus: Phone.StatusRow
     private lateinit var phoneStatus: Phone.StatusRow
+    private lateinit var appDisplayStatus: Phone.StatusRow
+    private lateinit var appDisplaySwitch: SwitchCompat
 
     /**
      * The tab editor, held so `onStart` can re-read the store.
@@ -466,6 +480,7 @@ class MainActivity : AppCompatActivity() {
         column.addView(buildChecklist())
         column.addView(Phone.sectionLabel(this, "The car"))
         column.addView(buildCarScreenCard())
+        column.addView(buildAppDisplayCard())
         column.addView(TabsCard(this) { }.also { tabsCard = it }.view)
         column.addView(buildCarWifiCard())
         column.addView(buildQuirksCard())
@@ -625,6 +640,133 @@ class MainActivity : AppCompatActivity() {
             Phone.button(this, "Open Headway's system settings") { openAppSettings() },
         )
         return card
+    }
+
+    /**
+     * The one route by which another app renders at the car's size rather than
+     * being mirrored.
+     *
+     * Its own card because it is the only setting on this screen that requires
+     * the driver to go somewhere else in Settings first, and because getting the
+     * consent dialog wrong afterwards produces a session that looks broken in a
+     * way nothing in the log would obviously explain. ADR 0008 has the
+     * derivation; this says what to click.
+     */
+    private fun buildAppDisplayCard(): View {
+        val card = Phone.card(this, "How apps reach the car")
+        card.addView(
+            Phone.body(
+                this,
+                "When you tap an app on the car screen, Headway can either mirror " +
+                    "your phone or hand the app a display the size of the car panel " +
+                    "and let it draw itself there.",
+            ),
+        )
+        appDisplayStatus = Phone.StatusRow(this, "Simulated car display")
+            .withAction("Set up") { openDeveloperOptions() }
+        card.addView(appDisplayStatus.view)
+
+        appDisplaySwitch = SwitchCompat(this).apply {
+            text = "Render apps on the car display instead of mirroring"
+            setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
+            minHeight = dp(MIN_TOUCH_TARGET_DP)
+            isChecked = HeadwaySettings.of(this@MainActivity)
+                .getBoolean(HeadwaySettings.KEY_NATIVE_APP_DISPLAY, false)
+            setOnCheckedChangeListener { _, checked ->
+                HeadwaySettings.of(this@MainActivity).edit()
+                    .putBoolean(HeadwaySettings.KEY_NATIVE_APP_DISPLAY, checked)
+                    .apply()
+                refreshAppDisplay()
+                SessionLog.shared.info(
+                    TAG,
+                    "native app display ${if (checked) "on" else "off"}",
+                )
+            }
+            layoutParams = Phone.spaced(this@MainActivity, 12f)
+        }
+        card.addView(appDisplaySwitch)
+        card.addView(
+            Phone.disclosure(
+                this,
+                "What to turn on, and what to pick",
+                "Three steps, all in Settings, none of them needing a computer.\n\n" +
+                    "1. Settings, System, Developer options, \"Simulate secondary " +
+                    "displays\". Pick 720x480/142. Do NOT pick an entry whose label " +
+                    "says (secure) — those cannot be recorded and the car goes black " +
+                    "with no error.\n\n" +
+                    "2. In the same screen, turn on \"Disable screen-share protections " +
+                    "for apps and notifications\". Without it Android stops the capture " +
+                    "every time the phone locks, and the car loses the picture until " +
+                    "you accept a fresh prompt.\n\n" +
+                    "3. Turn the switch above on. Then when you press Connect and " +
+                    "Android asks what to share, pick the row named for that display " +
+                    "— not \"Entire screen\".\n\n" +
+                    "Why this works: Android refuses to let an app put another app's " +
+                    "window on a display it created, but a display *Settings* creates " +
+                    "is trusted, and any app may be launched onto a trusted display. " +
+                    "So the app lays itself out for 720 by 480, Headway records that " +
+                    "display rather than your phone, and the car gets 720 of its 800 " +
+                    "columns at true size. Mirroring your phone fills 216 of them.\n\n" +
+                    "Two costs, and they are real. The list of sizes is fixed by " +
+                    "Android and has no 800x480, so there is a 40-pixel black bar down " +
+                    "each side. And your phone's screen has to stay on for the whole " +
+                    "drive, because Android switches the simulated display off with it " +
+                    "— turn the brightness right down. A half-size preview window of " +
+                    "the car screen also sits on your phone the whole time; that is " +
+                    "Android's, not Headway's, and it cannot be hidden.",
+            ),
+        )
+        card.addView(
+            Phone.button(this, "Show every display this phone has") { showDisplayReport() },
+        )
+        return card
+    }
+
+    private fun openDeveloperOptions() {
+        val intent = OverlayDisplay.settingsIntent().setFlags(0)
+        if (intent.resolveActivity(packageManager) == null) {
+            toast("This device has no Developer options screen")
+            return
+        }
+        startActivity(intent)
+        toast("Simulate secondary displays → 720x480/142, not a (secure) one")
+    }
+
+    /**
+     * The probe.
+     *
+     * Reads out every display with its flags, which is the only way to tell a
+     * usable simulated display from a `(secure)` one the driver picked by
+     * mistake — they are indistinguishable in the Settings menu and produce a
+     * display that exists and cannot be recorded.
+     */
+    private fun showDisplayReport() {
+        AlertDialog.Builder(this)
+            .setTitle("Displays")
+            .setMessage(OverlayDisplay.diagnose(this))
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    private fun refreshAppDisplay() {
+        if (!::appDisplayStatus.isInitialized) return
+        val on = HeadwaySettings.of(this)
+            .getBoolean(HeadwaySettings.KEY_NATIVE_APP_DISPLAY, false)
+        val found = OverlayDisplay.find(this)
+        appDisplayStatus.set(
+            when {
+                found != null && on -> Phone.Level.GOOD
+                found != null -> Phone.Level.IDLE
+                on -> Phone.Level.WARN
+                else -> Phone.Level.IDLE
+            },
+            when {
+                found != null && on -> "$found — apps will render here"
+                found != null -> "$found — found, but the switch below is off"
+                on -> "None found. Turn it on in Developer options."
+                else -> "Off; apps will be mirrored from the phone screen."
+            },
+        )
     }
 
     /**
@@ -873,6 +1015,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refresh() {
         tabsCard?.refresh()
+        refreshAppDisplay()
         refreshPermissions()
         refreshPhonePermissions()
         refreshAccessibility()
@@ -882,6 +1025,10 @@ class MainActivity : AppCompatActivity() {
         // while this activity was stopped.
         parkedOnlySwitch.isChecked = HeadwaySettings.parkedOnlyVideo(this)
         dashboardSwitch.isChecked = HeadwaySettings.dashboardOnCarScreen(this)
+        if (::appDisplaySwitch.isInitialized) {
+            appDisplaySwitch.isChecked = HeadwaySettings.of(this)
+                .getBoolean(HeadwaySettings.KEY_NATIVE_APP_DISPLAY, false)
+        }
         if (::certificateValue.isInitialized) {
             certificateValue.text =
                 dev.headway.app.link.PhoneCertificateStore.inAppStorage(this).describe()

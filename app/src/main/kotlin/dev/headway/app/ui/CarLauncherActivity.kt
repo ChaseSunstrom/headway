@@ -17,6 +17,7 @@
 
 package dev.headway.app.ui
 
+import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -44,6 +45,7 @@ import dev.headway.app.log.SessionLog
 import dev.headway.app.service.HeadwayService
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.ui.theme.HeadwayMark
+import dev.headway.app.video.CarAppDisplay
 import dev.headway.app.video.CarSurfaceMode
 import dev.headway.app.video.CarVideoStream
 import dev.headway.transport.LinkState
@@ -349,12 +351,24 @@ class CarLauncherActivity : AppCompatActivity() {
         // on top of the launcher; CLEAR_TOP so returning to an already-running
         // app lands on what the user last saw rather than a fresh copy.
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-        val started = runCatching { startActivity(intent) }
+        // Where the app is drawn. Normally this display, which the car mirrors;
+        // when a simulated secondary display is in use it is that one instead,
+        // and the app lays itself out for the car's size rather than the
+        // phone's. ADR 0008; CarAppDisplay decides once per session.
+        val target = CarAppDisplay.displayId
+        if (target != android.view.Display.DEFAULT_DISPLAY) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        }
+        val options = ActivityOptions.makeBasic().setLaunchDisplayId(target)
+        val started = runCatching { startActivity(intent, options.toBundle()) }
         if (started.isFailure) {
             SessionLog.shared.warn(TAG, "cannot launch ${entry.packageName}: ${started.exceptionOrNull()}")
             toast("Could not open ${entry.label}")
         } else {
-            SessionLog.shared.info(TAG, "launched ${entry.packageName} from the car launcher")
+            SessionLog.shared.info(
+                TAG,
+                "launched ${entry.packageName} from the car launcher on display #$target",
+            )
             // Give the car screen to it if a session is up and currently drawing
             // the dashboard. No-op when Headway is already mirroring — which is
             // the case whenever this activity is the thing being mirrored — so
