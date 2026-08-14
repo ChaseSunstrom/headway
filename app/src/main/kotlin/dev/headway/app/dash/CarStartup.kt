@@ -184,7 +184,7 @@ class CarStartupView(
             // Idempotent: onDraw can be called again before the view is removed.
             if (!finished) {
                 finished = true
-                post(onFinished)
+                post { onFinished() }
             }
         }
     }
