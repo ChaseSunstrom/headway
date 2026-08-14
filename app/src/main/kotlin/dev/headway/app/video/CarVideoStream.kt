@@ -251,11 +251,15 @@ class CarVideoStream(
         channel.sendStart(sessionId = sessionId, configurationIndex = index)
 
         pumpJob = scope.launch { videoPump.pump() }
-        if (source == SourceKind.MIRROR) {
-            val screenEncoder = encoder
-            if (screenEncoder != null) {
-                sourceJob = scope.launch { screenEncoder.encodeUntilStopped() }
-            }
+        // Both sources need draining, and only one of them used to get it.
+        // MediaCodec holds every encoded frame in an output buffer until it is
+        // dequeued; the dequeue loop is `encodeUntilStopped`. Without it the
+        // dashboard path produced a display, a window and a running codec, and
+        // sent nothing — `video: 0 frame(s) sent` — which a head unit shows as
+        // "Connecting Android Auto phone", forever.
+        sourceJob = when (source) {
+            SourceKind.DASHBOARD -> surface?.let { car -> scope.launch { car.encodeUntilStopped() } }
+            SourceKind.MIRROR -> encoder?.let { it2 -> scope.launch { it2.encodeUntilStopped() } }
         }
         publishSwitch()
         onStep(
@@ -265,6 +269,29 @@ class CarVideoStream(
                 "video stream started by mirroring the phone screen"
             }
         )
+
+        // Say so, loudly, if the picture never starts.
+        //
+        // This is the shape of failure that has cost the most drives: every
+        // step succeeds, the log fills with cheerful lines, the head unit stays
+        // on "Connecting Android Auto phone" and nothing anywhere says why. It
+        // happened for real because the dashboard encoder was never drained, so
+        // a running codec produced zero frames — and the only trace was a
+        // periodic "0 frame(s) sent" among lines that all looked fine.
+        //
+        // A head unit with no video cannot distinguish a phone that is thinking
+        // from one that is broken, and neither could the log. Now it can.
+        scope.launch {
+            kotlinx.coroutines.delay(FIRST_FRAME_WARNING_MILLIS)
+            if (videoPump.sentFrames == 0L) {
+                onStep(
+                    "NO VIDEO: the encoder is running but not one frame has reached the car " +
+                        "after ${FIRST_FRAME_WARNING_MILLIS / 1000}s. The head unit will sit on " +
+                        "its connecting screen until this is fixed. Source is " +
+                        "${if (source == SourceKind.DASHBOARD) "the car display" else "screen mirroring"}"
+                )
+            }
+        }
 
         // Asking for the screen, once there is a screen to ask about.
         //
@@ -420,6 +447,10 @@ class CarVideoStream(
                     return false
                 }
                 surface = native
+                // The dashboard's encoder needs draining exactly as the mirror's
+                // does; switching back to it without this leaves the car on its
+                // last mirrored frame for the rest of the drive.
+                sourceJob = scope.launch { native.encodeUntilStopped() }
             }
         }
         mode = wanted
@@ -433,8 +464,17 @@ class CarVideoStream(
         videoPump: VideoPump,
     ): Boolean {
         videoPump.resetForNewStream()
-        surface = surfaceFactory?.invoke(configuration, videoPump)
+        val native = surfaceFactory?.invoke(configuration, videoPump)
+        surface = native
         mode = CarSurfaceMode.DASHBOARD
+        // Recovery has to drain too, or "the mirror failed, so you are back on
+        // the dashboard" means a frozen car screen rather than a working one.
+        val scope = streamScope
+        sourceJob = if (native != null && scope != null) {
+            scope.launch { native.encodeUntilStopped() }
+        } else {
+            null
+        }
         return false
     }
 
@@ -520,6 +560,15 @@ class CarVideoStream(
          * acknowledgement so the two sides can tell streams apart.
          */
         const val DEFAULT_SESSION_ID: Int = 1
+
+        /**
+         * How long to wait before declaring that no video is arriving.
+         *
+         * Long enough that a slow first keyframe on a cold codec is not
+         * reported as a fault, short enough to be in the log well before a
+         * driver gives up on the connecting screen.
+         */
+        const val FIRST_FRAME_WARNING_MILLIS: Long = 5_000
 
         /**
          * Finds the head unit's video service by codec, not by channel id.

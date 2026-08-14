@@ -95,6 +95,27 @@ class CarSurface private constructor(
     private val main = Handler(Looper.getMainLooper())
 
     /**
+     * Drains the encoder until the surface is stopped. **Must be running, or the
+     * car gets no picture at all.**
+     *
+     * `ScreenEncoder.startOwnContent` attaches the codec to the display and
+     * returns; it starts nothing. Encoded frames sit in `MediaCodec`'s output
+     * buffers until somebody dequeues them, and dequeuing is this loop. The
+     * mirroring path has always launched the equivalent
+     * (`CarVideoStream.openSource` → `encodeUntilStopped`); the dashboard path
+     * never did, so it produced a display, a window, a running codec, an
+     * encoder log line saying `800x480 @60fps 3456kbps` — and
+     * `video: 0 frame(s) sent`. The head unit sat on "Connecting Android Auto
+     * phone" indefinitely, which is exactly what a head unit does when the
+     * session is healthy and no video ever arrives.
+     *
+     * Exposed here rather than by handing out the encoder, so there is one
+     * obvious thing for the caller to launch and no way to hold the codec
+     * without draining it.
+     */
+    suspend fun encodeUntilStopped() = encoder.encodeUntilStopped()
+
+    /**
      * The pointer's current position, for synthesising a coherent gesture.
      *
      * A `MotionEvent` stream has to be well formed — a DOWN, then MOVEs, then an
