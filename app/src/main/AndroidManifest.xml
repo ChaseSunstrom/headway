@@ -114,6 +114,29 @@
             tools:ignore="LockedOrientationActivity" />
 
         <!--
+          The multi-pane dashboard. Landscape for the same reason the launcher
+          is, and allowEmbedded because this activity is launched onto a virtual
+          display Headway itself creates.
+
+          On allowEmbedded specifically: the check at
+          ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay requires the
+          *target* activity to declare it before it may be placed on a
+          non-trusted virtual display. Headway also satisfies the alternative
+          branch — the display's owner uid is its own — but declaring it costs
+          nothing and removes a dependency on which branch the platform takes.
+          It is emphatically not a way to host anyone else's activity: it is an
+          opt-in each app makes for itself, which is exactly why third-party
+          panes are impossible. See ADR 0004.
+        -->
+        <activity
+            android:name=".dash.DashboardActivity"
+            android:allowEmbedded="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape"
+            tools:ignore="LockedOrientationActivity" />
+
+        <!--
           Holds the AAP session, the network binding and the MediaProjection.
           mediaProjection is required from Android 14 for screen capture to
           survive; connectedDevice covers the Bluetooth/Wi-Fi link.
@@ -161,6 +184,32 @@
           from the car: dispatchGesture on an AccessibilityService. INJECT_EVENTS
           is a system permission and is out of scope by design.
         -->
+        <!--
+          The notification listener, which is two features at once and neither
+          of them is "read the user's notifications for their own sake".
+
+          It is what the Messages tile reads, and it is also the component whose
+          enablement gates MediaSessionManager.getActiveSessions — so the Now
+          Playing tile cannot see what is playing without it either. That is an
+          Android design decision, not Headway's: transport control and
+          notification access share one gate.
+
+          A user-granted special access, in the same class as accessibility.
+          BIND_NOTIFICATION_LISTENER_SERVICE is signature-level and held only by
+          the system, which is what stops anything but the system binding this.
+          exported=true is mandatory for a filtered service on S+, and is what
+          lets the system bind it at all.
+        -->
+        <service
+            android:name=".dash.tiles.HeadwayNotificationListener"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <service
             android:name=".input.HeadwayAccessibilityService"
             android:exported="false"

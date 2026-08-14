@@ -52,7 +52,9 @@ import dev.headway.protocol.control.ControlMessageType
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.framing.MessageFragmenter
 import dev.headway.app.video.CarVideoStream
+import dev.headway.app.dash.DashboardActivity
 import dev.headway.app.ui.CarLauncherActivity
+import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.voice.CarVoiceStream
 import dev.headway.app.voice.PhoneMediaControl
 import dev.headway.app.voice.VoiceOverlay
@@ -1144,15 +1146,19 @@ open class HeadwayService : Service() {
      * passed it.
      */
     private fun showCarLauncher(configuration: EncoderConfiguration?) {
-        val intent = CarLauncherActivity.intent(
-            context = this,
-            carWidth = configuration?.width ?: 0,
-            carHeight = configuration?.height ?: 0,
-            carDensityDpi = configuration?.densityDpi ?: 0,
-        )
+        val width = configuration?.width ?: 0
+        val height = configuration?.height ?: 0
+        val dpi = configuration?.densityDpi ?: 0
+        val dashboard = HeadwaySettings.dashboardOnCarScreen(this)
+        val intent = if (dashboard) {
+            DashboardActivity.intent(this, width, height, dpi)
+        } else {
+            CarLauncherActivity.intent(this, width, height, dpi)
+        }
+        val what = if (dashboard) "dashboard" else "launcher"
         runCatching { startActivity(intent) }
-            .onSuccess { step("car launcher shown on the mirrored screen") }
-            .onFailure { step("could not show the car launcher: $it") }
+            .onSuccess { step("car $what shown on the mirrored screen") }
+            .onFailure { step("could not show the car $what: $it") }
     }
 
     /**

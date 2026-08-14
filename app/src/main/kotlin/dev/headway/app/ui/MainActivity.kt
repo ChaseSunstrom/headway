@@ -84,11 +84,25 @@ object HeadwaySettings {
     /** Package names shown on the car launcher grid. */
     const val KEY_PINNED_APPS: String = "pinned_apps"
 
+    /**
+     * Which surface the car shows when a session comes up: the multi-pane
+     * dashboard, or the plain app grid.
+     *
+     * Defaults to the dashboard, because it is a superset — one of its panes is
+     * the app grid, and the mirror pane is one tap from the plain phone screen.
+     * A driver who dislikes it turns this off and gets exactly what build 79
+     * gave them.
+     */
+    const val KEY_CAR_SURFACE_DASHBOARD: String = "car_surface_dashboard"
+
     fun of(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     fun parkedOnlyVideo(context: Context): Boolean =
         of(context).getBoolean(KEY_PARKED_ONLY_VIDEO, false)
+
+    fun dashboardOnCarScreen(context: Context): Boolean =
+        of(context).getBoolean(KEY_CAR_SURFACE_DASHBOARD, true)
 }
 
 /**

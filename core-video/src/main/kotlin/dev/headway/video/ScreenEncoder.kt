@@ -45,6 +45,15 @@ class ScreenEncoderException(message: String, cause: Throwable? = null) :
  * cross into the VM are the compressed ones — which is the difference between
  * making 30 fps on a phone and not.
  *
+ * ## Two sources, one pipeline
+ *
+ * [startCapture] mirrors the phone's own screen and needs a `MediaProjection` to
+ * do it. [startOwnContent] encodes a `DisplayManager` virtual display that
+ * somebody else created and still owns — the dashboard's, per ADR 0004, which
+ * is the only source that keeps rendering with the phone locked. Everything
+ * downstream of the input surface is identical; the two differ only in who
+ * produces frames and who owns the display.
+ *
  * ## Emitting frames
  *
  * Output is pushed to a [Sink] rather than returned, and the [ByteArray] handed
@@ -155,6 +164,16 @@ class ScreenEncoder(
      */
     @Volatile
     private var heldProjection: MediaProjection? = null
+
+    /**
+     * A display this encoder only borrowed — see [startOwnContent].
+     *
+     * Kept apart from [virtualDisplay] because the two differ in exactly one
+     * respect that matters: [release] destroys the display it created and must
+     * never destroy this one, which belongs to its creator and outlives any
+     * number of encoders.
+     */
+    private var borrowedDisplay: VirtualDisplay? = null
     private var sink: Sink? = null
     private var scratch = ByteArray(INITIAL_SCRATCH_BYTES)
     private var baseTimestampUs = UNSET_TIMESTAMP
@@ -293,6 +312,55 @@ class ScreenEncoder(
     }
 
     /**
+     * [start], then encode a virtual display that somebody else created and
+     * still owns.
+     *
+     * The display must be one `DisplayManager` created with
+     * `VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY`. `dev.headway.app.dash.CarDisplay`
+     * is what creates it, and its documentation carries the AOSP reasoning for
+     * why the dashboard cannot live on the projection's display at all on this
+     * platform.
+     *
+     * Two things are deliberately absent compared with [startCapture], and both
+     * absences are the point. There is no `MediaProjection.Callback`, because
+     * there is no consent that can be revoked from the status bar and nothing to
+     * tear down when it is. And there is no one-display-per-projection problem to
+     * work around, so this path does not have to reuse a display across encoder
+     * restarts to stay alive — it simply reattaches to the one it is handed.
+     *
+     * @return the same display, resized to the negotiated geometry and pointed
+     *   at the codec's input surface. [stop] detaches that surface and leaves the
+     *   display in place; nothing here ever releases it.
+     */
+    fun startOwnContent(ownContentDisplay: VirtualDisplay, sink: Sink): VirtualDisplay {
+        val surface = start(sink)
+        return synchronized(lock) {
+            try {
+                // Resized rather than assumed to match: the head unit picks the
+                // geometry, and a display created for the previous connection has
+                // no reason to still be the size this one negotiated.
+                ownContentDisplay.resize(
+                    configuration.width,
+                    configuration.height,
+                    configuration.densityDpi,
+                )
+                ownContentDisplay.surface = surface
+                borrowedDisplay = ownContentDisplay
+                onStep(
+                    "encoding own-content display ${ownContentDisplay.display.displayId} at " +
+                        "${configuration.width}x${configuration.height}"
+                )
+                ownContentDisplay
+            } catch (e: Exception) {
+                stopLocked()
+                throw ScreenEncoderException(
+                    "could not attach the encoder to the own-content display", e,
+                )
+            }
+        }
+    }
+
+    /**
      * Asks the encoder for an IDR as soon as it can.
      *
      * No-op when not running: a reconnect may race the teardown that caused it,
@@ -377,6 +445,11 @@ class ScreenEncoder(
      * or the service is shutting down -- as opposed to an encoder restart, which
      * must keep the display. [stop] is the restart-safe one and is what the
      * session path calls.
+     *
+     * A display borrowed through [startOwnContent] is untouched here too. It was
+     * never this encoder's to destroy, and the dashboard's display in particular
+     * carries the activities launched onto it, which releasing would take down
+     * with it.
      */
     fun release() = synchronized(lock) {
         stopLocked()
@@ -398,6 +471,13 @@ class ScreenEncoder(
         // SecurityException. Dropping the surface stops it consuming frames from
         // a codec that is about to be released.
         virtualDisplay?.let { runCatching { it.surface = null } }
+        // The same detach for a borrowed display, and the whole of the cleanup
+        // owed to one: the codec's input surface is released a few lines below,
+        // and a display still pointing at it would be consuming from a dead
+        // buffer queue. The display itself stays -- still holding whatever
+        // Headway launched onto it -- ready for the next startOwnContent.
+        borrowedDisplay?.let { runCatching { it.surface = null } }
+        borrowedDisplay = null
         projectionCallback?.let { callback ->
             runCatching { projection?.unregisterCallback(callback) }
         }

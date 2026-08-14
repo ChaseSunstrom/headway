@@ -30,6 +30,10 @@ vosk-android = { module = "com.alphacephei:vosk-android", version.ref = "vosk" }
 
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version = "1.11.3" }
+# A real org.json for :app unit tests. The Android SDK jar on the unit-test
+# classpath stubs every org.json method to throw, so a test touching a saved
+# dashboard layout would die on JSONObject without this.
+json = { module = "org.json:json", version = "20240303" }
 
 androidx-test-runner = { module = "androidx.test:runner", version = "1.6.2" }
 androidx-test-core = { module = "androidx.test:core", version = "1.6.1" }

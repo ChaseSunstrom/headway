@@ -207,6 +207,14 @@ android {
         noCompress += listOf("wav", "zip")
     }
 
+    testOptions {
+        unitTests.all {
+            // The rest of the project is JUnit 5; :app was the only module
+            // without a unit-test source set, so this had never been set.
+            it.useJUnitPlatform()
+        }
+    }
+
     // Registered only when bundling. Skipping the fetch task alone is not
     // enough — the generated directory survives in build/, so a slim build
     // straight after a bundled one would package the leftover model and be
@@ -244,6 +252,20 @@ dependencies {
     // CarVoiceStream fails and voice degrades to "no on-device speech model",
     // which is exactly what a real drive reported.
     implementation(libs.vosk.android)
+
+    // :app had no unit-test source set at all until the dashboard's layout tree
+    // needed one -- `:app:testDebugUnitTest` reported NO-SOURCE, which reads in
+    // CI exactly like a suite that passed.
+    //
+    // org.json is the reason this is not just a JUnit dependency. The Android
+    // SDK jar the unit-test classpath uses stubs every android.* and org.json
+    // method to `throw new RuntimeException("Stub!")`, so anything touching
+    // JSONObject dies unless a real implementation shadows it. AGP's
+    // `unitTests.isReturnDefaultValues` only turns those throws into nulls,
+    // which is worse. The upstream org.json artifact is the real thing.
+    testImplementation(libs.junit.jupiter)
+    testImplementation(libs.json)
+    testRuntimeOnly(libs.junit.platform.launcher)
 
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.ext.junit)
