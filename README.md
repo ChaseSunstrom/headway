@@ -289,6 +289,24 @@ Do these in order. Most first-connect failures are one of the first four.
    Android remembers the approval afterwards, so this is a once-per-car step,
    not a once-per-drive one.
 
+### Once it connects, two optional things
+
+Neither is needed for the car to work, and both change what a third-party app
+looks like on the panel.
+
+6. **Pair with the car's Wi-Fi** (setup screen → Car Wi-Fi → **Pair**). Step 5's
+   approval prompt is remembered, but Android drops it in several ordinary
+   circumstances — a failed join, a reinstall, a secondary Wi-Fi interface it
+   cannot bring up. Pairing routes the request through the companion-device
+   system, which `WifiNetworkFactory` consults *before* it shows the prompt at
+   all. That is what makes reconnecting with the phone in a pocket possible.
+7. **Set up the simulated car display**, if you want apps drawn at the car's
+   size instead of your phone mirrored into a quarter of the panel. Three clicks
+   in Developer options and one switch — the "How apps reach the car" card on
+   the setup screen has them, and the section above has why it works. Apps that
+   publish a car interface of their own need none of this; check the **Car
+   apps** tab first.
+
 If it still does not connect, export the log (**Diagnostics → Export the
 session log**) and read the join lines. They now say what the
 platform's own verdict was — `NOT_FOUND`, `AUTHENTICATION`, `ASSOCIATION`,
