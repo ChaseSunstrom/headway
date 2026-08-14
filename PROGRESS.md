@@ -28,7 +28,39 @@ audio, input and voice from a live session, and a real 2021 Malibu displayed the
 result on 2026-08-13. What remains unverified on hardware is listed under
 "What is not verified" below, phase by phase.
 
-## What the car screen is, as of build 84
+## What the car screen is, as of build 90
+
+Six tabs, switched from a bar across the top, each a saved layout of panes:
+**Maps · Media · Phone · Car apps · Messages · Apps**. Every one except the last
+draws a *model* another app already publishes, at the head unit's own resolution
+and density — nothing is captured and nothing is scaled.
+
+| Tab | Source of the content |
+|---|---|
+| Maps | the ongoing notification every navigator publishes, or a car app's `Trip` |
+| Media | `MediaBrowserService` for the library, `MediaSessionManager` for now playing |
+| Phone | the dialer's own call notification, and `CallLog.Calls` |
+| Car apps | `androidx.car.app` templates, drawn by Headway (ADR 0007) |
+| Messages | `NotificationListenerService` + the app's own `RemoteInput` |
+| Apps | the pinned grid, and the door to full-screen app rendering |
+
+**Car apps** is the one that answers "why can't we run apps like Android Auto
+does?". It is the same mechanism: the app exports a `CarAppService`, hands over
+templates, and the host draws every pixel. Headway is accepted as a host by
+declaring and holding `android.car.permission.TEMPLATE_RENDERER`, which is the
+fourth and last branch `HostValidator` accepts — the derivation and the two
+install-time risks are in ADR 0007 and B-012 to B-014.
+
+For an app with no model at all — a map, a browser — ADR 0008 adds native
+rendering on a *simulated secondary display*, created by the driver in Developer
+options. It is trusted, so any app may be launched onto it; it is recordable, so
+Headway captures it instead of the phone; and the app lays itself out for
+720x480, which pillarboxes into the panel at 1:1 pixels using **720 of 800
+columns** against mirroring's 216. Costs: a 40-pixel bar each side, and the
+phone's screen has to stay on. Off by default, B-015 tracks the one thing no
+source read can settle.
+
+## What the car screen was, as of build 84
 
 Mirroring was the default until a real drive showed how badly it fits. The phone
 is 1080x2404 and the panel is 800x480, so the image occupied **216 of 800
@@ -198,6 +230,12 @@ remaining hypotheses can be tested with a text edit instead of a rebuild.
 
 ## What is left
 
+0. **Three device questions, each answerable in one session and each with the
+   probe already built.** B-012: does a real car app accept Headway as a host
+   (open the Car apps tab and read the log line). B-015: does the capture
+   chooser offer the simulated display as its own row (press "Show every display
+   this phone has", then Connect). And whether the `(secure)` trap was avoided,
+   which the same button answers.
 1. **Real-hardware validation.** The one step that cannot be self-performed, and
    the only thing between this and a working car link.
 2. **Release signing and F-Droid metadata.** The build is reproducible in shape;
