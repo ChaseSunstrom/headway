@@ -245,6 +245,15 @@ class CarShell(
      * no full-screen mode.
      */
     fun openApp(packageName: String) {
+        if (!HeadwaySettings.allowsApp(context, packageName)) {
+            // Every route in -- the rail, the grid, a maps hand-off, a voice
+            // command -- lands here, so this is the one place the rule has to
+            // hold. A pinned button for an app whose permission was withdrawn
+            // must not still work.
+            onStep("car screen: $packageName is not allowed on the car screen")
+            showVoiceMessage("Allow this app in Headway on the phone first")
+            return
+        }
         val pane = liveAppPane
         if (pane == null) {
             val appLayout = tabs.firstOrNull { it.leaves().any { leaf -> PaneKind.isApp(leaf.kind) } }
@@ -1097,8 +1106,8 @@ class CarShell(
                 rows = rows.ifEmpty {
                     listOf(
                         CarSheet.Row(
-                            "No apps are visible to Headway",
-                            "Android hides other apps unless they are declared",
+                            "No apps are allowed yet",
+                            "Open Headway on the phone and allow the ones you want here",
                         ) { closeOverlay() },
                     )
                 },
@@ -1107,13 +1116,24 @@ class CarShell(
         )
     }
 
+    /**
+     * The apps the driver has allowed onto the car screen, and nothing else.
+     *
+     * Putting an app here is a decision made on the phone while parked -- see
+     * `AllowedApps` -- so this is a filter over the launcher list rather than
+     * the launcher list itself. An empty result is the correct answer for a
+     * fresh install and the picker says so instead of showing everything.
+     */
     private fun launchableApps(): List<Triple<String, String, android.graphics.drawable.Drawable?>> {
+        val allowed = HeadwaySettings.allowedApps(context)
+        if (allowed.isEmpty()) return emptyList()
         val manager = context.packageManager
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         return runCatching {
             manager.queryIntentActivities(intent, 0)
                 .asSequence()
                 .filter { it.activityInfo?.packageName != context.packageName }
+                .filter { it.activityInfo?.packageName in allowed }
                 .map { resolved ->
                     Triple(
                         resolved.activityInfo.packageName,

@@ -110,6 +110,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var dashboardSwitch: SwitchCompat
     private lateinit var autoConnectSwitch: SwitchCompat
     private var themeValue: android.widget.TextView? = null
+    private var allowedAppsSummary: android.widget.TextView? = null
     private lateinit var updateValue: TextView
     private lateinit var certificateValue: TextView
     private lateinit var carWifiValue: TextView
@@ -428,6 +429,7 @@ class MainActivity : AppCompatActivity() {
         column.addView(buildChecklist())
         column.addView(Phone.sectionLabel(this, "The car"))
         column.addView(buildCarScreenCard())
+        column.addView(buildAllowedAppsCard())
         column.addView(buildAppDisplayCard())
         column.addView(TabsCard(this) { }.also { tabsCard = it }.view)
         column.addView(buildCarWifiCard())
@@ -822,6 +824,100 @@ class MainActivity : AppCompatActivity() {
             ),
         )
         return card
+    }
+
+    /**
+     * Which apps may appear on the car screen at all.
+     *
+     * Nothing is allowed until it is allowed here. See `AllowedApps` for why
+     * that is the default rather than "everything you have installed": the car
+     * screen is shared over a capture grant, visible to passengers, and touched
+     * by a coordinate stream from hardware Headway does not control. That is a
+     * decision worth making once per app, parked, on a screen big enough to read.
+     */
+    private fun buildAllowedAppsCard(): View {
+        val card = Phone.card(this, "Apps allowed on the car screen")
+        card.addView(
+            Phone.body(
+                this,
+                "Only these can be opened in a panel, pinned to the rail, or launched " +
+                    "by voice. Nothing is allowed until you allow it.",
+            ),
+        )
+        allowedAppsSummary = Phone.body(this, describeAllowedApps())
+        card.addView(allowedAppsSummary)
+        card.addView(Phone.button(this, "Choose apps") { chooseAllowedApps() })
+        return card
+    }
+
+    private fun describeAllowedApps(): String {
+        val allowed = HeadwaySettings.allowedApps(this)
+        if (allowed.isEmpty()) return "None yet — the car screen will offer no apps."
+        val names = allowed.take(4).map { packageName ->
+            runCatching {
+                packageManager.getApplicationLabel(
+                    packageManager.getApplicationInfo(packageName, 0),
+                ).toString()
+            }.getOrDefault(packageName)
+        }.sorted()
+        val extra = allowed.size - names.size
+        return names.joinToString(", ") + if (extra > 0) " and $extra more" else ""
+    }
+
+    /**
+     * A checklist of every launchable app, with the allowed ones ticked.
+     *
+     * A multi-choice dialog rather than a screen of switches: the list is as
+     * long as the phone's app drawer, it is read once in a while rather than
+     * lived in, and "tick the ones you want, press OK" is the shape everybody
+     * already knows for exactly this question.
+     */
+    private fun chooseAllowedApps() {
+        val manager = packageManager
+        val intent = android.content.Intent(android.content.Intent.ACTION_MAIN)
+            .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+        val apps = runCatching {
+            manager.queryIntentActivities(intent, 0)
+                .asSequence()
+                .mapNotNull { it.activityInfo?.packageName }
+                .filter { it != packageName }
+                .distinct()
+                .map { it to runCatching {
+                    manager.getApplicationLabel(manager.getApplicationInfo(it, 0)).toString()
+                }.getOrDefault(it) }
+                .sortedBy { it.second.lowercase() }
+                .toList()
+        }.getOrDefault(emptyList())
+
+        if (apps.isEmpty()) {
+            toast("No launchable apps were found")
+            return
+        }
+        val allowed = HeadwaySettings.allowedApps(this).toMutableSet()
+        val checked = BooleanArray(apps.size) { apps[it].first in allowed }
+        AlertDialog.Builder(this)
+            .setTitle("Allow on the car screen")
+            .setMultiChoiceItems(
+                apps.map { it.second }.toTypedArray(),
+                checked,
+            ) { _, which, isChecked ->
+                val target = apps[which].first
+                if (isChecked) allowed.add(target) else allowed.remove(target)
+            }
+            .setPositiveButton("Save") { _, _ ->
+                HeadwaySettings.setAllowedApps(this, allowed)
+                allowedAppsSummary?.text = describeAllowedApps()
+                SessionLog.shared.info(TAG, "${allowed.size} app(s) allowed on the car screen")
+                toast(
+                    if (allowed.isEmpty()) {
+                        "No apps allowed — the car will offer none"
+                    } else {
+                        "${allowed.size} app(s) allowed"
+                    },
+                )
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun describeTheme(): String {

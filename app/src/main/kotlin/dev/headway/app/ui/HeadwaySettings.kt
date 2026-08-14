@@ -19,6 +19,7 @@ package dev.headway.app.ui
 
 import android.content.Context
 import android.content.SharedPreferences
+import dev.headway.dash.AllowedApps
 
 /**
  * Persisted user choices, in one place so the two activities cannot disagree.
@@ -203,6 +204,28 @@ object HeadwaySettings {
             )
         }
     }
+
+    /**
+     * Packages the driver has allowed onto the car screen. See `AllowedApps`.
+     *
+     * A `Set<String>`, like the pinned grid, because it is a membership question
+     * with no order. Empty by default, and empty means the car offers nothing.
+     */
+    const val KEY_ALLOWED_APPS: String = "allowed_apps"
+
+    fun allowedApps(context: Context): Set<String> =
+        runCatching { of(context).getStringSet(KEY_ALLOWED_APPS, null) }.getOrNull()
+            ?: AllowedApps.NONE
+
+    fun setAllowedApps(context: Context, allowed: Set<String>) {
+        runCatching {
+            of(context).edit().putStringSet(KEY_ALLOWED_APPS, allowed.toSet()).apply()
+        }
+    }
+
+    /** Whether [packageName] may be put on the car screen at all. */
+    fun allowsApp(context: Context, packageName: String?): Boolean =
+        AllowedApps.allows(allowedApps(context), packageName)
 
     fun appPaneFill(context: Context): Boolean =
         of(context).getBoolean(KEY_APP_PANE_FILL, false)

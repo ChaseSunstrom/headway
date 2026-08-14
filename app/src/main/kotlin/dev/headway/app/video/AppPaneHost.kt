@@ -107,8 +107,29 @@ object AppPaneHost {
     var sourceHeight: Int = 0
         private set
 
+    /**
+     * True once the platform has told us the captured region's real size.
+     *
+     * Until then [sourceWidth]/[sourceHeight] are an *inference* -- the display
+     * Headway believes is being recorded -- and inference is exactly what goes
+     * wrong when the driver shares a single app instead of a whole display. A
+     * measured size overrides it and is never overwritten by a guess.
+     */
+    @Volatile
+    var sourceMeasured: Boolean = false
+        private set
+
     /** True when there is a grant to render with at all. */
     val available: Boolean get() = synchronized(lock) { projection != null }
+
+    /**
+     * False while the shared app is completely covered on the phone.
+     *
+     * Read by the pane, which says so rather than showing a stale frame.
+     */
+    @Volatile
+    var contentVisible: Boolean = true
+        private set
 
     /** True when some pane currently holds the picture. */
     val live: Boolean get() = synchronized(lock) { display != null && boundTo != null }
@@ -167,14 +188,64 @@ object AppPaneHost {
             this.projection = projection
             this.densityDpi = densityDpi.coerceAtLeast(1)
             this.onStep = onStep
-            sourceWidth = source.first
-            sourceHeight = source.second
+            if (!sourceMeasured || !sameGrant) {
+                sourceWidth = source.first
+                sourceHeight = source.second
+                if (!sameGrant) sourceMeasured = false
+            }
             if (projection != null && !sameGrant) {
                 // Required before createVirtualDisplay on API 34+, and needed
                 // regardless: the driver can revoke the grant from the status
                 // bar at any moment and every app pane has to stop claiming it
                 // is showing something.
                 val callback = object : MediaProjection.Callback() {
+
+                    /**
+                     * The captured region's real size, straight from the platform.
+                     *
+                     * This is the whole answer to "the panel shows the wrong
+                     * shape". When the driver shares one app rather than a
+                     * display, the recorded region is that app's window -- not
+                     * the phone's screen -- and nothing Headway can read tells
+                     * it so. Android 14 added this callback for exactly that,
+                     * and without it every app pane fits its picture to a
+                     * rectangle the capture does not have: a phone-shaped strip
+                     * for an app that is not phone-shaped.
+                     */
+                    override fun onCapturedContentResize(width: Int, height: Int) {
+                        if (width <= 0 || height <= 0) return
+                        synchronized(lock) {
+                            if (sourceWidth == width && sourceHeight == height) return
+                            sourceWidth = width
+                            sourceHeight = height
+                            sourceMeasured = true
+                        }
+                        onStep("app pane: the shared content is ${width}x$height")
+                        announce("the captured content resized")
+                    }
+
+                    /**
+                     * Whether the shared app is on screen at all.
+                     *
+                     * In single-app sharing the captured app can be completely
+                     * covered, at which point the platform stops producing
+                     * frames and the pane would hold its last one forever --
+                     * indistinguishable, on a dashboard, from a frozen car
+                     * screen.
+                     */
+                    override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+                        contentVisible = isVisible
+                        onStep(
+                            if (isVisible) {
+                                "app pane: the shared app is visible again"
+                            } else {
+                                "app pane: the shared app is covered on the phone, so it has " +
+                                    "stopped sending frames"
+                            },
+                        )
+                        announce("captured visibility changed")
+                    }
+
                     override fun onStop() {
                         onStep("screen sharing was stopped, so app panes have nothing to show")
                         synchronized(lock) {
@@ -324,6 +395,8 @@ object AppPaneHost {
             projection = null
             sourceWidth = 0
             sourceHeight = 0
+            sourceMeasured = false
+            contentVisible = true
             pictureRect = PaneRect(0, 0, 0, 0)
             onStep = {}
         }

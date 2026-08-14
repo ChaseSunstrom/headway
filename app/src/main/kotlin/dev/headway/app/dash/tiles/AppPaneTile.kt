@@ -368,7 +368,12 @@ class AppPaneTile(
     private fun applyState() {
         if (!::root.isInitialized) return
         if (shouldShowPicture()) {
-            dormantCard.visibility = View.GONE
+            // Covered is not dormant. The picture stays bound -- the app is
+            // still shared, it is merely behind something on the phone -- and
+            // the card is laid over it to say so, because a pane holding its
+            // last frame silently is indistinguishable from a frozen car screen.
+            dormantCard.visibility = if (AppPaneHost.contentVisible) View.GONE else View.VISIBLE
+            if (!AppPaneHost.contentVisible) updateDormantText()
             resizePicture()
             picture.visibility = View.VISIBLE
             // A texture that already exists gets no fresh callback when the pane
@@ -466,6 +471,8 @@ class AppPaneTile(
         label.text = app?.first ?: "App"
         hint.text = when {
             editing -> "This pane shows a running app"
+            live && AppPaneHost.available && !AppPaneHost.contentVisible ->
+                "Covered on the phone — bring it back to the front"
             !AppPaneHost.available -> "Tap here, then allow screen sharing on the phone"
             AppPaneHost.live -> "Tap to bring the app here"
             app != null -> "Tap to open"

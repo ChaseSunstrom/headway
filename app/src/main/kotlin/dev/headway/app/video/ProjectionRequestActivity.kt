@@ -124,12 +124,31 @@ class ProjectionRequestActivity : AppCompatActivity() {
          * a display that is not the one being recorded.
          */
         fun captureIntentFor(context: Context, manager: MediaProjectionManager): Intent {
-            val simulated = CarAppDisplay.enabled(context) && OverlayDisplay.find(context) != null
-            if (simulated || Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // The user's choice, always -- because the choice Headway wants them
+            // to make is "a single app".
+            //
+            // This previously forced `createConfigForDefaultDisplay()`, to stop
+            // a driver picking a source that did not match what Headway assumed.
+            // That was backwards, and a drive proved it: forcing the default
+            // display *removes the single-app option from the dialog*, so the
+            // only thing the driver could share was the whole screen, which is
+            // exactly the "it shows the entire display, not the one app"
+            // complaint.
+            //
+            // Android's own page is unambiguous about what the other option
+            // gives: with app screen sharing "the status bar, navigation bar,
+            // notifications, and other system UI elements are excluded from the
+            // shared display. Only the content of the selected app is shared",
+            // and "apps that use the MediaProjection APIs are capable of app
+            // screen sharing automatically". So the mismatch this once guarded
+            // against is handled where it belongs -- by `AppPaneHost` listening
+            // to `onCapturedContentResize`, which reports the captured region's
+            // real size instead of Headway guessing at it.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 return manager.createScreenCaptureIntent()
             }
             return manager.createScreenCaptureIntent(
-                MediaProjectionConfig.createConfigForDefaultDisplay(),
+                MediaProjectionConfig.createConfigForUserChoice(),
             )
         }
 
