@@ -1484,7 +1484,23 @@ open class HeadwayService : Service() {
                     "This session will connect without video")
                 null
             }
-        if (projection != null) step("screen capture granted; video will start with the session")
+        val granted = projection ?: return
+        step("screen capture granted; video will start with the session")
+
+        // If a session is already up -- which is now the normal case, because a
+        // link that comes up on its own has no grant to travel with it -- the
+        // app panes are sitting there saying screen sharing is off. Attach the
+        // grant to them straight away rather than making the driver disconnect
+        // and reconnect to use it.
+        val live = CarVideoStream.current?.takeIf { it.surface != null } ?: return
+        runCatching {
+            AppPaneHost.attach(
+                context = applicationContext,
+                projection = granted,
+                densityDpi = live.negotiated?.densityDpi ?: 160,
+                onStep = ::step,
+            )
+        }.onSuccess { step("app panes can now show a running app") }
     }
 
     private fun startForegroundNow() {

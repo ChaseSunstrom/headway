@@ -412,6 +412,9 @@ class CarVideoStream(
          */
         private val switcher = AtomicReference<CarVideoStream?>(null)
 
+        /** The live stream, or null between sessions. */
+        val current: CarVideoStream? get() = switcher.get()
+
         /** The geometry the head unit chose, or null when no session is up. */
         val currentGeometry: EncoderConfiguration? get() = switcher.get()?.negotiated
 
