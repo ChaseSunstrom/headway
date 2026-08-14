@@ -208,11 +208,20 @@ class CarShell(
      */
     fun appPictureRect(): PaneRect = liveAppPane?.pictureRect() ?: EMPTY_RECT
 
-    /** Whether a car touch at ([x], [y]) belongs to the app rather than to Headway. */
+    /**
+     * Whether a car touch at ([x], [y]) belongs to the app rather than to Headway.
+     *
+     * Answered from the *published* rectangle rather than by re-reading the
+     * view, so that this and the touch router cannot disagree. They are two
+     * halves of one decision — this one routes the event, `CarInputStream` maps
+     * it — and if the pane has just moved, a fresh answer here against a stale
+     * transform there sends the touch to the app at the wrong coordinates,
+     * which is worse than either being a frame behind together.
+     */
     fun claimsAppTouch(x: Int, y: Int): Boolean {
         if (editing) return false
         if (overlayHost.visibility == View.VISIBLE) return false
-        val rect = appPictureRect()
+        val rect = AppPaneHost.pictureRect
         return rect.width > 0 && rect.contains(x, y)
     }
 

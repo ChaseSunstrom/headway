@@ -139,6 +139,12 @@ class AppPaneTile(
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
             surfaceReady = true
             if (!shouldShowPicture()) return
+            // The first surface can arrive before the pane has been measured, in
+            // which case the view is still MATCH_PARENT and this size is the
+            // whole pane rather than the source's shape. Binding anyway is
+            // right — something on the car beats nothing — and this asks for the
+            // fit again so the next layout pass corrects it.
+            resizePicture()
             if (AppPaneHost.bind(this@AppPaneTile, holder.surface, width, height)) {
                 lastBoundWidth = width
                 lastBoundHeight = height
