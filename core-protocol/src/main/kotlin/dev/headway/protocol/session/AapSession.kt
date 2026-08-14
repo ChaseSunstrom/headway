@@ -18,6 +18,7 @@
 package dev.headway.protocol.session
 
 import aap_protobuf.service.ServiceOuterClass
+import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaCodecType
 import aap_protobuf.service.control.message.ChannelOpenRequestOuterClass.ChannelOpenRequest
 import aap_protobuf.service.control.message.ChannelOpenResponseOuterClass.ChannelOpenResponse
 import aap_protobuf.service.control.message.ServiceDiscoveryRequestOuterClass.ServiceDiscoveryRequest
@@ -392,11 +393,54 @@ class AapSession(
             displayName = if (response.hasDisplayName()) response.displayName else null,
             services = response.channelsList,
         )
+        // Described from each service's own descriptor, not from Headway's
+        // ChannelId table.
+        //
+        // This line used to print `ChannelId.describe(id)` for each advertised
+        // id, which is a lookup in *Headway's own naming convention* — so a car
+        // that advertised thirteen services numbered 1..13 was reported as
+        // offering exactly the thirteen things Headway happens to call 1..13,
+        // whatever it had actually said. It read like evidence and was a
+        // tautology, and it was quoted as fact during a real investigation.
         onStep(
-            "head unit '${profile.displayName ?: "unnamed"}' offers " +
-                profile.channelIds.joinToString { ChannelId.describe(it) }
+            "head unit '${profile.displayName ?: "unnamed"}' advertised " +
+                "${profile.services.size} service(s): " +
+                profile.services.joinToString { describeService(it) }
         )
         return profile
+    }
+
+    /**
+     * What one advertised service actually is, from the service itself.
+     *
+     * Always prefixed with the real id, so a frame log can be matched against
+     * the advertisement without anyone having to know Headway's conventions.
+     * A service whose payload Headway does not recognise is reported as
+     * unrecognised rather than guessed at — "id=11 unrecognised" is a fact and
+     * "RADIO" would have been an invention.
+     */
+    private fun describeService(service: ServiceOuterClass.Service): String {
+        val kind = when {
+            service.hasMediaSinkService() -> {
+                val sink = service.mediaSinkService
+                when {
+                    sink.availableType == MediaCodecType.MEDIA_CODEC_VIDEO_H264_BP -> "video sink"
+                    sink.hasAudioType() -> "audio sink ${sink.audioType.name}"
+                    else -> "media sink ${sink.availableType.name}"
+                }
+            }
+            service.hasMediaSourceService() ->
+                "media source ${service.mediaSourceService.availableType.name}"
+            service.hasInputSourceService() -> "input source"
+            service.hasSensorSourceService() ->
+                "sensor source (${service.sensorSourceService.sensorsList.size} sensor(s))"
+            service.hasBluetoothService() -> "bluetooth"
+            service.hasNavigationStatusService() -> "navigation status"
+            service.hasMediaPlaybackService() -> "media playback status"
+            service.hasVendorExtensionService() -> "vendor extension"
+            else -> "unrecognised"
+        }
+        return "id=${service.id} $kind"
     }
 
     // --- step 5: channel open ----------------------------------------------

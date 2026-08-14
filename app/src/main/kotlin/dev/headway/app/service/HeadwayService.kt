@@ -637,6 +637,16 @@ open class HeadwayService : Service() {
         // especially while a signing problem is keeping people on older builds.
         step("Headway build ${BuildConfig.VERSION_CODE} (${BuildConfig.VERSION_NAME})")
 
+        // Cleared per attempt. These are service-level fields, so a failed
+        // attempt used to leave its map in place and the *next* attempt's frame
+        // log was labelled with the previous session's channel names — which is
+        // how one export ended up showing "tx SENSOR ... 10 0a" immediately
+        // followed by "channel BLUETOOTH open". Two different naming schemes for
+        // the same channel, in adjacent lines, in a file whose whole purpose is
+        // to be read after the fact.
+        channelNames = emptyMap()
+        highRateChannels = DEFAULT_HIGH_RATE_CHANNELS
+
         val adapter = BluetoothCarLink.adapterOf(this)
             ?: throw IllegalStateException("this device has no Bluetooth adapter")
         if (!adapter.isEnabled) throw IllegalStateException("Bluetooth is off")

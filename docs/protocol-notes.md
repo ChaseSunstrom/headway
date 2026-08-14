@@ -2920,6 +2920,36 @@ The task brief asks to compare aasdk/aasdk_proto/ against aasdk/protobuf/aap_pro
 
 ---
 
+### The frame-rate enum: aasdk and the modern schema disagree, and it matters
+
+`VideoConfiguration.frame_rate` is an enum, and the two sources number it in
+opposite order.
+
+| source | value 1 | value 2 |
+|---|---|---|
+| `aasdk/aasdk_proto/VideoFPSEnum.proto` L28-L29 | `_30` | `_60` |
+| vendored `aap_protobuf/.../VideoFrameRateType.proto` (as aa-proxy-rs derived it) | `VIDEO_FPS_60` | `VIDEO_FPS_30` |
+
+The 2021 Chevrolet Infotainment 3 unit sent **`frame_rate = 1`** with an 800x480
+`codec_resolution`, and Headway read it through the vendored schema and logged
+`video: 800x480 at 60 fps`.
+
+**CLAUDE.md's tiebreaker says aasdk wins**, which would make that 30 fps and the
+current reading wrong. Against that, aa-proxy-rs's protobufs were reconstructed
+from *observed* traffic rather than from a header, which is the better class of
+evidence about what is actually on a wire. Neither is decisive, so the
+disagreement is recorded here rather than silently resolved.
+
+Practical consequence, and why this is not merely academic: if the reading is
+wrong, Headway configures `MediaCodec` for 60 fps on a panel that wants 30 —
+double the bitrate and the encode cost for a display that cannot show it. The
+asymmetry favours 30: a head unit expecting 60 will accept a 30 fps stream,
+because the frame rate is a hint to the encoder and the pump sends whatever it
+has, whereas the reverse wastes the budget outright.
+
+Unverified either way. What would settle it: a log from a unit that advertises
+`frame_rate = 2`, or one that visibly stutters at one setting and not the other.
+
 ## 6. Input channel
 
 Touch, key and rotary events, which the phone RECEIVES from the head unit. Not yet implemented -- Phase 3.
