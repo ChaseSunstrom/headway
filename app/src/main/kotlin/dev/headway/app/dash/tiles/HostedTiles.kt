@@ -1123,7 +1123,7 @@ private fun messageView(context: Context, message: String): TextView {
  * @return false when the system refused the start, which is logged rather than
  *   thrown: one app that will not open must not take the dashboard with it.
  */
-private fun startOnPhoneDisplay(
+internal fun startOnPhoneDisplay(
     context: Context,
     intent: Intent,
     onStep: (String) -> Unit,

@@ -70,20 +70,28 @@ class DashLayoutStore(private val storage: Storage) {
      *
      * Never empty, which is what makes [active] total.
      */
-    fun list(): List<DashLayout> = stored().ifEmpty { listOf(DEFAULT) }
+    fun list(): List<DashLayout> = stored().ifEmpty { DEFAULT_TABS }
 
     /**
      * The layout that should be on the car screen.
      *
-     * Falls back twice: to the first saved layout when the recorded name matches
-     * nothing, and to [DEFAULT] when nothing is saved. A dashboard that comes up
-     * showing the wrong arrangement is a nuisance; one that comes up showing
-     * nothing because a name went stale is a black screen in a moving car.
+     * Falls back twice: to [DEFAULT] when the recorded name matches nothing, and
+     * to the first tab when even that is gone. A dashboard that comes up showing
+     * the wrong arrangement is a nuisance; one that comes up showing nothing
+     * because a name went stale is a black screen in a moving car.
+     *
+     * The middle step is why [DEFAULT] is consulted by name rather than the
+     * first tab simply being taken. Since the shipped set became five tabs its
+     * first entry is Maps, and a driver who has never chosen would land on a
+     * pane reading "No route running" — technically correct and a poor thing for
+     * a car to open on. Media is the tab with something to show on every drive.
      */
     fun active(): DashLayout {
         val all = list()
         val wanted = activeName()
-        return all.firstOrNull { it.name == wanted } ?: all.first()
+        return all.firstOrNull { it.name == wanted }
+            ?: all.firstOrNull { it.name == DEFAULT_NAME }
+            ?: all.first()
     }
 
     /**
@@ -177,19 +185,19 @@ class DashLayoutStore(private val storage: Storage) {
         /** The name of the layout to show. */
         const val KEY_ACTIVE_LAYOUT: String = "dash_active_layout"
 
-        /** What the shipped arrangement is called in a picker. */
-        const val DEFAULT_NAME: String = "Dashboard"
+        /** The tab a fresh install lands on. */
+        const val DEFAULT_NAME: String = "Media"
 
         /**
-         * Width given to the browse pane in [DEFAULT].
+         * Width given to the browse pane in the Media tab.
          *
-         * A fraction and not a pixel count on purpose: `CarVideoStream` negotiates
-         * the real geometry from the configuration the head unit selects, so
-         * nothing here may assume 800x480 even though that is the class of panel
-         * the target vehicle has. On a panel that *is* 800 wide this leaves 440
-         * pixels for the library list and 360 for the column beside it, and 360
-         * is about seven 48 dp targets at the density such panels report — enough
-         * for album art beside a title with a row of transport buttons under it.
+         * A fraction and not a pixel count on purpose: `CarVideoStream`
+         * negotiates the real geometry from the configuration the head unit
+         * selects, so nothing here may assume 800x480 even though that is the
+         * class of panel the target vehicle has. On a panel that *is* 800 wide
+         * this leaves 440 pixels for the library list and 360 for the column
+         * beside it, and 360 is about seven 48 dp targets at the density such
+         * panels report.
          *
          * The draggable range is deliberately wider than the useful one. At
          * [DashNode.MAX_RATIO] the column would be 120 pixels and hold no
@@ -199,84 +207,91 @@ class DashLayoutStore(private val storage: Storage) {
         const val DEFAULT_BROWSE_SHARE: Float = 0.55f
 
         /**
-         * Height given to now-playing in [DEFAULT]'s right-hand column.
+         * Height given to now-playing in the Media tab's right-hand column.
          *
-         * The larger share goes to the pane that cannot shrink. Now-playing has a
-         * floor — artwork, two lines of text and a 48 dp transport row do not
-         * compress — whereas an app grid reflows to whatever height it is given
-         * and simply shows fewer rows. So now-playing takes what it needs and the
-         * grid absorbs the remainder, rather than both being squeezed equally
-         * until neither works.
+         * The larger share goes to the pane that cannot shrink. Now-playing has
+         * a floor — artwork, two lines of text and a 48 dp transport row do not
+         * compress — whereas an app grid reflows to whatever height it is given.
          */
         const val DEFAULT_NOW_PLAYING_SHARE: Float = 0.55f
 
         /**
-         * The arrangement a driver gets before they have made one.
+         * The tabs a driver gets before they have made any.
+         *
+         * ## Why tabs at all
+         *
+         * A single split tree on a 480-pixel-tall panel runs out of room at
+         * three panes, which is how Messages came to be dropped from the
+         * shipped arrangement — a bad trade, and an unnecessary one. Tabs are
+         * the obvious answer and they cost almost nothing here: this store
+         * already keeps *named* layouts and an active name, so a tab is a
+         * layout and the tab bar is a picker over [list].
+         *
+         * ## Why these five
+         *
+         * They are the destinations a car has. Maps and Media are where the
+         * driver spends the drive; Phone and Messages are what a car is
+         * legally allowed to help with; Apps is the door to anything Headway
+         * does not model, including full-screen mirroring.
          *
          * ```
-         * +---------------------+-------------+
-         * |                     | Now playing |
-         * |  Music & podcasts   +-------------+
-         * |                     |    Apps     |
-         * +---------------------+-------------+
+         * Maps      one pane, the map, full width
+         * Media     library ∥ (now playing / apps)
+         * Phone     recent calls ∥ now playing
+         * Messages  conversations, full width
+         * Apps      the grid, full width
          * ```
-         *
-         * ## Why browse is the big pane
-         *
-         * Because it is the pane a driver actually operates. Until this build the
-         * dashboard could show what was *already* playing and could not start
-         * anything: no library, no playlists, no podcast episodes. That made the
-         * whole surface read-only for the one thing a car stereo is for.
-         * `MediaBrowseTile` walks the tree an app publishes through
-         * `MediaBrowserService` — which is precisely, and not merely
-         * analogously, what Android Auto does with a music app — and it needs the
-         * width because it is a list of titles.
-         *
-         * The previous default gave the big pane to [DashTile.Kind.MIRROR], from
-         * when the car screen was a copy of the phone's. ADR 0006 ended that: the
-         * dashboard is drawn at the car's own resolution and a mirror pane cannot
-         * exist on it, so `DashboardPresentation` resolves a MIRROR leaf to the
-         * app grid. Saved layouts from before keep working; the shipped default
-         * no longer pretends there is a hole to look through.
-         *
-         * Beside it go the two panes that exist precisely because they *cannot*
-         * be another app's window: now-playing, drawn from `MediaSessionManager`,
-         * and the app grid, which is the door to full-screen mirroring for
-         * anything Headway cannot model. Messages is one layout edit away and is
-         * left out of the default because three scrolling lists on a 480-pixel
-         * panel is one too many.
-         *
-         * [DashNode.Orientation.HORIZONTAL] is read here as "children side by
-         * side, divider vertical" — the `LinearLayout.HORIZONTAL` sense — which
-         * makes [DashNode.Split.ratio] a fraction of the width. The renderer has
-         * to take the same reading or this default comes out rotated; it is
-         * written down here because the tree itself cannot say which way round it
-         * meant.
          *
          * ## Why this is never written to storage
          *
-         * [list] substitutes it when the store is empty instead of seeding it on
-         * first run. Seeding would make the shipped layout an ordinary row the
-         * driver could delete and never get back, and it would freeze it at
+         * [list] substitutes these when the store is empty instead of seeding
+         * them on first run. Seeding would make the shipped tabs ordinary rows
+         * the driver could delete and never get back, and would freeze them at
          * whatever version of Headway happened to be installed first — a later
-         * build with a better default would never reach an existing phone. Kept
+         * build with better defaults would never reach an existing phone. Kept
          * virtual, a driver who deletes everything lands back on the current
-         * default, and the current default is always this one.
+         * set, and the current set is always this one.
          */
-        val DEFAULT: DashLayout = DashLayout(
-            name = DEFAULT_NAME,
-            root = DashNode.Split(
-                orientation = DashNode.Orientation.HORIZONTAL,
-                ratio = DEFAULT_BROWSE_SHARE,
-                first = DashNode.Leaf(DashTile.Kind.BROWSE),
-                second = DashNode.Split(
-                    orientation = DashNode.Orientation.VERTICAL,
-                    ratio = DEFAULT_NOW_PLAYING_SHARE,
-                    first = DashNode.Leaf(DashTile.Kind.NOW_PLAYING),
-                    second = DashNode.Leaf(DashTile.Kind.LAUNCHER),
+        val DEFAULT_TABS: List<DashLayout> = listOf(
+            DashLayout(
+                name = "Maps",
+                root = DashNode.Leaf(DashTile.Kind.MAPS),
+            ),
+            DashLayout(
+                name = DEFAULT_NAME,
+                root = DashNode.Split(
+                    orientation = DashNode.Orientation.HORIZONTAL,
+                    ratio = DEFAULT_BROWSE_SHARE,
+                    first = DashNode.Leaf(DashTile.Kind.BROWSE),
+                    second = DashNode.Split(
+                        orientation = DashNode.Orientation.VERTICAL,
+                        ratio = DEFAULT_NOW_PLAYING_SHARE,
+                        first = DashNode.Leaf(DashTile.Kind.NOW_PLAYING),
+                        second = DashNode.Leaf(DashTile.Kind.LAUNCHER),
+                    ),
                 ),
             ),
+            DashLayout(
+                name = "Phone",
+                root = DashNode.Split(
+                    orientation = DashNode.Orientation.HORIZONTAL,
+                    ratio = 0.55f,
+                    first = DashNode.Leaf(DashTile.Kind.PHONE),
+                    second = DashNode.Leaf(DashTile.Kind.NOW_PLAYING),
+                ),
+            ),
+            DashLayout(
+                name = "Messages",
+                root = DashNode.Leaf(DashTile.Kind.MESSAGES),
+            ),
+            DashLayout(
+                name = "Apps",
+                root = DashNode.Leaf(DashTile.Kind.LAUNCHER),
+            ),
         )
+
+        /** The tab shown when nothing else is chosen. */
+        val DEFAULT: DashLayout = DEFAULT_TABS.first { it.name == DEFAULT_NAME }
 
         /** The store backed by the app's ordinary preferences. */
         fun of(context: Context): DashLayoutStore =

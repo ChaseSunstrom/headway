@@ -29,9 +29,11 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import dev.headway.app.dash.tiles.ClockTile
 import dev.headway.app.dash.tiles.LauncherTile
+import dev.headway.app.dash.tiles.MapsTile
 import dev.headway.app.dash.tiles.MediaBrowseTile
 import dev.headway.app.dash.tiles.MessagesTile
 import dev.headway.app.dash.tiles.NowPlayingTile
+import dev.headway.app.dash.tiles.PhoneTile
 import dev.headway.app.dash.tiles.WidgetTile
 import dev.headway.app.ui.theme.CarMetrics
 import dev.headway.app.ui.theme.Headway
@@ -78,7 +80,18 @@ class DashboardPresentation(
 
     private lateinit var root: FrameLayout
 
+    /** Holds the tab bar above the pane tree. */
+    private lateinit var column: LinearLayout
+
+    /** The pane tree's own slot, replaced wholesale on a tab change. */
+    private lateinit var stage: FrameLayout
+
+    private var tabBar: LinearLayout? = null
+
     private val store: DashLayoutStore by lazy { DashLayoutStore.of(context) }
+
+    /** Every tab, in order. Re-read on each render so an edit shows up. */
+    private var tabs: List<DashLayout> = DashLayoutStore.DEFAULT_TABS
 
     private var layout: DashLayout = DashLayoutStore.DEFAULT
 
@@ -88,9 +101,18 @@ class DashboardPresentation(
     /** Shown until the first layout is up, so the car never sees a black frame. */
     private var splash: View? = null
 
+    /** Tab text is a shade smaller than a title; the bar is a chrome, not content. */
+    private val TAB_TEXT_FRACTION = 0.30f
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         root = FrameLayout(context).apply { setBackgroundColor(Headway.GROUND) }
+        column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+        }
+        stage = FrameLayout(context)
+        root.addView(column)
         setContentView(root)
         // Dialogs dim what is behind them by default. There is nothing behind
         // this one but the display's own black, and the dim costs a full-screen
@@ -107,7 +129,10 @@ class DashboardPresentation(
         setCanceledOnTouchOutside(false)
 
         showSplash()
+        tabs = store.list()
         layout = store.active()
+        column.addView(buildTabs())
+        column.addView(stage, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         render()
     }
 
@@ -127,6 +152,10 @@ class DashboardPresentation(
 
     fun describe(): String = buildString {
         append(metrics.describe())
+        append("; tab ")
+        append(layout.name)
+        append(" of ")
+        append(tabs.joinToString("/") { it.name })
         append("; ")
         append(live.joinToString("; ") { runCatching { it.describe() }.getOrDefault(it.kind) })
     }
@@ -173,15 +202,95 @@ class DashboardPresentation(
     }
 
     private fun render() {
+        // Every tile from the outgoing tab is stopped before the incoming ones
+        // are built. A media browser or notification observer left running for
+        // a tab nobody is looking at is a binding into another app's process
+        // for the rest of the drive.
         live.forEach { runCatching { it.stop() } }
         live.clear()
+        stage.removeAllViews()
 
         val tree = build(layout.root)
         tree.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-        root.addView(tree, 0)
+        stage.addView(tree)
         Headway.revealIn(tree)
         clearSplash()
         if (isShowing) live.forEach { runCatching { it.start() } }
+    }
+
+    /**
+     * The tab bar.
+     *
+     * ## Why a row of pills and not a `TabLayout`
+     *
+     * `TabLayout` is Material, which Headway does not depend on, and it sizes
+     * itself from the phone's density. Every size here comes from [CarMetrics]
+     * instead, so a tab is a full touch target tall at the *car's* density.
+     * There are five of them and they do not scroll: five 48 dp targets fit
+     * across 800 pixels with room to spare, and a tab bar a driver has to
+     * scroll is a tab bar they cannot use at speed.
+     *
+     * The active tab is filled in the accent. That is the only accent on the
+     * whole surface at rest, which is what makes "where am I" answerable
+     * without reading.
+     */
+    private fun buildTabs(): View {
+        val bar = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val pad = metrics.gutter / 2
+            setPadding(pad, pad, pad, pad)
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        }
+        tabBar = bar
+        fillTabs(bar)
+        return bar
+    }
+
+    private fun fillTabs(bar: LinearLayout) {
+        bar.removeAllViews()
+        tabs.forEach { tab ->
+            val selected = tab.name == layout.name
+            val pill = Headway.title(context, metrics.unit, tab.name).apply {
+                gravity = Gravity.CENTER
+                setTextColor(if (selected) Headway.GROUND else Headway.TEXT_MUTED)
+                setTextSize(
+                    android.util.TypedValue.COMPLEX_UNIT_PX,
+                    metrics.unit * TAB_TEXT_FRACTION,
+                )
+                minHeight = metrics.touchTargetPx
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                contentDescription = tab.name
+                background = Headway.panel(
+                    radiusPx = metrics.touchTargetPx / 2f,
+                    fill = if (selected) Headway.ACCENT else Headway.SURFACE,
+                    stroke = if (selected) null else Headway.OUTLINE,
+                )
+                isClickable = true
+                setOnClickListener { show(tab) }
+                layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
+                    val gap = metrics.gutter / 4
+                    setMargins(gap, 0, gap, 0)
+                }
+            }
+            bar.addView(pill)
+        }
+    }
+
+    /**
+     * Switches tab.
+     *
+     * The choice is written through to the store so the next session comes up
+     * where the driver left off — a car that always reopens on Media when the
+     * driver lives on Maps is a car that asks for a tap every single trip.
+     */
+    private fun show(tab: DashLayout) {
+        if (tab.name == layout.name) return
+        layout = tab
+        runCatching { store.setActive(tab.name) }
+        tabBar?.let { fillTabs(it) }
+        onStep("dashboard: switched to the ${tab.name} tab")
+        render()
     }
 
     /**
@@ -272,6 +381,8 @@ class DashboardPresentation(
     private fun tileFor(leaf: DashNode.Leaf): DashTile? = when (leaf.kind) {
         DashTile.Kind.NOW_PLAYING -> NowPlayingTile(context)
         DashTile.Kind.BROWSE -> MediaBrowseTile(context, onStep)
+        DashTile.Kind.MAPS -> MapsTile(context, onStep)
+        DashTile.Kind.PHONE -> PhoneTile(context, onStep)
         DashTile.Kind.MESSAGES -> MessagesTile(context)
         DashTile.Kind.CLOCK -> ClockTile(context)
         DashTile.Kind.LAUNCHER, DashTile.Kind.MIRROR -> LauncherTile(onStep)

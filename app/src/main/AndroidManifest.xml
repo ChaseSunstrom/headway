@@ -88,6 +88,29 @@
         tools:ignore="QueryAllPackagesPermission" />
 
     <!--
+      The phone pane. Four ordinary runtime permissions, each optional on its
+      own: without them the pane says which one is missing rather than sitting
+      empty.
+
+      READ_CALL_LOG is the recent-calls list, which is most of what Android
+      Auto's phone screen ever shows. READ_CONTACTS names the caller when the
+      log has no cached name. CALL_PHONE places the call outright instead of
+      handing the driver a filled-in dialer to press a button on, which is the
+      whole difference between a car control and a phone control.
+      ANSWER_PHONE_CALLS is only the backstop: the answer and hang-up
+      PendingIntents the dialer publishes on its own notification are preferred
+      and need nothing, but a dialer that publishes none leaves TelecomManager
+      as the only route.
+
+      None of these is privileged. All four are dangerous|runtime, granted by an
+      ordinary prompt, and revocable in Settings.
+    -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+
+    <!--
       The in-app updater, which is entirely user-initiated: nothing checks for
       an update on launch, on a schedule, or in the background. The user has to
       grant "install unknown apps" for Headway as well, which is a normal

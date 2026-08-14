@@ -54,6 +54,9 @@ import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import dev.headway.app.dash.DashTile
 import dev.headway.app.log.SessionLog
+import dev.headway.app.nav.NavigationFeed
+import dev.headway.app.phone.CarPhone
+import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.ui.theme.HeadwayMark
 import dev.headway.app.ui.theme.ProgressRule
@@ -988,8 +991,11 @@ class HeadwayNotificationListener : NotificationListenerService() {
         super.onListenerDisconnected()
         connected = false
         // Cleared rather than left stale: a revoked grant must not leave the last
-        // conversation someone had sitting on a car screen indefinitely.
+        // conversation someone had sitting on a car screen indefinitely. Same for
+        // the turn instruction and the call, which are read from the same feed.
         deliver(emptyList())
+        NavigationFeed.clear()
+        CarPhone.clear()
         SessionLog.shared.info(TAG, "notification listener disconnected")
     }
 
@@ -1012,6 +1018,26 @@ class HeadwayNotificationListener : NotificationListenerService() {
      */
     private fun publish() {
         val active = runCatching { activeNotifications }.getOrNull() ?: return
+
+        // The navigation and phone models are rebuilt from the same sweep, and
+        // for the same reason: the active set is the truth. A route that ended
+        // or a call that was hung up while the listener happened to be unbound
+        // produces no removal callback at all, so anything driven purely off
+        // onNotificationRemoved would leave a stale turn arrow — or a stale
+        // Answer button — on the car screen indefinitely.
+        val mapPackages = runCatching {
+            HeadwaySettings.of(this).getString(HeadwaySettings.KEY_MAP_APP, null)
+        }.getOrNull()?.let { setOf(it) }.orEmpty()
+        var navigating = false
+        var calling = false
+        for (sbn in active) {
+            if (sbn == null) continue
+            if (!navigating && NavigationFeed.offer(sbn, mapPackages)) navigating = true
+            if (!calling && CarPhone.offer(this, sbn)) calling = true
+        }
+        if (!navigating) NavigationFeed.clear()
+        if (!calling) CarPhone.clear()
+
         val messages = active
             .mapNotNull { conversationOf(this, it) }
             .sortedByDescending { it.postedAtMillis }
@@ -1104,6 +1130,13 @@ class HeadwayNotificationListener : NotificationListenerService() {
             // relative to `!=` is a thing readers have to look up.
             if ((notification.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return null
             if ((notification.flags and Notification.FLAG_ONGOING_EVENT) != 0) return null
+
+            // A call belongs to the phone pane, which draws it far larger and
+            // with working Answer and Hang up. Most dialers mark the call
+            // notification ongoing and it would already have been dropped above,
+            // but a missed-call notification is not ongoing and would otherwise
+            // arrive here looking like an unread text.
+            if (notification.category == Notification.CATEGORY_CALL) return null
 
             val style = runCatching {
                 NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(notification)

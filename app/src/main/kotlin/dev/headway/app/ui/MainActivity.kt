@@ -100,6 +100,18 @@ object HeadwaySettings {
      */
     const val KEY_CAR_SURFACE_DASHBOARD: String = "car_surface_dashboard"
 
+    /**
+     * The package the Maps pane opens, and whose notification it trusts.
+     *
+     * Unset by default, in which case the first app that handles `geo:` is used
+     * — see `MapsTile.mapApps`. Stored rather than resolved fresh each time
+     * because "whichever the platform lists first" is stable enough to look
+     * deliberate and not stable enough to *be* deliberate, and a driver who
+     * picked Organic Maps should not get HERE WeGo after an update reorders the
+     * resolver.
+     */
+    const val KEY_MAP_APP: String = "map_app"
+
     fun of(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -156,6 +168,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var overlayStatus: Phone.StatusRow
     private lateinit var speechStatus: Phone.StatusRow
     private lateinit var pairingStatus: Phone.StatusRow
+    private lateinit var phoneStatus: Phone.StatusRow
 
     private var uiScope: CoroutineScope? = null
 
@@ -554,6 +567,15 @@ class MainActivity : AppCompatActivity() {
             .withAction("Allow") { openOverlaySettings() }
         card.addView(overlayStatus.view)
 
+        phoneStatus = Phone.StatusRow(this, "Calls and contacts")
+            .withAction("Grant") {
+                requestMissingPermissions(
+                    phonePermissions(),
+                    "Headway can already show and place calls",
+                )
+            }
+        card.addView(phoneStatus.view)
+
         // No remedy button: this one installs itself and there is nothing for a
         // user to press. It is on the list because a driver whose voice
         // commands do nothing deserves to be able to see why.
@@ -841,6 +863,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refresh() {
         refreshPermissions()
+        refreshPhonePermissions()
         refreshAccessibility()
         refreshGrants()
         // Re-read rather than trust the widget: the preferences are shared with
@@ -1083,6 +1106,35 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    /**
+     * The phone pane's row, which is green on a partial grant.
+     *
+     * Deliberately not "all four or warn". Each of the four buys a distinct
+     * piece of the pane and the pane works without any of them — the live call
+     * comes from the notification listener, which is a different row entirely.
+     * Warning about a missing `ANSWER_PHONE_CALLS` on a phone whose dialer
+     * publishes a perfectly good answer action would be crying wolf.
+     */
+    private fun refreshPhonePermissions() {
+        val group = phonePermissions()
+        val missing = group.filterNot { isGranted(it.permission) }
+        phoneStatus.set(
+            when {
+                missing.isEmpty() -> Phone.Level.GOOD
+                missing.size == group.size -> Phone.Level.IDLE
+                else -> Phone.Level.GOOD
+            },
+            when {
+                missing.isEmpty() -> "Recent calls, contacts, dialling and answering."
+                missing.size == group.size ->
+                    "Optional. Grant these and the car's Phone pane shows recent " +
+                        "calls and can dial."
+                else -> "Partly granted; missing " +
+                    missing.joinToString(", ") { it.label.substringBefore(":").lowercase() }
+            },
+        )
+    }
+
     private fun refreshAccessibility() {
         val enabled = HeadwayAccessibilityService.isEnabled(this)
         val bound = HeadwayAccessibilityService.instance.value != null
@@ -1246,12 +1298,15 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun requestMissingPermissions() {
-        val missing = requiredPermissions()
+    private fun requestMissingPermissions(
+        group: List<PermissionNeed> = requiredPermissions(),
+        allGrantedMessage: String = "All the permissions Headway needs are granted",
+    ) {
+        val missing = group
             .filterNot { isGranted(it.permission) }
             .map { it.permission }
         if (missing.isEmpty()) {
-            toast("All the permissions Headway needs are granted")
+            toast(allGrantedMessage)
             return
         }
         // After a second refusal Android silently returns "denied" without
@@ -1566,6 +1621,25 @@ class MainActivity : AppCompatActivity() {
      */
     private fun essentialPermissions(): List<PermissionNeed> =
         requiredPermissions().filterNot { it.permission == Manifest.permission.POST_NOTIFICATIONS }
+
+    /**
+     * The phone pane's four, kept out of [requiredPermissions] on purpose.
+     *
+     * They are genuinely optional: nothing about connecting to a car needs
+     * them, and a driver who only wants music should not be asked for their
+     * call log to get it. Putting them in the required list would also have put
+     * them in [essentialPermissions], which gates the Connect button — refusing
+     * to connect a car because contacts were declined would be absurd.
+     *
+     * So they get their own row, asked for only when it is pressed, and the
+     * phone pane says which one is missing when one is.
+     */
+    private fun phonePermissions(): List<PermissionNeed> = listOf(
+        PermissionNeed(Manifest.permission.READ_CALL_LOG, "Call log: recent calls"),
+        PermissionNeed(Manifest.permission.READ_CONTACTS, "Contacts: name the caller"),
+        PermissionNeed(Manifest.permission.CALL_PHONE, "Calling: dial from the car"),
+        PermissionNeed(Manifest.permission.ANSWER_PHONE_CALLS, "Answering: pick up from the car"),
+    )
 
     private fun isGranted(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED

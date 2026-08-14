@@ -243,7 +243,7 @@ class DashLayoutStoreTest {
         CORRUPT.forEach { (text, what) ->
             val store = DashLayoutStore(FakeStorage(DashLayoutStore.KEY_LAYOUTS to text))
 
-            assertEquals(listOf(DashLayoutStore.DEFAULT), store.list(), "list() survived $what")
+            assertEquals(DashLayoutStore.DEFAULT_TABS, store.list(), "list() survived $what")
             assertEquals(DashLayoutStore.DEFAULT, store.active(), "active() survived $what")
         }
     }
@@ -254,7 +254,7 @@ class DashLayoutStoreTest {
         // which a restored or hand-edited preferences file can arrange.
         val store = DashLayoutStore(ThrowingStorage())
 
-        assertEquals(listOf(DashLayoutStore.DEFAULT), store.list())
+        assertEquals(DashLayoutStore.DEFAULT_TABS, store.list())
         assertEquals(DashLayoutStore.DEFAULT, store.active())
     }
 
@@ -273,6 +273,58 @@ class DashLayoutStoreTest {
         assertEquals(listOf(sample()), store.list(), "a bad neighbour took out a good layout")
     }
 
+    // --- the shipped tabs ------------------------------------------------------
+
+    /**
+     * The five tabs are well-formed, which nothing else checks.
+     *
+     * They are a hand-written literal that the dashboard renders directly, so a
+     * typo in a kind string or a duplicated name is a pane that says "No tile
+     * for 'maps '" — or two tab pills that both highlight — on a car screen, and
+     * the first person to see it would be the driver.
+     */
+    @Test
+    fun `the shipped tabs are renderable and distinct`() {
+        val tabs = DashLayoutStore.DEFAULT_TABS
+        assertEquals(
+            tabs.size,
+            tabs.map { it.name }.toSet().size,
+            "two shipped tabs share a name, so the tab bar cannot tell them apart",
+        )
+        assertTrue(
+            tabs.any { it.name == DashLayoutStore.DEFAULT_NAME },
+            "DEFAULT is looked up by name in the shipped set and must be in it",
+        )
+        tabs.forEach { tab ->
+            kinds(tab.root).forEach { kind ->
+                assertTrue(
+                    kind in DashTile.Kind.ALL,
+                    "the ${tab.name} tab asks for '$kind', which no factory builds",
+                )
+            }
+        }
+    }
+
+    /** Every leaf kind in a tree, in no particular order. */
+    private fun kinds(node: DashNode): List<String> = when (node) {
+        is DashNode.Leaf -> listOf(node.kind)
+        is DashNode.Split -> kinds(node.first) + kinds(node.second)
+    }
+
+    /**
+     * A saved set replaces the shipped one wholesale rather than merging.
+     *
+     * The alternative — shipped tabs always appended — reads as helpful and is
+     * not: a driver who deletes Messages would find it back after the next
+     * restart, permanently, with no way to say no.
+     */
+    @Test
+    fun `saving one layout hides the shipped tabs`() {
+        val store = DashLayoutStore(FakeStorage())
+        store.save(sample())
+        assertEquals(listOf(sample()), store.list())
+    }
+
     // --- the store's bookkeeping ---------------------------------------------
 
     @Test
@@ -280,7 +332,7 @@ class DashLayoutStoreTest {
         val storage = FakeStorage()
         val store = DashLayoutStore(storage)
 
-        assertEquals(listOf(DashLayoutStore.DEFAULT), store.list())
+        assertEquals(DashLayoutStore.DEFAULT_TABS, store.list())
         assertEquals(DashLayoutStore.DEFAULT, store.active())
 
         // Reading must not seed. If it did, the shipped layout would become an
@@ -371,7 +423,7 @@ class DashLayoutStoreTest {
 
         store.delete(sample().name)
 
-        assertEquals(listOf(DashLayoutStore.DEFAULT), store.list())
+        assertEquals(DashLayoutStore.DEFAULT_TABS, store.list())
         assertEquals(DashLayoutStore.DEFAULT, store.active())
     }
 
