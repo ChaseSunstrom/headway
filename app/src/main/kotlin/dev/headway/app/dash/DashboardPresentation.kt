@@ -29,6 +29,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import dev.headway.app.dash.tiles.ClockTile
 import dev.headway.app.dash.tiles.LauncherTile
+import dev.headway.app.dash.tiles.MediaBrowseTile
 import dev.headway.app.dash.tiles.MessagesTile
 import dev.headway.app.dash.tiles.NowPlayingTile
 import dev.headway.app.dash.tiles.WidgetTile
@@ -270,6 +271,7 @@ class DashboardPresentation(
      */
     private fun tileFor(leaf: DashNode.Leaf): DashTile? = when (leaf.kind) {
         DashTile.Kind.NOW_PLAYING -> NowPlayingTile(context)
+        DashTile.Kind.BROWSE -> MediaBrowseTile(context, onStep)
         DashTile.Kind.MESSAGES -> MessagesTile(context)
         DashTile.Kind.CLOCK -> ClockTile(context)
         DashTile.Kind.LAUNCHER, DashTile.Kind.MIRROR -> LauncherTile(onStep)

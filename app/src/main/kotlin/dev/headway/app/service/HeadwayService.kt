@@ -42,6 +42,7 @@ import dev.headway.app.input.CarInputStream
 import dev.headway.app.link.BluetoothCarLink
 import dev.headway.app.log.SessionLog
 import dev.headway.app.link.CarWifiException
+import dev.headway.app.link.CarCompanion
 import dev.headway.app.link.CarWifiNetwork
 import dev.headway.app.link.PhoneCertificateStore
 import dev.headway.app.quirks.HeadUnitIdentity
@@ -188,21 +189,47 @@ open class HeadwayService : Service() {
     private var carWifi: CarWifiNetwork? = null
 
     /**
-     * How many joins have failed, which decides how the next one matches.
+     * How many joins have failed. Diagnostics only; it no longer steers anything.
      *
-     * There are two ways to match the car's access point and the project has
-     * now been burned by committing to each of them. Pinning the BSSID the head
-     * unit announced produced the one successful join on record
-     * (`docs/protocol-notes.md` §"The third capture": pinned to
-     * `ce:44:26:bf:18:ec`, joined 7.6 s later). Matching by SSID alone was then
-     * made the default on the theory that the car's two BSSIDs were one
-     * dual-radio access point — and the builds that followed could not join at
-     * all.
+     * ## What this counter used to do, and why that was the bug
      *
-     * Neither is safe to hardcode, and the failure mode of guessing wrong is a
-     * silent non-match rather than an error. So alternate: pin on even
-     * attempts, SSID-only on odd. The quirk file can force either once a log
-     * says which this car needs.
+     * It alternated the match strategy: `pinBssid = quirks.pinBssid ?:
+     * (failedJoins % 2 == 0)`, so an even count pinned the BSSID the head unit
+     * announced and an odd count matched on the SSID alone. The intent was to
+     * stop the project committing to a guess it had already been burned by
+     * twice.
+     *
+     * It could not work, for two independent reasons, and the drive on
+     * 2026-08-14 shows both:
+     *
+     * 1. **It only counted real failures.** The increment sat behind
+     *    `if (e !is CancellationException)`, and every failure in that log is a
+     *    cancellation, because the user gives up and presses Disconnect. The
+     *    count stayed at zero.
+     * 2. **It does not survive the service.** Disconnect stops the service, so
+     *    the next Connect starts from zero regardless.
+     *
+     * Zero means even means pinned, so every attempt in that log pinned — the
+     * log says `requesting myChevrolet1189 (ce:44:26:bf:18:ec)` five times out
+     * of five — and never once tried the other strategy it existed to try.
+     *
+     * ## Why the alternation is gone rather than fixed
+     *
+     * Because reading AOSP settles the question the alternation existed to
+     * hedge. `WifiNetworkFactory.doesScanResultMatchWifiNetworkSpecifier`
+     * (L1662-L1677) requires the scan result to match the SSID pattern **and**
+     * the BSSID pattern. An SSID-only request carries an all-zero BSSID mask,
+     * which matches every BSSID — so **any access point a pinned request can
+     * match, an SSID-only request also matches, and more besides.** Pinning
+     * cannot find a car that SSID-only misses; it can only miss one SSID-only
+     * would have found, which is exactly what a dual-radio head unit does.
+     *
+     * The single successful pinned join on record is fully explained by the
+     * access point being on `ce:44:26:bf:18:ec` that day; the platform's own
+     * scan has logged this car on `ce:22:26:bf:18:ec` as well. So SSID-only is
+     * now unconditional, `CarWifiNetwork.specFor` already defaults to it, and
+     * the quirk file can still force pinning for a genuine two-cars-one-SSID
+     * case.
      */
     @Volatile
     private var failedJoins: Int = 0
@@ -497,12 +524,21 @@ open class HeadwayService : Service() {
             "no longer asks for it")
     }
 
-    private fun rememberCarWifi(ssid: String, passphrase: String, hidden: Boolean) {
+    private fun rememberCarWifi(
+        ssid: String,
+        passphrase: String,
+        hidden: Boolean,
+        bssid: String = "",
+    ) {
         if (ssid.isEmpty()) return
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putString(KEY_CAR_SSID, ssid)
             .putString(KEY_CAR_PASSPHRASE, passphrase)
             .putBoolean(KEY_CAR_HIDDEN, hidden)
+            // Stored as a *hint* for the companion chooser, which uses it to
+            // narrow the list to one row when the announced radio is the one on
+            // the air. Never used to pin a request on its own; see failedJoins.
+            .putString(KEY_CAR_BSSID, bssid)
             .apply()
     }
 
@@ -639,7 +675,12 @@ open class HeadwayService : Service() {
             Log.i(TAG, "head unit offered $credentials")
             // Kept so the settings screen can offer one-tap Wi-Fi setup when the
             // car is nowhere near. See rememberCarWifi.
-            rememberCarWifi(credentials.ssid, credentials.passphrase, quirks.hiddenSsid)
+            rememberCarWifi(
+                credentials.ssid,
+                credentials.passphrase,
+                quirks.hiddenSsid,
+                credentials.bssid,
+            )
 
             // Every capture that reached TCP had the car announce its endpoint;
             // the attempts that timed out joining had not received one. A unit
@@ -661,15 +702,23 @@ open class HeadwayService : Service() {
             // GrapheneOS MAC problem at all, it is the head unit doing exactly
             // what it announced, and every remedy aimed at the MAC is wasted.
             // Worth its own line rather than being read out of a toString.
-            if (credentials.accessPointType == AccessPointType.STATIC) {
+            // Gated on the field being *present*, which it was not on the drive
+            // that prompted the original note. STATIC is 0, so an absent field 5
+            // decodes as STATIC, and Headway was announcing a DHCP problem the
+            // car had never mentioned -- and sending the diagnosis after it. See
+            // CarNetworkCredentials.accessPointTypeAnnounced for the bytes.
+            if (credentials.accessPointTypeAnnounced &&
+                credentials.accessPointType == AccessPointType.STATIC
+            ) {
                 step(
-                    "NOTE: this head unit announced access_point_type=STATIC, which in " +
-                        "the protocol means its access point does not assign addresses " +
-                        "(AccessPointType.proto: STATIC=0, DYNAMIC=1). If the join fails " +
-                        "for want of an address, that is this unit behaving as announced " +
-                        "rather than a phone-side fault, and a static IP on a saved car " +
-                        "network is the answer rather than any MAC setting. Please report " +
-                        "this line -- no reference implementation sends STATIC to a phone"
+                    "NOTE: this head unit explicitly announced access_point_type=STATIC, " +
+                        "which in the protocol means its access point does not assign " +
+                        "addresses (AccessPointType.proto: STATIC=0, DYNAMIC=1). If the " +
+                        "join fails for want of an address, that is this unit behaving as " +
+                        "announced rather than a phone-side fault, and a static IP on a " +
+                        "saved car network is the answer rather than any MAC setting. " +
+                        "Please report this line -- no reference implementation sends " +
+                        "STATIC to a phone"
                 )
             }
 
@@ -689,8 +738,20 @@ open class HeadwayService : Service() {
             run {
                 // Reused across attempts, not scoped to this one. See carWifi.
                 val wifi = carWifi ?: CarWifiNetwork(this, onStep = ::step).also { carWifi = it }
-                // Alternate unless the quirk file has an opinion. See failedJoins.
-                val pinBssid = quirks.pinBssid ?: (failedJoins % 2 == 0)
+                // SSID-only unless the quirk file forces otherwise, and unless a
+                // companion-device association names a BSSID -- which is the one
+                // case where pinning buys something, because
+                // WifiNetworkFactory's CompanionDeviceManager bypass keys on the
+                // BSSID *in the request* and skips the approval sheet entirely.
+                // See failedJoins for why the old alternation was removed.
+                val companion = CarCompanion.of(this@HeadwayService)
+                val associated = companion.associatedBssid(credentials.ssid)
+                // A quirk file forcing pinBssid=false on a paired car silently
+                // disables the pairing, because Android looks it up by the BSSID
+                // in the request. Say so rather than lose the bypass quietly.
+                companion.pairingNeedsPinnedBssid(credentials.ssid, quirks.pinBssid)
+                    ?.let { step("WARNING: $it") }
+                val pinBssid = quirks.pinBssid ?: (associated != null)
                 val network = try {
                     // If the user has already put the phone on the car's Wi-Fi
                     // themselves, use that and skip the approval sheet entirely.
@@ -707,7 +768,16 @@ open class HeadwayService : Service() {
                             wifi.awaitSuggestedCarNetwork(credentials)
                         } else {
                             wifi.join(
-                                credentials,
+                                // The associated BSSID replaces the announced one
+                                // when there is one: it came from a live scan the
+                                // system did during the companion chooser, so it
+                                // is the radio the car actually brings up rather
+                                // than the one it names over Bluetooth.
+                                if (associated != null) {
+                                    credentials.copy(bssid = associated)
+                                } else {
+                                    credentials
+                                },
                                 hiddenSsid = quirks.hiddenSsid,
                                 pinBssid = pinBssid,
                             )
@@ -750,9 +820,12 @@ open class HeadwayService : Service() {
                     if (e !is kotlinx.coroutines.CancellationException) {
                         failedJoins++
                         step(
-                            "the next attempt will match " +
-                                if (quirks.pinBssid != null) "as the quirk file says"
-                                else if (pinBssid) "on the SSID alone" else "on the BSSID too"
+                            "$failedJoins failed join(s) this session; matching " +
+                                when {
+                                    quirks.pinBssid != null -> "as the quirk file says"
+                                    pinBssid -> "on the BSSID this phone is paired with"
+                                    else -> "on the SSID alone, which matches any radio"
+                                }
                         )
                     }
                     throw CarNetworkJoinException(e)
@@ -1698,6 +1771,7 @@ open class HeadwayService : Service() {
         private const val KEY_CAR_SSID: String = "car_wifi_ssid"
         private const val KEY_CAR_PASSPHRASE: String = "car_wifi_passphrase"
         private const val KEY_CAR_HIDDEN: String = "car_wifi_hidden"
+        private const val KEY_CAR_BSSID: String = "car_wifi_bssid"
         private const val KEY_SUGGESTED: String = "car_wifi_suggested"
 
         /**
@@ -1765,6 +1839,19 @@ open class HeadwayService : Service() {
                 hiddenSsid = prefs.getBoolean(KEY_CAR_HIDDEN, false),
             )
         }
+
+        /**
+         * The BSSID the head unit last announced, as a chooser hint.
+         *
+         * Deliberately separate from [lastCarWifi], which is the credential set
+         * the Wi-Fi setup panel consumes. This one exists only to pre-filter the
+         * companion chooser, and it is a hint precisely because the announced
+         * radio has been observed not to be the one broadcasting.
+         */
+        fun lastCarBssid(context: android.content.Context): String? =
+            context.getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getString(KEY_CAR_BSSID, null)
+                ?.takeIf { it.isNotEmpty() }
 
         /** Drops the stored car credentials. */
         fun forgetCarWifi(context: android.content.Context) {

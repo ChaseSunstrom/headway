@@ -41,6 +41,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import dev.headway.app.dash.tiles.ClockTile
 import dev.headway.app.dash.tiles.LauncherTile
+import dev.headway.app.dash.tiles.MediaBrowseTile
 import dev.headway.app.dash.tiles.MessagesTile
 import dev.headway.app.dash.tiles.MirrorTile
 import dev.headway.app.dash.tiles.NowPlayingTile
@@ -1036,6 +1037,7 @@ fun tileFor(
     onLeave: () -> Unit = {},
 ): DashTile? = when (kind) {
     DashTile.Kind.NOW_PLAYING -> NowPlayingTile(context)
+    DashTile.Kind.BROWSE -> MediaBrowseTile(context, onStep)
     DashTile.Kind.MESSAGES -> MessagesTile(context)
     DashTile.Kind.CLOCK -> ClockTile(context)
     DashTile.Kind.LAUNCHER -> LauncherTile(onStep)

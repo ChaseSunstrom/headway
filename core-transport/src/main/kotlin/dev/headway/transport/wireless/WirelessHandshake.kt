@@ -160,6 +160,23 @@ data class CarNetworkCredentials(
     val securityMode: WifiSecurityMode,
     val accessPointType: AccessPointType,
     /**
+     * Whether the head unit actually sent [accessPointType], or it is the default.
+     *
+     * This distinction cost a whole diagnostic cycle. `AccessPointType.STATIC` is
+     * 0, so proto2 hands back STATIC for a `WifiInfoResponse` that never carried
+     * field 5 at all — and the target vehicle never does. Headway then logged, in
+     * capital letters, that "this head unit announced access_point_type=STATIC,
+     * which in the protocol means its access point does not assign addresses",
+     * and sent the investigation after a DHCP problem the car had said nothing
+     * about.
+     *
+     * The bytes: the observed `WifiInfoResponse` ends `... 20 08`, which is field
+     * 4 (`security_mode`) = 8 = `WPA2_PERSONAL`. There is no field 5. See
+     * `references/aa-proxy-rs/src/protos/WifiInfoResponse.proto` L22-L28 for the
+     * numbering and `SecurityMode.WPA2_PERSONAL = 8` for the value.
+     */
+    val accessPointTypeAnnounced: Boolean = false,
+    /**
      * Where to open the AAP session, when the head unit says.
      *
      * Null is normal, not an error. A real 2021 Chevrolet Infotainment 3 unit
@@ -185,7 +202,8 @@ data class CarNetworkCredentials(
     /** Redacts the passphrase; this gets logged and logs get shared for diagnosis. */
     override fun toString(): String =
         "CarNetworkCredentials(ssid=$ssid, bssid=$bssid, security=$securityMode, " +
-            "type=$accessPointType, endpoint=${endpoint ?: "<not offered>"}, " +
+            "type=${if (accessPointTypeAnnounced) "$accessPointType" else "<not announced>"}, " +
+            "endpoint=${endpoint ?: "<not offered>"}, " +
             "passphrase=<redacted>)"
 }
 
@@ -609,6 +627,7 @@ class WirelessHandshake(
                     bssid = i.bssid,
                     securityMode = i.securityMode,
                     accessPointType = i.accessPointType,
+                    accessPointTypeAnnounced = i.hasAccessPointType(),
                     endpoint = resolved,
                     advertisedFrequenciesMhz = advertised,
                 )

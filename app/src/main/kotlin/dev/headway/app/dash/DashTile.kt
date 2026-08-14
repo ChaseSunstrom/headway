@@ -84,6 +84,16 @@ interface DashTile {
         /** Now playing, from `MediaSessionManager`. Any media app. */
         const val NOW_PLAYING = "now_playing"
 
+        /**
+         * Browse a media app's library, from `MediaBrowserService`.
+         *
+         * The pane that makes Headway able to *start* something rather than only
+         * control what is already going, and the closest thing in the product to
+         * what Android Auto does with a music app: walk the tree the app
+         * publishes and draw it here. See `MediaBrowseTile`.
+         */
+        const val BROWSE = "browse"
+
         /** Recent notifications with inline reply, from `NotificationListenerService`. */
         const val MESSAGES = "messages"
 
@@ -107,12 +117,13 @@ interface DashTile {
 
         /** Everything, in the order a picker should offer them. */
         val ALL: List<String> = listOf(
-            NOW_PLAYING, MESSAGES, WIDGET, LAUNCHER, CLOCK, MIRROR,
+            NOW_PLAYING, BROWSE, MESSAGES, WIDGET, LAUNCHER, CLOCK, MIRROR,
         )
 
         /** A human name for a picker or a log line. */
         fun describe(kind: String): String = when (kind) {
             NOW_PLAYING -> "Now playing"
+            BROWSE -> "Music and podcasts"
             MESSAGES -> "Messages"
             WIDGET -> "Widget"
             LAUNCHER -> "Apps"

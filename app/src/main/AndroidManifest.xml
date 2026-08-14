@@ -24,6 +24,29 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="tiramisu" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <!--
+      Pairing with the car's access point, so joining it stops asking.
+
+      WifiNetworkFactory consults CompanionDeviceManager before it shows its
+      approval sheet (WifiNetworkFactory.java L1862-L1877, reached from
+      isAccessPointApprovedForActiveRequest L1880-L1899), and an app associated
+      with the access point's BSSID is connected straight through with no UI at
+      all. That is what makes reconnecting after a walk to the shops possible:
+      a phone in a pocket cannot tap a sheet.
+
+      No permission goes with it. The consent is the chooser the platform shows
+      when associate() is called. Android has no Settings page that lists a
+      profile-less Wi-Fi association, so Headway's own Unpair button is the way
+      to revoke it; clearing the app's storage also drops it. required="false"
+      because a device without
+      the subsystem must still be able to install Headway; CarCompanion then
+      degrades to "Android will ask for approval on every connection", which is
+      exactly the behaviour of every build before this one.
+    -->
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="false" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

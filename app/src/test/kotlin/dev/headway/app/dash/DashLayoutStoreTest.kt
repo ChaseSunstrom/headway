@@ -58,27 +58,30 @@ class DashLayoutStoreTest {
     // --- the shipped default -------------------------------------------------
 
     @Test
-    fun `the default is a mirror beside now-playing stacked over messages`() {
+    fun `the default is a library beside now-playing stacked over the app grid`() {
         val root = DashLayoutStore.DEFAULT.root as? DashNode.Split
             ?: error("the default must divide the screen")
 
         assertEquals(DashNode.Orientation.HORIZONTAL, root.orientation)
-        assertEquals(DashNode.Leaf(DashTile.Kind.MIRROR), root.first)
+        assertEquals(DashNode.Leaf(DashTile.Kind.BROWSE), root.first)
 
         val column = root.second as? DashNode.Split
             ?: error("the second pane must be the stacked column")
 
         assertEquals(DashNode.Orientation.VERTICAL, column.orientation)
         assertEquals(DashNode.Leaf(DashTile.Kind.NOW_PLAYING), column.first)
-        assertEquals(DashNode.Leaf(DashTile.Kind.MESSAGES), column.second)
+        assertEquals(DashNode.Leaf(DashTile.Kind.LAUNCHER), column.second)
 
-        // At most one mirror, which is what DashTile.Kind.MIRROR requires of any
-        // layout the dashboard is handed. The store does not enforce it on the
-        // driver's own layouts, so the least the shipped one can do is comply.
+        // No mirror pane at all. ADR 0006 made mirroring a mode rather than a
+        // pane: the dashboard is drawn on a display of its own at the car's
+        // resolution, and no other app's window can be placed on it, so a hole
+        // through to the phone screen is not a thing that can exist there. A
+        // default still asking for one would render as the app grid via
+        // DashboardPresentation's substitution -- correct, but by accident.
         assertEquals(
-            1,
+            0,
             DashLayoutStore.DEFAULT.leaves().count { it.kind == DashTile.Kind.MIRROR },
-            "a layout may contain exactly one hole through to the phone screen",
+            "the shipped default must not ask for a hole the drawn dashboard cannot make",
         )
     }
 
@@ -91,11 +94,12 @@ class DashLayoutStoreTest {
                 "a shipped default that has to be clamped on read is a shipped default that is wrong",
             )
         }
-        // The mirror is the larger share; the whole point of the arrangement is
-        // that the phone screen dominates and the drawn panes sit beside it.
+        // Browse is the larger share: it is a list of titles read at arm's
+        // length, and it is the only pane on the dashboard a driver operates
+        // rather than glances at.
         assertTrue(
-            DashLayoutStore.DEFAULT_MIRROR_SHARE > 0.5f,
-            "the mirror must take more than half the width",
+            DashLayoutStore.DEFAULT_BROWSE_SHARE > 0.5f,
+            "the library must take more than half the width",
         )
     }
 

@@ -152,12 +152,24 @@ object Headway {
         view.background = panel(radiusPx)
         view.isClickable = true
         view.setOnClickListener {
+            // The action fires first and the animation decorates it, which is
+            // the opposite of the obvious order and is the only correct one.
+            //
+            // `withEndAction` does not run when the animation is cancelled, and
+            // views get cancelled routinely — any list that calls
+            // `removeAllViews()` while a row is mid-dip detaches it and takes
+            // the pending action with it. The browse pane rebuilds its list on
+            // every navigation, so a tap that happened to land near a refresh
+            // simply did nothing, at random, with no way to tell.
+            //
+            // Nothing is lost by acting first: the dip is 70 ms of feedback for
+            // a press that has already been decided.
+            onClick()
             view.animate()
                 .scaleX(PRESS_SCALE).scaleY(PRESS_SCALE)
                 .setDuration(QUICK_MILLIS / 2)
                 .withEndAction {
                     view.animate().scaleX(1f).scaleY(1f).setDuration(QUICK_MILLIS / 2).start()
-                    onClick()
                 }
                 .start()
         }

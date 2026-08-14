@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This file is part of Headway.
+  Copyright (C) 2026 The Headway Authors
+
+  Headway is free software: you can redistribute it and/or modify it under the
+  terms of the GNU General Public License as published by the Free Software
+  Foundation, either version 3 of the License, or (at your option) any later
+  version.
+
+  Headway is distributed in the hope that it will be useful, but WITHOUT ANY
+  WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+  A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License along with
+  Headway. If not, see <https://www.gnu.org/licenses/>.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+          A real MediaBrowserService, so CarMediaBrowser can be driven against
+          the actual framework rather than a mock of it.
+
+          This is the only way to catch the class of bug that shipped here: the
+          first version of CarMediaBrowser re-subscribed an id that was still
+          subscribed, and MediaBrowserService.addSubscriptionOnHandler dedupes
+          on (token, options) and silently returns without loading. No unit test
+          with a stubbed browser can see that, because the behaviour lives
+          entirely in the platform service.
+
+          exported="false": the test app is the only client and nothing outside
+          it has any business binding this.
+        -->
+        <service
+            android:name="dev.headway.app.media.FakeLibraryService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

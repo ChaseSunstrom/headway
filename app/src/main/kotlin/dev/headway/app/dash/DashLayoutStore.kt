@@ -181,32 +181,32 @@ class DashLayoutStore(private val storage: Storage) {
         const val DEFAULT_NAME: String = "Dashboard"
 
         /**
-         * Width given to the mirrored phone screen in [DEFAULT].
+         * Width given to the browse pane in [DEFAULT].
          *
          * A fraction and not a pixel count on purpose: `CarVideoStream` negotiates
          * the real geometry from the configuration the head unit selects, so
          * nothing here may assume 800x480 even though that is the class of panel
-         * the target vehicle has. On a panel that *is* 800 wide this leaves 496
-         * pixels for the phone and 304 for the column beside it, and 304 is about
-         * six 48 dp targets at the density such panels report — enough for album
-         * art beside a title with a row of transport buttons under it.
+         * the target vehicle has. On a panel that *is* 800 wide this leaves 440
+         * pixels for the library list and 360 for the column beside it, and 360
+         * is about seven 48 dp targets at the density such panels report — enough
+         * for album art beside a title with a row of transport buttons under it.
          *
          * The draggable range is deliberately wider than the useful one. At
          * [DashNode.MAX_RATIO] the column would be 120 pixels and hold no
          * transport row at all; the default is set where both sides still work,
          * and the driver is left free to trade one against the other.
          */
-        const val DEFAULT_MIRROR_SHARE: Float = 0.62f
+        const val DEFAULT_BROWSE_SHARE: Float = 0.55f
 
         /**
          * Height given to now-playing in [DEFAULT]'s right-hand column.
          *
          * The larger share goes to the pane that cannot shrink. Now-playing has a
          * floor — artwork, two lines of text and a 48 dp transport row do not
-         * compress — whereas a message list is a scroller that reads sensibly at
-         * any height and simply shows fewer rows. So now-playing takes what it
-         * needs and messages absorbs the remainder, rather than both being
-         * squeezed equally until neither works.
+         * compress — whereas an app grid reflows to whatever height it is given
+         * and simply shows fewer rows. So now-playing takes what it needs and the
+         * grid absorbs the remainder, rather than both being squeezed equally
+         * until neither works.
          */
         const val DEFAULT_NOW_PLAYING_SHARE: Float = 0.55f
 
@@ -216,26 +216,35 @@ class DashLayoutStore(private val storage: Storage) {
          * ```
          * +---------------------+-------------+
          * |                     | Now playing |
-         * |    Phone screen     +-------------+
-         * |                     |  Messages   |
+         * |  Music & podcasts   +-------------+
+         * |                     |    Apps     |
          * +---------------------+-------------+
          * ```
          *
-         * The big pane is [DashTile.Kind.MIRROR] rather than
-         * [DashTile.Kind.LAUNCHER] because on a fresh session the two would show
-         * the same thing. Headway's own car launcher is an ordinary activity on
-         * display 0, so it is already what appears through the mirror hole until
-         * the driver opens something — and once they have opened something, a
-         * launcher tile occupying the largest pane for the rest of the drive is
-         * dead space. One hole that starts as the launcher and becomes the map is
-         * strictly better than a launcher that stays a launcher.
+         * ## Why browse is the big pane
+         *
+         * Because it is the pane a driver actually operates. Until this build the
+         * dashboard could show what was *already* playing and could not start
+         * anything: no library, no playlists, no podcast episodes. That made the
+         * whole surface read-only for the one thing a car stereo is for.
+         * `MediaBrowseTile` walks the tree an app publishes through
+         * `MediaBrowserService` — which is precisely, and not merely
+         * analogously, what Android Auto does with a music app — and it needs the
+         * width because it is a list of titles.
+         *
+         * The previous default gave the big pane to [DashTile.Kind.MIRROR], from
+         * when the car screen was a copy of the phone's. ADR 0006 ended that: the
+         * dashboard is drawn at the car's own resolution and a mirror pane cannot
+         * exist on it, so `DashboardPresentation` resolves a MIRROR leaf to the
+         * app grid. Saved layouts from before keep working; the shipped default
+         * no longer pretends there is a hole to look through.
          *
          * Beside it go the two panes that exist precisely because they *cannot*
-         * be the mirror: Android composites one app at a time on display 0, so
-         * music and messages can only be seen at the same time as a map if
-         * Headway draws them itself from `MediaSessionManager` and the
-         * notification stream. That is the whole argument of `DashTile`, and this
-         * default is it stated as a layout.
+         * be another app's window: now-playing, drawn from `MediaSessionManager`,
+         * and the app grid, which is the door to full-screen mirroring for
+         * anything Headway cannot model. Messages is one layout edit away and is
+         * left out of the default because three scrolling lists on a 480-pixel
+         * panel is one too many.
          *
          * [DashNode.Orientation.HORIZONTAL] is read here as "children side by
          * side, divider vertical" — the `LinearLayout.HORIZONTAL` sense — which
@@ -243,10 +252,6 @@ class DashLayoutStore(private val storage: Storage) {
          * to take the same reading or this default comes out rotated; it is
          * written down here because the tree itself cannot say which way round it
          * meant.
-         *
-         * The mirror leaf carries no argument. Pinning it to a package would make
-         * the default dashboard show one chosen app rather than whatever the
-         * driver last opened, which is the opposite of what a mirror is for.
          *
          * ## Why this is never written to storage
          *
@@ -262,13 +267,13 @@ class DashLayoutStore(private val storage: Storage) {
             name = DEFAULT_NAME,
             root = DashNode.Split(
                 orientation = DashNode.Orientation.HORIZONTAL,
-                ratio = DEFAULT_MIRROR_SHARE,
-                first = DashNode.Leaf(DashTile.Kind.MIRROR),
+                ratio = DEFAULT_BROWSE_SHARE,
+                first = DashNode.Leaf(DashTile.Kind.BROWSE),
                 second = DashNode.Split(
                     orientation = DashNode.Orientation.VERTICAL,
                     ratio = DEFAULT_NOW_PLAYING_SHARE,
                     first = DashNode.Leaf(DashTile.Kind.NOW_PLAYING),
-                    second = DashNode.Leaf(DashTile.Kind.MESSAGES),
+                    second = DashNode.Leaf(DashTile.Kind.LAUNCHER),
                 ),
             ),
         )

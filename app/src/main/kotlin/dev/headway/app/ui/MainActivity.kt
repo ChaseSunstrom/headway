@@ -49,7 +49,9 @@ import dev.headway.app.update.AppUpdater
 import dev.headway.app.update.AvailableRelease
 import dev.headway.app.update.ReleaseCatalog
 import dev.headway.app.update.UpdateException
+import android.companion.CompanionDeviceManager
 import dev.headway.app.dash.tiles.NowPlayingTile
+import dev.headway.app.link.CarCompanion
 import dev.headway.app.quirks.QuirkStore
 import dev.headway.app.service.HeadwayService
 import dev.headway.app.ui.theme.HeadwayMark
@@ -153,6 +155,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var notificationStatus: Phone.StatusRow
     private lateinit var overlayStatus: Phone.StatusRow
     private lateinit var speechStatus: Phone.StatusRow
+    private lateinit var pairingStatus: Phone.StatusRow
 
     private var uiScope: CoroutineScope? = null
 
@@ -209,6 +212,58 @@ class MainActivity : AppCompatActivity() {
             runCatching { pickKey.launch(arrayOf("*/*")) }
                 .onFailure { toast("No file picker available") }
         }
+
+    /**
+     * The companion-device chooser's answer.
+     *
+     * `CompanionDeviceManager.associate` hands back an `IntentSender` rather
+     * than showing anything itself, so the chooser is launched as an activity
+     * result and the association arrives in the data extras. Two extras carry
+     * it: `EXTRA_ASSOCIATION` is the `AssociationInfo`, which is what
+     * [CarCompanion.remember] needs because it holds the MAC the pairing was
+     * recorded against; `EXTRA_DEVICE` carries the `ScanResult` and is not
+     * needed once the association exists.
+     */
+    private val pairWithCar =
+        registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+            val ssid = pendingPairSsid
+            pendingPairSsid = null
+            if (result.resultCode != RESULT_OK || ssid == null) {
+                SessionLog.shared.info(TAG, "car Wi-Fi pairing cancelled")
+                toast("Pairing cancelled")
+                refresh()
+                return@registerForActivityResult
+            }
+            val info = result.data?.getParcelableExtra(
+                CompanionDeviceManager.EXTRA_ASSOCIATION,
+                android.companion.AssociationInfo::class.java,
+            )
+            if (info == null) {
+                toast("Android returned no pairing; try again")
+                refresh()
+                return@registerForActivityResult
+            }
+            val bssid = CarCompanion.of(this).remember(ssid, info)
+            AlertDialog.Builder(this)
+                .setTitle(if (bssid != null) "Paired with your car" else "Paired, with a caveat")
+                .setMessage(
+                    if (bssid != null) {
+                        "Headway is paired with \"$ssid\" at $bssid.\n\n" +
+                            "Android will no longer ask you to approve joining it, so the car " +
+                            "can reconnect on its own with the phone in your pocket."
+                    } else {
+                        "Android recorded the pairing but gave no MAC address for it, so the " +
+                            "approval prompt will still appear. Please export the log and " +
+                            "report this."
+                    },
+                )
+                .setPositiveButton("OK", null)
+                .show()
+            refresh()
+        }
+
+    /** The SSID being paired, held across the chooser. */
+    private var pendingPairSsid: String? = null
 
     /**
      * The system panel that saves the car's Wi-Fi.
@@ -598,6 +653,36 @@ class MainActivity : AppCompatActivity() {
         val card = Phone.card(this, "Car Wi-Fi")
         carWifiValue = Phone.body(this, describeCarWifi())
         card.addView(carWifiValue)
+
+        // The row that ends the approval sheet. See pairWithCarWifi and
+        // CarCompanion for why this is the single most valuable control on the
+        // screen: without it Android asks for approval on every connection, and
+        // an automatic reconnection with the phone in a pocket can never
+        // happen.
+        pairingStatus = Phone.StatusRow(this, "Paired with the car's Wi-Fi")
+            .withAction("Pair") { pairWithCarWifi() }
+        card.addView(pairingStatus.view)
+        card.addView(
+            Phone.disclosure(
+                this,
+                "Why pairing removes the approval prompt",
+                "Android will not let an app join a named Wi-Fi network without asking " +
+                    "you first, and it asks every single time. That is survivable once and " +
+                    "impossible for a car, which has to reconnect on its own while the " +
+                    "phone is in your pocket.\n\n" +
+                    "There is one sanctioned way out, and it is not a trick: Android's own " +
+                    "Wi-Fi code checks whether the app is paired with the access point " +
+                    "through the companion-device system, and connects straight through if " +
+                    "it is. Pairing shows you a list of nearby networks and you pick the " +
+                    "car — that tap is the consent, and it is the last one.\n\n" +
+                    "The pairing is listed under Settings, Connected devices, and you can " +
+                    "revoke it there or with this button at any time. It grants Headway " +
+                    "nothing except the right to join that one access point.\n\n" +
+                    "The car has to be on and showing Android Auto when you pair, because " +
+                    "the list is built from a live scan.",
+            ),
+        )
+        card.addView(Phone.divider(this))
         card.addView(
             Phone.disclosure(
                 this,
@@ -807,6 +892,21 @@ class MainActivity : AppCompatActivity() {
             if (speech) Phone.Level.GOOD else Phone.Level.IDLE,
             if (speech) "Installed — voice commands work with no network" else "Unpacking...",
         )
+
+        val companion = CarCompanion.of(this)
+        val ssid = HeadwayService.lastCarWifi(this)?.ssid
+        val paired = ssid != null && companion.associatedBssid(ssid) != null
+        pairingStatus.set(
+            when {
+                paired -> Phone.Level.GOOD
+                // Not a fault before the car has ever been seen: there is
+                // nothing to pair with yet, and the row should not be orange
+                // for a step the user cannot take.
+                ssid == null || !companion.available -> Phone.Level.IDLE
+                else -> Phone.Level.WARN
+            },
+            companion.describe(ssid),
+        )
     }
 
     /** What Headway knows about the car's network, for the settings screen. */
@@ -868,6 +968,109 @@ class MainActivity : AppCompatActivity() {
      * where they are all granted, which is the usual case after the first run.
      * The row names what is missing instead, and says nothing when nothing is.
      */
+    /**
+     * Opens the companion chooser so the driver can pair with the car's Wi-Fi.
+     *
+     * One tap, once, and every later join is silent — including the automatic
+     * reconnection that happens with the phone in a pocket, which no approval
+     * sheet can ever be part of. `CarCompanion` has the AOSP citations for why
+     * this works.
+     *
+     * The chooser needs the access point to be **on the air right now**, because
+     * it is populated from a live scan the system runs. That is why this says so
+     * rather than silently timing out: the car brings its Wi-Fi up when
+     * projection starts, so the reliable moment to pair is during a connection
+     * attempt, with the car on.
+     */
+    private fun pairWithCarWifi() {
+        val known = HeadwayService.lastCarWifi(this)
+        if (known == null) {
+            AlertDialog.Builder(this)
+                .setTitle("No car network yet")
+                .setMessage(
+                    "Headway learns the car's Wi-Fi name from the head unit over Bluetooth. " +
+                        "Press Connect once with the car nearby — even if it fails to " +
+                        "finish — and this will be ready.",
+                )
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+        val companion = CarCompanion.of(this)
+        if (!companion.available) {
+            toast("This phone has no companion-device support")
+            return
+        }
+        if (companion.associatedBssid(known.ssid) != null) {
+            AlertDialog.Builder(this)
+                .setTitle("Already paired")
+                .setMessage(
+                    "Headway is paired with \"${known.ssid}\". Unpair it here to go back " +
+                        "to Android's approval prompt — Android has no Settings page that " +
+                        "lists a Wi-Fi pairing, so this button is the way to undo it.",
+                )
+                .setPositiveButton("Keep it", null)
+                .setNegativeButton("Unpair") { _, _ ->
+                    companion.forget(known.ssid)
+                    refresh()
+                }
+                .show()
+            return
+        }
+
+        pendingPairSsid = known.ssid
+        val manager = getSystemService(CompanionDeviceManager::class.java) ?: return
+        toast("Turn the car on first — the list only shows networks on the air")
+        val request = companion.requestFor(
+            known.ssid,
+            HeadwayService.lastCarBssid(this),
+        )
+        runCatching {
+            manager.associate(
+                request,
+                // The MAIN executor, not a direct one. `associate`'s callback is
+                // an `IAssociationRequestCallback.Stub` dispatched through
+                // `mExecutor.execute(...)`, so a direct executor runs it on a
+                // binder thread — and `onAssociationPending` below calls
+                // `ActivityResultLauncher.launch`, which is main-thread-only.
+                // The `runOnUiThread` in `onFailure` shows the hazard was seen
+                // in one branch and missed in the other.
+                ContextCompat.getMainExecutor(this),
+                object : CompanionDeviceManager.Callback() {
+                    override fun onAssociationPending(intentSender: android.content.IntentSender) {
+                        // On the main thread now, by construction of the
+                        // executor above.
+                        runCatching {
+                            pairWithCar.launch(
+                                androidx.activity.result.IntentSenderRequest.Builder(intentSender)
+                                    .build(),
+                            )
+                        }.onFailure {
+                            pendingPairSsid = null
+                            SessionLog.shared.info(TAG, "could not show the pairing chooser: $it")
+                            toast("Could not open the pairing screen")
+                        }
+                    }
+
+                    override fun onFailure(error: CharSequence?) {
+                        pendingPairSsid = null
+                        // The common one is "no devices found", which means the
+                        // car's access point was not broadcasting. Say that
+                        // rather than echoing the platform's phrasing.
+                        SessionLog.shared.info(TAG, "car Wi-Fi pairing failed: $error")
+                        toast(
+                            "No car network found. Turn the car on, start Android Auto " +
+                                "on its screen, then try again.",
+                        )
+                    }
+                },
+            )
+        }.onFailure {
+            pendingPairSsid = null
+            toast("Pairing is not available on this phone: ${it.message}")
+        }
+    }
+
     private fun refreshPermissions() {
         val missing = requiredPermissions().filterNot { isGranted(it.permission) }
         permissionStatus.set(
