@@ -96,6 +96,14 @@ class DashboardPresentation(
         // translucent layer in every encoded frame.
         window?.setBackgroundDrawableResource(android.R.color.transparent)
         window?.setLayout(MATCH_PARENT, MATCH_PARENT)
+        // A Dialog dismisses itself on BACK and on a touch outside its bounds.
+        // Neither is a gesture anyone would make on purpose here, and both end
+        // with the car showing a display that has content but no window — a
+        // black screen with no way back, mid-drive. The window is MATCH_PARENT
+        // so "outside" should not exist, which is exactly the kind of should
+        // that is worth one line of insurance.
+        setCancelable(false)
+        setCanceledOnTouchOutside(false)
 
         showSplash()
         layout = store.active()
