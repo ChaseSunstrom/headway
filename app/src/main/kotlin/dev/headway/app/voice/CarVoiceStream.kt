@@ -128,6 +128,14 @@ class CarVoiceStream(
     private val onCommand: (VoiceCommand) -> Unit,
     /** Narrates each step; wired to the debug log export in the app. */
     private val onStep: (String) -> Unit = {},
+    /**
+     * The application context, for the phone-microphone fallback only.
+     *
+     * Nullable so the unit tests can build a stream with no Android around it,
+     * which is most of them: a null one simply means the fallback is
+     * unavailable, and the car path never asks.
+     */
+    private val appContext: Context? = null,
 ) {
 
     private val listening = AtomicBoolean(false)
@@ -181,11 +189,11 @@ class CarVoiceStream(
         }
         if (setup == null) {
             onStep("voice: the head unit did not answer the microphone setup within $SETUP_TIMEOUT_MILLIS ms")
-            return false
+            return startOnPhoneMicrophone(scope)
         }
         if (!setup.ready) {
             onStep("voice: the head unit refused the microphone: ${setup.status}")
-            return false
+            return startOnPhoneMicrophone(scope)
         }
 
         this.scope = scope
@@ -214,6 +222,51 @@ class CarVoiceStream(
     }
 
     /**
+     * The fallback when the car offers no microphone: listen with the phone's.
+     *
+     * Everything after the audio is the same — the endpointer, the recogniser,
+     * the command engine — so this arms the identical button against a different
+     * source. It is deliberately second: the cabin microphone is echo-cancelled,
+     * aimed at the driver and above the road noise, and a phone in a cup holder
+     * is none of those.
+     *
+     * Returns false, and leaves the button saying so, when the driver has not
+     * granted `RECORD_AUDIO`. Nothing here asks for it: a permission prompt
+     * raised from a background service mid-drive is worse than a button that
+     * explains itself.
+     */
+    private fun startOnPhoneMicrophone(scope: CoroutineScope): Boolean {
+        val context = appContext
+        if (context == null || !PhoneMicSource.available(context)) {
+            onStep(
+                "voice: the car offered no microphone and Headway has no microphone permission, " +
+                    "so the Voice button has nothing to listen with. Grant Microphone in " +
+                    "Android's app settings to use the phone's instead",
+            )
+            return false
+        }
+        this.scope = scope
+        usingPhoneMicrophone = true
+        recognizerLoad = scope.async(Dispatchers.IO) {
+            val opened = runCatching { openRecognizer() }
+                .onFailure { onStep("voice: the speech model could not be opened: $it") }
+                .getOrNull()
+            recognizer = opened
+            if (opened != null) {
+                recognizerDescription = "speech model loaded at ${opened.sampleRateHz} Hz"
+            }
+            opened
+        }
+        CarShell.onVoiceRequested = { requestListening() }
+        onStep("voice ready on the phone's microphone: ${PhoneMicSource.FORMAT}")
+        return true
+    }
+
+    /** True while the Voice button listens with the phone rather than the car. */
+    @Volatile
+    private var usingPhoneMicrophone: Boolean = false
+
+    /**
      * Starts a listening session without waiting for it — what the Voice button
      * calls, and what a steering-wheel voice key should be routed to.
      *
@@ -224,7 +277,15 @@ class CarVoiceStream(
     fun requestListening() {
         val scope = scope
         if (scope == null) {
+            // Says so *on the car screen*, not only in the log. The hook the rail
+            // calls is installed by `HeadwayService` before this stream starts --
+            // it has to be, because the shell is built during video bring-up and
+            // the stream is not -- so a head unit that refuses the microphone
+            // channel leaves a button that is wired, callable, and silent. Press
+            // it, nothing happens, nothing anywhere says why: which is exactly
+            // what "the mic button doesn't work" looks like from the seat.
             onStep("voice: a listening session was requested before the channel was ready")
+            CarShell.active()?.showVoiceMessage("The car has not offered its microphone")
             return
         }
         // A second press ends the utterance rather than being ignored. Without
@@ -265,6 +326,10 @@ class CarVoiceStream(
         closeRequested.set(false)
         CarShell.active()?.setListening(true)
         try {
+            // The phone's microphone needs no channel opened and no channel
+            // closed: there is nothing on the wire and nothing for a head unit
+            // to refuse. Everything after the audio is shared.
+            if (usingPhoneMicrophone) return listenOnPhone()
             val opened = channel.startCapture()
             if (!opened.ok) {
                 onStep("voice: the head unit would not open its microphone: status ${opened.status}")
@@ -346,8 +411,10 @@ class CarVoiceStream(
     /** Model state and command count, for the log. */
     fun describe(): String {
         val model = recognizerDescription ?: "no on-device speech model"
-        return "voice: $model, $utterances utterance(s), $commandsRun command(s) run, " +
-            "${channel.chunksReceived} chunk(s) / ${channel.framesReceived} frame(s) of car audio"
+        val source = if (usingPhoneMicrophone) "the phone's microphone" else "the car's microphone"
+        return "voice: $model, listening on $source, $utterances utterance(s), " +
+            "$commandsRun command(s) run, ${channel.chunksReceived} chunk(s) / " +
+            "${channel.framesReceived} frame(s) of car audio"
     }
 
     /**
@@ -379,6 +446,66 @@ class CarVoiceStream(
      * releases the channel for the close request. A hard timeout sits outside it
      * so that a head unit which streams silence forever cannot pin the coroutine.
      */
+    /**
+     * One utterance from the phone's microphone.
+     *
+     * The same shape as the car path with the channel removed: no `startCapture`
+     * to be refused, no close to be drained, and a source that ends when the
+     * endpointer says the driver stopped talking. Called with [listening] already
+     * true and the banner already up, from [listen], which owns both.
+     */
+    private suspend fun listenOnPhone(): VoiceCommand? {
+        val context = appContext ?: return null
+        val stt = recognizerLoad?.await()
+        stt?.reset()
+        val endpointer = Endpointer(PhoneMicSource.FORMAT)
+        val transcript = try {
+            withTimeoutOrNull(HARD_LIMIT_MILLIS) {
+                PhoneMicSource.pcm(onStep).firstOrNull { chunk ->
+                    if (stt != null) {
+                        val bytes = PcmDecoder.encodeS16Le(chunk.samples)
+                        stt.accept(bytes, bytes.size)
+                    }
+                    endpointer.accept(chunk)
+                }
+            }
+            stt?.finish().orEmpty()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Every way the microphone can refuse to open arrives here as an
+            // IllegalStateException from the flow. Reported on the car screen,
+            // because a Voice button that goes quiet is the complaint this whole
+            // path exists to answer.
+            onStep("voice: the phone's microphone would not open: $e")
+            CarShell.active()?.showVoiceMessage("The phone's microphone would not open")
+            return null
+        }
+        if (!endpointer.speechSeen) {
+            onStep("voice: no speech in ${endpointer.elapsedMicros / 1_000} ms of phone audio")
+            CarShell.active()?.showVoiceMessage("Heard nothing")
+            return null
+        }
+        if (stt == null) {
+            onStep(
+                "voice: heard ${endpointer.elapsedMicros / 1_000} ms of speech on the phone's " +
+                    "microphone but this phone has no on-device speech model"
+            )
+            CarShell.active()?.showVoiceMessage("No speech model on this phone")
+            return null
+        }
+        onStep("voice heard (phone microphone): \"$transcript\"")
+        CarShell.active()?.showVoiceMessage("\u201c$transcript\u201d")
+        val command = engine.parse(transcript)
+        if (command is VoiceCommand.Unrecognised) {
+            onStep("voice: \"$transcript\" matched no command")
+            return command
+        }
+        commandsRun++
+        onCommand(command)
+        return command
+    }
+
     private suspend fun collectUtterance(
         recognizer: SpeechRecognizer?,
         endpointer: Endpointer,
@@ -810,6 +937,7 @@ class CarVoiceStream(
                 openRecognizer = { voskRecognizer(modelDirectory, format.sampleRateHz, onStep) },
                 onCommand = onCommand ?: defaultExecutor(context, onStep),
                 onStep = onStep,
+                appContext = context.applicationContext,
             )
         }
 

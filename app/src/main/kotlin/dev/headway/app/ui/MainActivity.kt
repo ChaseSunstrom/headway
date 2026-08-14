@@ -123,6 +123,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var accessibilityStatus: Phone.StatusRow
     private lateinit var notificationStatus: Phone.StatusRow
     private lateinit var speechStatus: Phone.StatusRow
+    private lateinit var micStatus: Phone.StatusRow
     private lateinit var pairingStatus: Phone.StatusRow
     private lateinit var phoneStatus: Phone.StatusRow
     private lateinit var appDisplayStatus: Phone.StatusRow
@@ -559,6 +560,26 @@ class MainActivity : AppCompatActivity() {
         // commands do nothing deserves to be able to see why.
         speechStatus = Phone.StatusRow(this, "Offline speech model")
         card.addView(speechStatus.view)
+
+        // Optional, and asked for only when this is pressed. A car app that
+        // wants the microphone on first launch is the thing this project exists
+        // not to be -- but a head unit that refuses its own microphone leaves
+        // the Voice button with nothing to listen with, and that was a real
+        // drive's complaint. See `PhoneMicSource`.
+        micStatus = Phone.StatusRow(this, "Phone microphone (voice fallback)")
+            .withAction("Grant") {
+                requestMissingPermissions(
+                    listOf(
+                        PermissionNeed(
+                            Manifest.permission.RECORD_AUDIO,
+                            "Microphone: voice when the car offers none",
+                        ),
+                    ),
+                    "Headway can already hear you",
+                )
+            }
+            .withPersistentAction()
+        card.addView(micStatus.view)
 
         card.addView(Phone.divider(this))
         card.addView(
@@ -1460,6 +1481,20 @@ class MainActivity : AppCompatActivity() {
         speechStatus.set(
             if (speech) Phone.Level.GOOD else Phone.Level.IDLE,
             if (speech) "Installed — voice commands work with no network" else "Unpacking...",
+        )
+
+        val mic = isGranted(Manifest.permission.RECORD_AUDIO)
+        micStatus.set(
+            // Idle rather than orange when it is missing: the car's own
+            // microphone is the intended source and most head units offer one,
+            // so an ungranted phone microphone is a choice not to use a
+            // fallback, not a fault.
+            if (mic) Phone.Level.GOOD else Phone.Level.IDLE,
+            if (mic) {
+                "Granted — the Voice button works even if the car offers no microphone"
+            } else {
+                "Not granted — the Voice button needs the car's microphone"
+            },
         )
 
         val companion = CarCompanion.of(this)
