@@ -54,6 +54,9 @@ import dev.headway.app.log.SessionLog
 import dev.headway.app.quirks.QuirkStore
 import dev.headway.app.service.HeadwayService
 import dev.headway.app.ui.theme.HeadwayMark
+import dev.headway.app.ui.theme.HeadwayTheme
+import dev.headway.dash.ThemeAccent
+import dev.headway.dash.ThemeBase
 import dev.headway.app.ui.theme.Phone
 import dev.headway.app.update.AppUpdater
 import dev.headway.app.update.AvailableRelease
@@ -104,6 +107,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var connectButton: TextView
     private lateinit var parkedOnlySwitch: SwitchCompat
     private lateinit var dashboardSwitch: SwitchCompat
+    private lateinit var autoConnectSwitch: SwitchCompat
+    private var themeValue: android.widget.TextView? = null
     private lateinit var updateValue: TextView
     private lateinit var certificateValue: TextView
     private lateinit var carWifiValue: TextView
@@ -745,16 +750,40 @@ class MainActivity : AppCompatActivity() {
      * only the driver can make.
      */
     private fun buildCarScreenCard(): View {
-        val card = Phone.card(this, "What the car shows")
+        val card = Phone.card(this, "The car screen")
         card.addView(
             Phone.body(
                 this,
-                "Headway draws a dashboard at the car's own resolution: what is " +
-                    "playing, messages, the clock, and your pinned apps.",
+                "Headway draws panels at the car's own resolution: what is playing, " +
+                    "the map, messages, the clock, your pinned apps — and one panel " +
+                    "that shows a real app, running. Arrange them on the car screen " +
+                    "itself: the settings button on the rail unlocks the layout.",
             ),
         )
+
+        themeValue = Phone.body(this, describeTheme())
+        card.addView(themeValue)
+        card.addView(
+            Phone.button(this, "Change the theme") { chooseTheme() },
+        )
+
+        autoConnectSwitch = SwitchCompat(this).apply {
+            text = "Connect on its own when the car appears"
+            setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
+            minHeight = dp(MIN_TOUCH_TARGET_DP)
+            isChecked = HeadwaySettings.autoConnect(this@MainActivity)
+            setOnCheckedChangeListener { _, checked ->
+                HeadwaySettings.of(this@MainActivity).edit()
+                    .putBoolean(HeadwaySettings.KEY_AUTO_CONNECT, checked)
+                    .apply()
+                SessionLog.shared.info(TAG, "auto-connect ${if (checked) "on" else "off"}")
+            }
+            layoutParams = Phone.spaced(this@MainActivity, 12f)
+        }
+        card.addView(autoConnectSwitch)
+
         dashboardSwitch = SwitchCompat(this).apply {
-            text = "Draw a dashboard instead of mirroring the phone"
+            text = "Draw the car screen (turn off only to diagnose)"
             setTextColor(dev.headway.app.ui.theme.Headway.TEXT)
             minHeight = dp(MIN_TOUCH_TARGET_DP)
             isChecked = HeadwaySettings.dashboardOnCarScreen(this@MainActivity)
@@ -762,11 +791,15 @@ class MainActivity : AppCompatActivity() {
                 HeadwaySettings.of(this@MainActivity).edit()
                     .putBoolean(HeadwaySettings.KEY_CAR_SURFACE_DASHBOARD, checked)
                     .apply()
-                SessionLog.shared.info(TAG, "car surface set to ${if (checked) "dashboard" else "mirror"}")
+                SessionLog.shared.info(
+                    TAG,
+                    "car surface set to ${if (checked) "the drawn car screen" else "a raw capture"}",
+                )
             }
             layoutParams = Phone.spaced(this@MainActivity, 12f)
         }
         card.addView(dashboardSwitch)
+
         card.addView(
             Phone.disclosure(
                 this,
@@ -779,13 +812,65 @@ class MainActivity : AppCompatActivity() {
                     "show in the car.\n\n" +
                     "Android Auto does not mirror either, and this is why: the head " +
                     "unit is a display, not a window onto the phone.\n\n" +
-                    "Turn this off and Headway goes back to mirroring, which is still " +
-                    "the only way to put another app's own screen on the car — " +
-                    "Android does not let an app place another app's window on a " +
-                    "display it created.",
+                    "An app still reaches the car as pixels — that is the one thing " +
+                    "Android will not let Headway draw itself — but those pixels now " +
+                    "land inside a panel of the car screen rather than replacing all " +
+                    "of it. Turning this switch off falls back to sending the car a " +
+                    "raw capture of the phone, with no panels at all. It exists to " +
+                    "diagnose a car that will not show the drawn screen.",
             ),
         )
         return card
+    }
+
+    private fun describeTheme(): String {
+        val choice = HeadwayTheme.choice
+        return "Theme: ${choice.base.displayName.lowercase()}, " +
+            "accent ${choice.accent.displayName.lowercase()}"
+    }
+
+    /**
+     * The palette, in two questions.
+     *
+     * Two dialogs rather than one list of eighteen combinations, because the
+     * question really is two questions — "light or dark" and "with or without
+     * the blue" — and a single list makes the second one invisible.
+     */
+    private fun chooseTheme() {
+        val bases = ThemeBase.entries
+        AlertDialog.Builder(this)
+            .setTitle("Car screen theme")
+            .setSingleChoiceItems(
+                bases.map { "${it.displayName} — ${it.explanation}" }.toTypedArray(),
+                bases.indexOf(HeadwayTheme.choice.base),
+            ) { dialog, which ->
+                dialog.dismiss()
+                HeadwayTheme.set(this, HeadwayTheme.choice.copy(base = bases[which]))
+                chooseAccent()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun chooseAccent() {
+        val accents = ThemeAccent.entries
+        AlertDialog.Builder(this)
+            .setTitle("Accent")
+            .setSingleChoiceItems(
+                accents.map { it.displayName }.toTypedArray(),
+                accents.indexOf(HeadwayTheme.choice.accent),
+            ) { dialog, which ->
+                dialog.dismiss()
+                HeadwayTheme.set(this, HeadwayTheme.choice.copy(accent = accents[which]))
+                // The whole screen is rebuilt rather than the one label: every
+                // colour on it was resolved into a drawable when the view was
+                // built, so a repaint is the only way the phone side follows the
+                // choice the driver just made. The car screen rebuilds itself
+                // from HeadwayTheme's listener and needs nothing from here.
+                recreate()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun buildCarWifiCard(): View {
