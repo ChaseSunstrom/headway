@@ -52,6 +52,7 @@ import dev.headway.app.update.ReleaseCatalog
 import dev.headway.app.update.UpdateException
 import dev.headway.app.quirks.QuirkStore
 import dev.headway.app.service.HeadwayService
+import dev.headway.app.voice.SpeechModelInstaller
 import dev.headway.transport.LinkState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -263,8 +264,29 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(buildContent())
         updateScope = CoroutineScope(Dispatchers.Main.immediate)
+        installSpeechModel()
         if (!HeadwaySettings.of(this).getBoolean(HeadwaySettings.KEY_SAFETY_NOTICE_ACCEPTED, false)) {
             showSafetyNotice(firstRun = true)
+        }
+    }
+
+    /**
+     * Unpacks the bundled speech model, once, in the background.
+     *
+     * Here rather than in the car session on purpose. It writes ~68 MB and takes
+     * seconds; doing it lazily on the first voice command would spend those
+     * seconds with the driver waiting, and doing it during session bring-up
+     * would spend them against the head unit's fifteen-second video deadline.
+     *
+     * Nothing waits on the result and nothing fails if it does not work — voice
+     * degrades to "the car microphone works, nothing is transcribed", which the
+     * log says in as many words.
+     */
+    private fun installSpeechModel() {
+        val application = applicationContext
+        if (SpeechModelInstaller.isInstalled(application)) return
+        CoroutineScope(Dispatchers.IO).launch {
+            SpeechModelInstaller.install(application) { note(it) }
         }
     }
 

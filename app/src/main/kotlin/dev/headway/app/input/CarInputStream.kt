@@ -40,6 +40,7 @@ import dev.headway.video.VideoResolution
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.EOFException
@@ -120,8 +121,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * be indistinguishable in the log from a verified one. The single exception is
  * BACK, which the platform itself defines an equivalent for
  * (`GLOBAL_ACTION_BACK`), so honouring it is reading the platform rather than
- * guessing at the car. Media keys belong to a `MediaSession` (Phase 4) and the
- * voice key to the command engine (Phase 5); neither is this class's to claim.
+ * guessing at the car — and the voice key, which is forwarded to [onVoiceKey]
+ * rather than interpreted here. Media keys still belong to a `MediaSession` and
+ * are not this class's to claim.
  *
  * The rotary knob is logged for the same reason and cannot do more: turning a
  * detent into focus movement needs to know what is on screen, and
@@ -149,6 +151,14 @@ class CarInputStream(
     /** Exactly the keycodes the head unit advertised. See the class KDoc. */
     private val keycodes: List<Int>,
     private val builder: GestureBuilder,
+    /**
+     * Called when the steering-wheel voice key is released.
+     *
+     * A callback rather than a direct reference to the voice stream because the
+     * two are built in sequence by the session and input comes first; a lambda
+     * closing over the later one keeps the ordering harmless.
+     */
+    private val onVoiceKey: () -> Unit = {},
     private val onStep: (String) -> Unit = {},
 ) {
 
@@ -183,6 +193,30 @@ class CarInputStream(
 
     @Volatile
     private var knobEvents: Long = 0L
+
+    /**
+     * Reports and touch events straight off the wire, before any interpretation.
+     *
+     * These exist because the first real-car session reported zeroes on every
+     * other counter, and zeroes could not distinguish "the head unit sent
+     * nothing" from "reports arrived and something downstream dropped them all".
+     * [barTouches] narrowed it — it counts touches the transform rejects, so a
+     * zero there means nothing was decoded — but only these two say whether
+     * anything arrived at all.
+     */
+    @Volatile
+    private var reportsReceived: Long = 0L
+
+    @Volatile
+    private var touchEventsSeen: Long = 0L
+
+    /** Whether the head unit ever answered the key binding. See [watchKeyBinding]. */
+    @Volatile
+    private var keyBindingAnswered: Boolean = false
+
+    /** Reports hex-dumped so far; the first few only. */
+    @Volatile
+    private var reportsDumped: Int = 0
 
     private var announcedTouchpad = false
 
@@ -238,16 +272,45 @@ class CarInputStream(
         )
 
         jobs += scope.launch { watchAccessibility() }
+        jobs += scope.launch { watchKeyBinding() }
         jobs += scope.launch { read() }
         onStep("input stream started")
         return true
     }
 
+    /**
+     * Says so, once, if the head unit never answers the key binding.
+     *
+     * openauto reaches `inputDevice_->start()` from exactly one place — its
+     * binding handler, under `if(status == OK)`
+     * (`openauto/openauto/Service/InputService.cpp` L118-L121) — and until then
+     * `eventHandler_` is null and every touch is dropped before it reaches the
+     * wire. So an unanswered binding is not a lost keyboard: it is a head unit
+     * that will never send a single touch.
+     *
+     * Nothing said so before. A silent head unit and a head unit that answered
+     * "bound" and then sent nothing produced identical logs, and those two have
+     * completely different causes.
+     */
+    private suspend fun watchKeyBinding() {
+        delay(KEY_BINDING_TIMEOUT_MILLIS)
+        if (keyBindingAnswered) return
+        onStep(
+            "input: the head unit has not answered the KeyBindingRequest after " +
+                "${KEY_BINDING_TIMEOUT_MILLIS / 1000} s. Per openauto it starts its input " +
+                "device only when it answers, so no touch will arrive until it does"
+        )
+    }
+
     /** Gestures injected and touches discarded, for the log. */
-    fun describe(): String = "input: $gesturesSubmitted gesture(s) injected, " +
+    fun describe(): String = "input: $reportsReceived report(s) received, " +
+        "$touchEventsSeen touch event(s) in them, " +
+        "$gesturesSubmitted gesture(s) injected, " +
         "$gesturesDropped dropped with no accessibility grant, " +
         "$barTouches touch(es) in the letterbox bar, " +
-        "$keyEvents key event(s), $knobEvents knob event(s); accessibility " +
+        "$keyEvents key event(s), $knobEvents knob event(s); key binding " +
+        (if (keyBindingAnswered) "answered" else "UNANSWERED") +
+        "; accessibility " +
         (if (accessibilityAvailable) "available" else "not available")
 
     /**
@@ -281,6 +344,20 @@ class CarInputStream(
                     builder.cancel()
                     onStep("input: gesture in progress abandoned after an accessibility interrupt")
                 }
+                // Before decoding, so a report the decoder rejects is still
+                // visible as bytes. A malformed report and no report at all
+                // otherwise look the same in the log.
+                if (reportsDumped < REPORTS_HEX_DUMPED) {
+                    reportsDumped++
+                    onStep(
+                        "input: raw message 0x%04x (%d bytes) %s".format(
+                            message.messageId,
+                            message.payload.size,
+                            message.payload.take(HEX_LIMIT)
+                                .joinToString(" ") { "%02x".format(it) },
+                        )
+                    )
+                }
                 try {
                     dispatch(channel.handle(message))
                 } catch (e: InputChannelException) {
@@ -308,18 +385,28 @@ class CarInputStream(
 
     private fun dispatch(message: InputChannelMessage) {
         when (message) {
-            is InputChannelMessage.Report -> message.events.forEach(::onEvent)
+            is InputChannelMessage.Report -> {
+                reportsReceived++
+                message.events.forEach(::onEvent)
+            }
 
-            is InputChannelMessage.KeyBindingResult -> onStep(
-                if (message.bound) {
-                    "input: the head unit bound every requested keycode"
-                } else {
-                    // STATUS_KEYCODE_NOT_BOUND here would mean the unit refused a
-                    // code it had itself advertised, which no reference does.
-                    "input: key binding refused with status ${message.status}; " +
-                        "steering-wheel buttons will not arrive"
-                }
-            )
+            is InputChannelMessage.KeyBindingResult -> {
+                // Recorded whether or not the binding succeeded: what the
+                // timeout warning is about is *silence*, and a refusal is an
+                // answer. A refusal has its own, different consequence below.
+                keyBindingAnswered = true
+                onStep(
+                    if (message.bound) {
+                        "input: the head unit bound every requested keycode"
+                    } else {
+                        // STATUS_KEYCODE_NOT_BOUND here would mean the unit refused a
+                        // code it had itself advertised, which no reference does.
+                        "input: key binding refused with status ${message.status}; " +
+                            "openauto starts its input device only on a successful bind, so " +
+                            "touch may not arrive either"
+                    }
+                )
+            }
 
             // The phone originates this one, so receiving it means the peer is
             // behaving as a phone. Worth seeing rather than ignoring.
@@ -352,6 +439,7 @@ class CarInputStream(
     // --- touch ---------------------------------------------------------------
 
     private fun onTouch(touch: CarInputEvent.Touch) {
+        touchEventsSeen++
         if (touch.surface != TouchSurface.TOUCHSCREEN && !announcedTouchpad) {
             announcedTouchpad = true
             // GestureBuilder drops these itself; without this line the driver of
@@ -407,13 +495,29 @@ class CarInputStream(
 
         // On release only: press and release arrive as separate reports, and
         // acting on both would fire everything twice.
-        if (key.down || key.keycode != InputKeyCodes.BACK) return
+        if (key.down) return
 
-        val service = HeadwayAccessibilityService.instance.value ?: return
-        val performed = runCatching {
-            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-        }.getOrDefault(false)
-        if (!performed) onStep("input: the platform refused the back action")
+        when (key.keycode) {
+            InputKeyCodes.BACK -> {
+                val service = HeadwayAccessibilityService.instance.value ?: return
+                val performed = runCatching {
+                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                }.getOrDefault(false)
+                if (!performed) onStep("input: the platform refused the back action")
+            }
+
+            // The steering-wheel voice button, if this car sends it. Free to
+            // wire and the best possible trigger — hands stay on the wheel —
+            // but not something to depend on: whether the code ever arrives
+            // depends on the unit advertising it in keycodes_supported, which
+            // `input advertised:` at the top of the log now records.
+            InputKeyCodes.SEARCH -> {
+                onStep("input: the voice key was pressed")
+                onVoiceKey()
+            }
+
+            else -> Unit
+        }
     }
 
     private fun onRelative(event: CarInputEvent.Relative) {
@@ -463,6 +567,21 @@ class CarInputStream(
     companion object {
 
         /**
+         * How long to wait for a `KeyBindingResult` before saying it never came.
+         *
+         * Generous on purpose. This is a diagnostic, not a deadline — nothing
+         * is retried or abandoned when it fires — so it should only speak when
+         * the answer is genuinely absent rather than merely slow.
+         */
+        const val KEY_BINDING_TIMEOUT_MILLIS: Long = 10_000
+
+        /** Reports hex-dumped at the top of a session. */
+        private const val REPORTS_HEX_DUMPED = 3
+
+        /** Bytes shown per dumped report; a touch report is far shorter than this. */
+        private const val HEX_LIMIT = 48
+
+        /**
          * Finds the head unit's input service by content, not by channel id.
          *
          * A touchscreen is the requirement: a unit that advertises an input
@@ -485,10 +604,26 @@ class CarInputStream(
             profile: HeadUnitProfile,
             connectionFor: (Int) -> MessageChannel,
             context: Context,
+            onVoiceKey: () -> Unit = {},
             onStep: (String) -> Unit = {},
         ): CarInputStream? {
             val service = inputServiceOf(profile) ?: return null
             val input = service.inputSourceService
+
+            // Echoed verbatim, before anything can fail. Everything downstream
+            // is derived from these four facts, and the first real-car session
+            // recorded none of them -- so a log showing no touches could not say
+            // whether the panel geometry was sane or whether this unit even
+            // offers the voice key that would trigger a microphone session.
+            onStep(
+                "input advertised: channel ${service.id}, ${input.touchscreenCount} touchscreen(s) " +
+                    input.touchscreenList.joinToString(prefix = "[", postfix = "]") {
+                        "${it.width}x${it.height}${if (it.isSecondary) " secondary" else ""}"
+                    } +
+                    ", ${input.keycodesSupportedCount} keycode(s) " +
+                    input.keycodesSupportedList.joinToString(prefix = "[", postfix = "]")
+            )
+
             val panel = primaryTouchscreen(input) ?: return null
 
             val phone = phoneDisplaySize(context)
@@ -518,6 +653,7 @@ class CarInputStream(
                 transform = transform,
                 keycodes = input.keycodesSupportedList.toList(),
                 builder = GestureBuilder(GestureConfig.forDevice(context)),
+                onVoiceKey = onVoiceKey,
                 onStep = onStep,
             )
         }

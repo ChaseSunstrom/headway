@@ -149,12 +149,25 @@ data class HeadUnitQuirks(
     /**
      * Send third-party media audio over the AAP media-audio channel.
      *
-     * Off by default because CLAUDE.md makes Bluetooth A2DP the primary path and
-     * `AudioPlaybackCapture` the toggle-guarded exception: apps can opt out of
-     * capture, and the capture path adds latency. A unit whose A2DP link fights
-     * the AAP session is the case this exists for.
+     * **On by default, reversing CLAUDE.md.** The spec makes Bluetooth A2DP the
+     * primary path on the premise that it "coexists with the AAP session". It
+     * does not. A capture of real Android Auto against a 2021 Chevrolet
+     * Infotainment 3 unit shows Gearhead tearing A2DP down on purpose —
+     * `disabling A2dp route while in projection`, then
+     * `A2DP playing while in projection. Trying disabling`, then
+     * `ANDROID_AUTO_BLUETOOTH_A2DP_DISCONNECTED` — and streaming a named
+     * third-party player over the AAP media channel instead. The user confirmed
+     * the same thing from the driver's seat: with Headway projecting, the car is
+     * silent.
+     *
+     * So A2DP is not a fallback on this class of head unit; it is no audio at
+     * all. The toggle survives for a unit that genuinely does keep A2DP alive,
+     * where leaving music on Bluetooth avoids the capture path's opt-out and its
+     * ~45 ms.
+     *
+     * See ADR 0005.
      */
-    val mediaAudioOverAap: Boolean = false,
+    val mediaAudioOverAap: Boolean = true,
 
     /**
      * Frames between forced H.264 IDRs.

@@ -23,6 +23,10 @@ protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.
 protobuf-protoc = { module = "com.google.protobuf:protoc", version.ref = "protobuf" }
 
 vosk = { module = "com.alphacephei:vosk", version.ref = "vosk" }
+# The Android build of the same decoder. It exports the identical org.vosk
+# classes plus an android package, which is what makes core-voice able to
+# compile against the desktop jar and run against this one.
+vosk-android = { module = "com.alphacephei:vosk-android", version.ref = "vosk" }
 
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version = "1.11.3" }

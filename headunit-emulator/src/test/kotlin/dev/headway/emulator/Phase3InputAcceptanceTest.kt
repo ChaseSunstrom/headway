@@ -43,6 +43,7 @@ import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
 /**
@@ -92,13 +93,32 @@ class Phase3InputAcceptanceTest {
 
     /**
      * Runs a real handshake over the loopback transport, opens the input channel
-     * only, and hands [body] both ends of it.
+     * only, binds the keycodes, and hands [body] both ends of it.
      *
      * The channel really is encrypted: `FramedConnection.send` refuses an
      * encrypted message before TLS is up, so this cannot accidentally degrade to
      * plaintext.
+     *
+     * ## Why the binding happens here
+     *
+     * A head unit sends no input report at all — touch included — until the
+     * phone has bound its keys and the unit has started its input device
+     * (`openauto/openauto/Service/InputService.cpp` L118-L121, modelled by
+     * [EmulatedInputSource.deviceStarted]). Every test in this file used to tap
+     * without binding, which is a sequence no real head unit would have
+     * answered; the emulator sent the reports anyway and the suite was green.
+     *
+     * Doing the exchange here means every test now runs the sequence a real
+     * session runs, and a phone that skipped the step would fail the whole file
+     * rather than pass it.
+     *
+     * @param bindKeys false for the tests that are *about* the binding exchange
+     *   and must drive it themselves.
      */
-    private fun <T> withInputChannel(body: suspend CoroutineScope.(Harness) -> T): T = runBlocking {
+    private fun <T> withInputChannel(
+        bindKeys: Boolean = true,
+        body: suspend CoroutineScope.(Harness) -> T,
+    ): T = runBlocking {
         LoopbackTransport.pair().use { pair ->
             val phoneConnection = FramedConnection(pair.phone)
             val headUnitConnection = FramedConnection(pair.headUnit)
@@ -120,20 +140,29 @@ class Phase3InputAcceptanceTest {
             withTimeout(TIMEOUT_MILLIS) { phoneSide.await() }
             withTimeout(TIMEOUT_MILLIS) { headUnitSide.await() }
 
-            body(
-                Harness(
-                    input = InputChannel(phoneConnection),
-                    source = EmulatedInputSource(
-                        connection = headUnitConnection,
-                        displayWidth = carWidth,
-                        displayHeight = carHeight,
-                    ),
-                    // The emulator advertises the same geometry for its video sink
-                    // and its touchscreen, so either reads the same here; the video
-                    // resolution is the one that is correct in general.
-                    transform = TouchTransform(carWidth, carHeight, phoneWidth, phoneHeight),
-                )
+            val harness = Harness(
+                input = InputChannel(phoneConnection),
+                source = EmulatedInputSource(
+                    connection = headUnitConnection,
+                    displayWidth = carWidth,
+                    displayHeight = carHeight,
+                ),
+                // The emulator advertises the same geometry for its video sink
+                // and its touchscreen, so either reads the same here; the video
+                // resolution is the one that is correct in general.
+                transform = TouchTransform(carWidth, carHeight, phoneWidth, phoneHeight),
             )
+
+            if (bindKeys) {
+                // Both halves concurrently: each blocks reading the other.
+                val answering = async(Dispatchers.IO) { harness.source.answerKeyBinding() }
+                harness.input.requestKeyBinding(EmulatedHeadUnit.SUPPORTED_KEYCODES)
+                // Consumed here so the first message a test reads is a report.
+                withTimeout(TIMEOUT_MILLIS) { harness.input.receiveMessage() }
+                withTimeout(TIMEOUT_MILLIS) { answering.await() }
+            }
+
+            body(harness)
         }
     }
 
@@ -153,7 +182,7 @@ class Phase3InputAcceptanceTest {
     // --- key binding ---------------------------------------------------------
 
     @Test
-    fun `the phone binds the keycodes the head unit advertised`() = withInputChannel { h ->
+    fun `the phone binds the keycodes the head unit advertised`() = withInputChannel(bindKeys = false) { h ->
         val answering = async(Dispatchers.IO) { h.source.answerKeyBinding() }
 
         h.input.requestKeyBinding(EmulatedHeadUnit.SUPPORTED_KEYCODES)
@@ -173,7 +202,7 @@ class Phase3InputAcceptanceTest {
      * not a subset.
      */
     @Test
-    fun `asking for an unadvertised keycode fails the whole binding`() = withInputChannel { h ->
+    fun `asking for an unadvertised keycode fails the whole binding`() = withInputChannel(bindKeys = false) { h ->
         val answering = async(Dispatchers.IO) { h.source.answerKeyBinding() }
 
         h.input.requestKeyBinding(listOf(InputKeyCodes.SEARCH, InputKeyCodes.NAVIGATION))
@@ -430,6 +459,58 @@ class Phase3InputAcceptanceTest {
 
     // --- the whole thing -----------------------------------------------------
 
+    @Test
+    fun `a head unit sends nothing at all until the phone binds its keys`() =
+        withInputChannel(bindKeys = false) { h ->
+            // The rule the whole file now depends on, asserted rather than
+            // assumed. openauto starts its input device from one place only --
+            // a successful KeyBindingRequest (InputService.cpp L118-L121) -- and
+            // before that InputDevice::eventFilter drops every touch on a null
+            // eventHandler_. A phone that skips the request therefore gets no
+            // touch, and until this test existed nothing in CI said so: the
+            // emulator sent reports unconditionally and every other test in
+            // this file tapped without ever binding.
+            assertFalse(
+                h.source.deviceStarted,
+                "a fresh head unit has not started its input device",
+            )
+            val refused = assertThrows(IllegalStateException::class.java) {
+                runBlocking { h.source.tap(400, 240) }
+            }
+            assertTrue(
+                refused.message.orEmpty().contains("KeyBindingRequest"),
+                "the refusal should name the step that was skipped, was: ${refused.message}",
+            )
+
+            val answering = async(Dispatchers.IO) { h.source.answerKeyBinding() }
+            h.input.requestKeyBinding(EmulatedHeadUnit.SUPPORTED_KEYCODES)
+            withTimeout(TIMEOUT_MILLIS) { h.input.receiveMessage() }
+            withTimeout(TIMEOUT_MILLIS) { answering.await() }
+
+            assertTrue(h.source.deviceStarted, "a successful bind starts the input device")
+            // And now the same tap works.
+            h.source.tap(400, 240)
+            assertEquals(2, withTimeout(TIMEOUT_MILLIS) { h.input.collect(2) }.touches().size)
+        }
+
+    @Test
+    fun `a refused binding leaves the input device stopped`() =
+        withInputChannel(bindKeys = false) { h ->
+            // A refusal is not merely "no steering-wheel keys". openauto gates
+            // inputDevice_->start() on status == OK, so a phone that asks for a
+            // keycode the unit never advertised loses touch as well -- which is
+            // why CarInputStream sends exactly the advertised list.
+            val answering = async(Dispatchers.IO) { h.source.answerKeyBinding() }
+            h.input.requestKeyBinding(listOf(UNADVERTISED_KEYCODE))
+            withTimeout(TIMEOUT_MILLIS) { h.input.receiveMessage() }
+            withTimeout(TIMEOUT_MILLIS) { answering.await() }
+
+            assertFalse(
+                h.source.deviceStarted,
+                "a refused bind must not start the input device",
+            )
+        }
+
     /**
      * One scripted session that walks a launcher grid the way the acceptance
      * criterion describes: press the voice key, scroll a list, tap an item.
@@ -437,7 +518,7 @@ class Phase3InputAcceptanceTest {
      * final [PhoneTouch] is Tier C.
      */
     @Test
-    fun `a scripted session of mixed gestures decodes in order`() = withInputChannel { h ->
+    fun `a scripted session of mixed gestures decodes in order`() = withInputChannel(bindKeys = false) { h ->
         val binding = async(Dispatchers.IO) { h.source.answerKeyBinding() }
         h.input.requestKeyBinding(EmulatedHeadUnit.SUPPORTED_KEYCODES)
         assertTrue(
@@ -491,5 +572,13 @@ class Phase3InputAcceptanceTest {
 
     private companion object {
         const val TIMEOUT_MILLIS = 60_000L
+
+        /**
+         * A keycode the emulator never advertises, for the refusal path.
+         *
+         * `KEYCODE_TV` — nothing in [EmulatedHeadUnit.SUPPORTED_KEYCODES] and
+         * nothing a car would bind.
+         */
+        const val UNADVERTISED_KEYCODE = 170
     }
 }

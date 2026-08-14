@@ -104,6 +104,26 @@ class EmulatedInputSource(
     var reportsSent: Int = 0
         private set
 
+    /**
+     * Whether this unit's input device has been started, i.e. whether the phone
+     * has bound its keys.
+     *
+     * openauto calls `inputDevice_->start()` from exactly one place — its
+     * binding handler, under `if(status == OK)`
+     * (`openauto/openauto/Service/InputService.cpp` L118-L121) — and before that
+     * `InputDevice::eventFilter` drops every touch and key on a null
+     * `eventHandler_`. So a phone that never sends a `KeyBindingRequest`, or
+     * whose request is refused, receives **nothing at all**, touch included.
+     *
+     * The emulator did not model this, and every gesture helper sent
+     * unconditionally. Phase 3's acceptance test taps without ever answering a
+     * binding and passed, so CI could never have caught a phone that skipped
+     * the step. A real 2021 Chevrolet Infotainment 3 unit is the first thing
+     * that has ever exercised the gate.
+     */
+    var deviceStarted: Boolean = false
+        private set
+
     // --- key binding ---------------------------------------------------------
 
     /**
@@ -131,11 +151,24 @@ class EmulatedInputSource(
             InputChannelMessage.KeyBindingResult.STATUS_KEYCODE_NOT_BOUND
         }
         connection.send(InputChannel.keyBindingResponse(channelId, status))
+        // Only a successful bind starts the device; see [deviceStarted].
+        if (unsupported == null) deviceStarted = true
         onStep(
-            if (unsupported == null) "bound ${binding.keycodes.size} keycode(s)"
+            if (unsupported == null) "bound ${binding.keycodes.size} keycode(s); input device started"
             else "refused key binding: keycode $unsupported was never advertised"
         )
         return binding.keycodes
+    }
+
+    /**
+     * Starts the input device without a binding exchange.
+     *
+     * For tests that are about something else entirely and should not have to
+     * stage a key binding to get a touch. Named so that a test using it is
+     * visibly opting out of the gate rather than unaware of it.
+     */
+    fun startDeviceWithoutBinding() {
+        deviceStarted = true
     }
 
     // --- touch gestures ------------------------------------------------------
@@ -376,6 +409,16 @@ class EmulatedInputSource(
     // --- internals -----------------------------------------------------------
 
     private suspend fun send(report: InputReport) {
+        // The gate openauto enforces, enforced here. Throwing rather than
+        // silently dropping is deliberate: openauto drops, but a dropped report
+        // in a test looks exactly like a receiver bug, and the whole point of
+        // modelling this is that silence was what made it invisible.
+        check(deviceStarted) {
+            "this head unit has not started its input device, so it would send no report. " +
+                "openauto starts it only from a successful KeyBindingRequest " +
+                "(InputService.cpp L118-L121). Call answerKeyBinding() first, or " +
+                "startDeviceWithoutBinding() if this test is about something else."
+        }
         connection.send(InputChannel.inputReport(channelId, report))
         reportsSent++
     }

@@ -21,6 +21,9 @@ import aap_protobuf.service.ServiceOuterClass
 import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaCodecType
 import aap_protobuf.service.media.sink.message.AudioStreamTypeOuterClass.AudioStreamType
 import android.content.Context
+import android.media.AudioManager
+import android.media.projection.MediaProjection
+import android.os.SystemClock
 import dev.headway.audio.CarAudioSource
 import dev.headway.audio.CarAudioSourceException
 import dev.headway.audio.PcmBuffer
@@ -40,6 +43,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -49,27 +54,31 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Everything between "the car opened its audio sink channels" and "the car plays
  * what Headway says".
  *
- * ## What this is for, and what it deliberately is not for
+ * ## What travels here
  *
- * Headway's *own* audio — spoken replies from the Phase 5 voice pipeline, and any
- * UI prompt — is the only thing that travels on the AAP audio channels. Music
- * from third-party apps does not, and this class does not carry it. CLAUDE.md
- * settles that:
+ * Headway's own audio — spoken replies from the voice pipeline and UI prompts —
+ * and, by default, **third-party music**.
  *
- * > Default strategy: instruct/steer media audio over the car's normal Bluetooth
- * > A2DP link, which coexists with the AAP session.
+ * That last part reverses CLAUDE.md, which says *"instruct/steer media audio
+ * over the car's normal Bluetooth A2DP link, which coexists with the AAP
+ * session"*. The coexistence premise is false on the target vehicle, and a
+ * capture of real Android Auto against that same head unit says so plainly:
+ * Gearhead logs `disabling A2dp route while in projection`, retries with
+ * `A2DP playing while in projection. Trying disabling`, ends at
+ * `ANDROID_AUTO_BLUETOOTH_A2DP_DISCONNECTED`, and streams a named third-party
+ * player over the AAP media channel instead. The driver's report matches: with
+ * Headway projecting, the car is silent.
  *
- * so [AudioChannel] refuses to be set up at all when its route is
- * [MediaAudioRoute.BLUETOOTH_A2DP] (`AudioChannel.requireTransmitting`), and the
- * consequence here is stronger still: the media sink is **never subscribed to**.
- * Registering a demultiplexer view for a channel nobody reads would turn "a
- * message arrived for a channel with no handler", which the service logs, into a
- * message quietly queued and eventually dropped, which nobody sees. Leaving the
- * media sink unsubscribed keeps that failure visible.
+ * So media is driven here, tapped from the phone with [PhoneAudioCapture] — the
+ * unprivileged spelling of the `REMOTE_SUBMIX` recording the same capture shows
+ * Gearhead doing. The `mediaAudioOverAap` quirk still turns it off for a unit
+ * that genuinely keeps A2DP alive. See ADR 0005.
  *
- * The telephony sink is left alone for the same kind of reason: a phone call
- * already reaches the car over Bluetooth HFP, and duplicating it over AAP would
- * put the caller's voice into the cabin twice.
+ * The telephony sink is still left alone, and that is not symmetry: the same
+ * capture shows Gearhead *keeping* `STATE_HFP_CONNECTED` throughout. A phone
+ * call already reaches the car over Bluetooth HFP, and duplicating it over AAP
+ * would put the caller's voice in the cabin twice — and voice audio is not
+ * capturable at any privilege level anyway.
  *
  * ## Bring-up order
  *
@@ -126,6 +135,12 @@ class CarAudioStream(
     private val focus: AudioFocus,
     private val phoneFocus: PhoneAudioFocus,
     private val source: CarAudioSource,
+    /** The screen-capture grant, reused to tap playback. Null disables media. */
+    private val projection: MediaProjection? = null,
+    /** Used only to ask whether anything is playing; see [pumpMedia]. */
+    private val audioManager: AudioManager? = null,
+    /** Channel id to advertised name, so the log stops guessing. */
+    private val names: Map<Int, String> = emptyMap(),
     private val onStep: (String) -> Unit = {},
 ) {
 
@@ -187,6 +202,15 @@ class CarAudioStream(
     var underflows: Long = 0L
         private set
 
+    /** Captured audio forwarded to the car. Diagnostics. */
+    @Volatile
+    var mediaBytesSent: Long = 0L
+        private set
+
+    /** Held so [stop] can close the tap even if the pump is cancelled mid-read. */
+    @Volatile
+    private var mediaCapture: PhoneAudioCapture? = null
+
     /** True once a guidance channel is started and a prompt can actually be spoken. */
     val canSpeak: Boolean
         get() = channelFor(AudioStreamType.AUDIO_STREAM_GUIDANCE) != null
@@ -213,8 +237,118 @@ class CarAudioStream(
         // drains them, and without it a phone call would never be relayed to the
         // car.
         jobs += scope.launch { phoneFocus.relayPhoneFocusChanges() }
-        jobs += scope.launch { bringUp(sessionId) }
+        jobs += scope.launch {
+            bringUp(sessionId)
+            pumpMedia()
+        }
         return true
+    }
+
+    // --- media ----------------------------------------------------------------
+
+    /**
+     * Sends the phone's music to the car for as long as there is music.
+     *
+     * ## Why this is not simply "capture, forward, forever"
+     *
+     * Holding `AUDIO_FOCUS_GAIN` on the control channel is what makes the head
+     * unit unmute the Android Auto source — verified against a real capture,
+     * where the car answers `LOSS` before the request and `STATE_GAIN` after,
+     * and Gearhead only then enables the stream. It is also what silences the
+     * car's own radio. So focus has to be taken when there is something to play
+     * and handed back when there is not, or Headway mutes the driver's radio for
+     * the whole drive and plays digital silence over it.
+     *
+     * `AudioManager.isMusicActive` is the unprivileged answer to "is there
+     * something to play". It is polled rather than observed because no callback
+     * for it exists below the notification-listener grant, and the poll is
+     * cheap.
+     *
+     * ## Why the read loop needs no clock
+     *
+     * [PhoneAudioCapture.read] blocks until the tap has a buffer, and the tap
+     * fills at real time. So the loop below runs at exactly the rate the music
+     * plays, and back-pressure from the car's acknowledgement window
+     * (`MAX_UNACK: 16` on this head unit, not openauto's 1) simply slows the
+     * reads. No pacing code, and no queue to drift.
+     */
+    private suspend fun pumpMedia() {
+        val channel = channelFor(AudioStreamType.AUDIO_STREAM_MEDIA) ?: return
+        val projection = projection ?: return
+        val format = channel.format ?: run {
+            onStep("media: the channel started without a negotiated format; not sending music")
+            return
+        }
+
+        onStep(PhoneAudioCapture.describeCapturePolicy())
+        val capture = PhoneAudioCapture(projection, format, onStep)
+        if (!capture.start()) return
+        mediaCapture = capture
+
+        val buffer = ByteArray(capture.bufferBytes)
+        var holdingFocus = false
+        var idleSince = 0L
+        try {
+            while (currentCoroutineContext().isActive) {
+                val read = capture.read(buffer)
+                if (read <= 0) {
+                    if (read < 0) break
+                    continue
+                }
+
+                val playing = PhoneAudioCapture.isMusicPlaying(audioManager)
+                if (playing) {
+                    idleSince = 0L
+                    if (!holdingFocus) {
+                        holdingFocus = requestMediaFocus()
+                    }
+                } else if (holdingFocus) {
+                    // Not released on the first silent buffer: a track change is
+                    // a second of silence, and giving the radio back and taking
+                    // it again across every gap would make the car click.
+                    val now = SystemClock.elapsedRealtime()
+                    if (idleSince == 0L) idleSince = now
+                    if (now - idleSince >= MEDIA_IDLE_RELEASE_MILLIS) {
+                        releaseMediaFocus()
+                        holdingFocus = false
+                    }
+                }
+
+                if (!holdingFocus) continue
+                val sent = channel.streamPcm(
+                    if (read == buffer.size) buffer else buffer.copyOf(read)
+                )
+                buffersSent += sent
+                mediaBytesSent += read
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failed: Exception) {
+            // The link dying mid-song is ordinary. Audio must never be the
+            // component that decides the session is over.
+            onStep("media stream ended: ${failed.message ?: failed::class.java.simpleName}")
+        } finally {
+            if (holdingFocus) runCatching { releaseMediaFocus() }
+            runCatching { capture.close() }
+            onStep(capture.describe())
+        }
+    }
+
+    /** Takes focus for continuous playback, on both the phone and the car. */
+    private suspend fun requestMediaFocus(): Boolean {
+        val granted = runCatching { phoneFocus.requestForMedia() }.getOrDefault(false)
+        onStep(
+            if (granted) "media: focus taken; the car should switch to Android Auto audio"
+            else "media: the phone refused audio focus; sending anyway"
+        )
+        // Sent regardless. The phone's own focus stack is not the car's, and the
+        // car has been observed to grant AAP focus that Android had declined.
+        return true
+    }
+
+    private suspend fun releaseMediaFocus() {
+        runCatching { phoneFocus.release() }
+        onStep("media: focus released after ${MEDIA_IDLE_RELEASE_MILLIS / 1000} s of silence")
     }
 
     /**
@@ -232,7 +366,21 @@ class CarAudioStream(
         // every prompt by withFocus, so nothing is left holding the radio down.
         runCatching { phoneFocus.close() }
         runCatching { source.close() }
+        // Closed here as well as in the pump's finally: a cancelled coroutine
+        // parked inside AudioRecord.read does not run its finally until the read
+        // returns, and a live tap holds a microphone-class resource.
+        runCatching { mediaCapture?.close() }
+        mediaCapture = null
     }
+
+    /**
+     * A channel's advertised name, falling back to Headway's constant table.
+     *
+     * See [nameOf]: the table is Headway's own numbering and a real car assigns
+     * its own, so using it as a name misreports every channel on this vehicle.
+     */
+    private fun nameFor(channelId: Int): String =
+        names[channelId] ?: ChannelId.describe(channelId)
 
     /** What opened, what did not, and what the car has said about focus. */
     fun describe(): String {
@@ -240,9 +388,15 @@ class CarAudioStream(
         parts += if (opened.isEmpty()) {
             "no channel open"
         } else {
-            opened.joinToString { "${ChannelId.describe(it.channelId)} at ${it.format}" }
+            // Named from the advertisement, not from ChannelId: this car assigns
+            // its guidance sink the id Headway's own table calls
+            // MEDIA_SINK_VIDEO, and the log said exactly that for a whole drive.
+            opened.joinToString { "${nameFor(it.channelId)} at ${it.format}" }
         }
         parts += "$promptsPlayed prompt(s), $buffersSent buffer(s), $underflows underflow(s) seen"
+        if (mediaBytesSent > 0 || channelFor(AudioStreamType.AUDIO_STREAM_MEDIA) != null) {
+            parts += "music ${mediaBytesSent / 1024} KiB sent"
+        }
         if (refusals.isNotEmpty()) parts += "refused: ${refusals.joinToString("; ")}"
         if (untouched.isNotEmpty()) {
             parts += "left to Bluetooth: " +
@@ -285,7 +439,7 @@ class CarAudioStream(
         sessionId: Int,
         refused: MutableList<String>,
     ): Boolean {
-        val name = ChannelId.describe(channel.channelId)
+        val name = nameFor(channel.channelId)
         try {
             channel.sendSetup()
             val config = withTimeoutOrNull(SETUP_TIMEOUT_MILLIS) { channel.awaitConfig() }
@@ -403,7 +557,7 @@ class CarAudioStream(
         }
         return withFocus(channel) {
             val target = it.format ?: throw CarAudioSourceException(
-                "${ChannelId.describe(it.channelId)} has no negotiated format"
+                "${nameFor(it.channelId)} has no negotiated format"
             )
             it.streamPcm(source.render(buffer, target))
         }
@@ -604,15 +758,44 @@ class CarAudioStream(
         const val FOCUS_GRANT_TIMEOUT_MILLIS: Long = 750L
 
         /**
-         * The streams Headway drives, in bring-up order.
+         * Silence before Headway gives the car's audio back.
          *
-         * Media is absent because it belongs on A2DP, telephony because it
-         * belongs on HFP; see the class KDoc.
+         * Holding focus mutes the car's own radio, so it cannot be held
+         * indefinitely — but releasing it on the first silent buffer would
+         * hand the radio back and take it again across every track change, and
+         * a head unit switching source twice a song is worse than a short
+         * pause. Three seconds is longer than any gap between tracks and short
+         * enough that a driver who stops the music gets their radio back before
+         * they wonder why it is quiet.
+         */
+        const val MEDIA_IDLE_RELEASE_MILLIS: Long = 3_000L
+
+        /**
+         * The streams Headway always drives, in bring-up order.
+         *
+         * Telephony is absent because it belongs on Bluetooth HFP, and that is
+         * not a guess: a capture of real Android Auto against a 2021 Chevrolet
+         * Infotainment 3 unit shows Gearhead holding `STATE_HFP_CONNECTED`
+         * throughout while it explicitly tears down A2DP.
+         *
+         * Media is conditional rather than absent — see [streamsFor].
          */
         val DRIVEN_STREAMS: List<AudioStreamType> = listOf(
             AudioStreamType.AUDIO_STREAM_GUIDANCE,
             AudioStreamType.AUDIO_STREAM_SYSTEM_AUDIO,
         )
+
+        /**
+         * The streams to drive given a routing choice.
+         *
+         * Media comes first when it is driven at all. It is the stream with a
+         * continuous producer behind it, so a head unit that only honours the
+         * first `Start` it sees gets the one that matters, and a driver whose
+         * session dies during bring-up loses a prompt rather than their music.
+         */
+        fun streamsFor(mediaOverAap: Boolean): List<AudioStreamType> =
+            if (mediaOverAap) listOf(AudioStreamType.AUDIO_STREAM_MEDIA) + DRIVEN_STREAMS
+            else DRIVEN_STREAMS
 
         /**
          * Finds the head unit's audio sinks by what they contain, not by channel
@@ -658,12 +841,43 @@ class CarAudioStream(
             profile: HeadUnitProfile,
             connectionFor: (Int) -> MessageChannel,
             context: Context,
+            mediaOverAap: Boolean = true,
+            projection: MediaProjection? = null,
             onStep: (String) -> Unit = {},
         ): CarAudioStream? {
             val advertised = audioSinksOf(profile)
+
+            // Advertised sinks Headway could not even consider, which used to
+            // appear in no list at all. A head unit that offers a system-audio
+            // sink with an empty audio_configs is indistinguishable in the log
+            // from one that offers no system-audio sink -- and the two have
+            // different fixes.
+            val rejected = profile.services.filter {
+                it.hasMediaSinkService() &&
+                    it.mediaSinkService.availableType == MediaCodecType.MEDIA_CODEC_AUDIO_PCM &&
+                    advertised.none { usable -> usable.id == it.id }
+            }
+            if (rejected.isNotEmpty()) {
+                onStep(
+                    "audio: ignoring " + rejected.joinToString { service ->
+                        val sink = service.mediaSinkService
+                        "channel ${service.id} (" +
+                            (if (!sink.hasAudioType()) "no stream type" else sink.audioType.name) +
+                            ", ${sink.audioConfigsCount} format(s))"
+                    }
+                )
+            }
+
             if (advertised.isEmpty()) return null
 
-            val driven = DRIVEN_STREAMS.mapNotNull { stream ->
+            val wanted = streamsFor(mediaOverAap && projection != null)
+            if (mediaOverAap && projection == null) {
+                onStep(
+                    "audio: media is routed over AAP but there is no screen capture grant to " +
+                        "tap playback with, so music cannot be sent this session"
+                )
+            }
+            val driven = wanted.mapNotNull { stream ->
                 advertised.firstOrNull { it.mediaSinkService.audioType == stream }
             }
             // Compared by id rather than by message equality: two services can
@@ -681,10 +895,18 @@ class CarAudioStream(
                     stream = service.mediaSinkService.audioType,
                     advertisedFormats = service.mediaSinkService.audioConfigsList
                         .map(PcmFormat::from),
-                    // Headway's own speech, never third-party media, so this is
-                    // only ever the default; it is passed explicitly so the
-                    // routing decision is visible at the call site.
-                    route = MediaAudioRoute.BLUETOOTH_A2DP,
+                    // The one gate that decides whether music can be sent at
+                    // all: AudioChannel.transmits is false for MEDIA on the
+                    // A2DP route, and requireTransmitting throws out of
+                    // sendSetup. Passed explicitly so the decision is visible
+                    // where it is made.
+                    route = if (service.mediaSinkService.audioType ==
+                        AudioStreamType.AUDIO_STREAM_MEDIA
+                    ) {
+                        MediaAudioRoute.AAP_MEDIA_CHANNEL
+                    } else {
+                        MediaAudioRoute.BLUETOOTH_A2DP
+                    },
                     onStep = onStep,
                 )
             }
@@ -695,8 +917,27 @@ class CarAudioStream(
                 focus = focus,
                 phoneFocus = PhoneAudioFocus(context, focus, onStep),
                 source = CarAudioSource(context, onStep = onStep),
+                projection = projection,
+                audioManager = context.getSystemService(AudioManager::class.java),
+                names = profile.services.associate { it.id to nameOf(it) },
                 onStep = onStep,
             )
+        }
+
+        /**
+         * A channel's name taken from what the head unit advertised.
+         *
+         * [ChannelId.describe] is Headway's own numbering table, and a real car
+         * assigns its own ids — which is how a guidance sink on this Chevrolet
+         * came to be logged as `MEDIA_SINK_VIDEO`. The advertisement is the
+         * authority.
+         */
+        private fun nameOf(service: ServiceOuterClass.Service): String {
+            val sink = service.mediaSinkService
+            if (!service.hasMediaSinkService() || !sink.hasAudioType()) {
+                return "${ChannelId.describe(service.id)}?id=${service.id}"
+            }
+            return sink.audioType.name.removePrefix("AUDIO_STREAM_") + "(${service.id})"
         }
     }
 }

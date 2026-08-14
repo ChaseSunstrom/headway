@@ -72,6 +72,20 @@ class CarVideoStream(
     private var jobs: MutableList<Job> = mutableListOf()
 
     /**
+     * The geometry the head unit actually chose, once it has.
+     *
+     * Published because it is the only place the car's real size and density are
+     * known: they come from the advertised configuration the unit selected in
+     * its `Config` reply, not from anything the phone decides. The launcher
+     * sizes its touch targets from it, and so does the floating voice button —
+     * a 48 dp target on a 1344-pixel-wide phone is a smear on an 800-pixel car
+     * panel, and a driver aiming at it is not looking down.
+     */
+    @Volatile
+    var negotiated: EncoderConfiguration? = null
+        private set
+
+    /**
      * Runs the whole bring-up, then streams until [scope] is cancelled.
      *
      * @return false when the head unit refused the stream, which is a real
@@ -100,6 +114,7 @@ class CarVideoStream(
         }
 
         val encoderConfiguration = EncoderConfiguration.of(configurations[index])
+        negotiated = encoderConfiguration
         onStep(
             "video: ${encoderConfiguration.width}x${encoderConfiguration.height} at " +
                 "${encoderConfiguration.frameRate} fps, ${encoderConfiguration.densityDpi} dpi, " +

@@ -44,11 +44,22 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <!--
-      Microphone is only needed for the optional phone-mic fallback; the car mic
-      arrives over AAP and needs no Android permission at all. Declared here but
-      requested only when the user enables that fallback.
+      Microphone. Needed for two things: the optional phone-mic fallback, and
+      AudioPlaybackCapture, which is how third-party music reaches the car now
+      that A2DP is known to go silent while the head unit is projecting (ADR
+      0005). The car's own microphone arrives over AAP and needs no Android
+      permission at all.
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!--
+      The floating microphone button, so a voice session can be started from
+      inside another app rather than only from Headway's launcher. A user-granted
+      special access, in the same class as the accessibility grant — not a
+      privileged permission. Everything works without it; only the button is
+      missing.
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />

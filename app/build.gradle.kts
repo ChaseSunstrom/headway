@@ -15,9 +15,62 @@
  * Headway. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import java.security.MessageDigest
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+}
+
+// --- the bundled speech model ------------------------------------------------
+//
+// Voice has to work with no network and no setup step: CLAUDE.md requires the
+// app to "function on a phone in airplane mode", and the Definition of Done
+// wants a voice round-trip that is "fully offline". So the model ships inside
+// the APK rather than being fetched on the device.
+//
+// It is not committed. 41 MB in git history, permanently, for a file that can be
+// verified against upstream by hash is a bad trade — so it is downloaded at
+// build time and checked. The pinned SHA-256 is what makes that reproducible:
+// the download is a cache fill, the hash is the source of truth, and a build
+// whose bytes differ from the pin fails instead of silently shipping something
+// else.
+//
+// Note this is a *build-time* fetch. The runtime constraint is about the phone
+// in the car, and nothing here runs there.
+val voskModelName = "vosk-model-small-en-us-0.15"
+val voskModelSha256 = "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"
+val voskModelUrl = "https://alphacephei.com/vosk/models/$voskModelName.zip"
+
+// Outside build/, so `clean` does not cost another 41 MB download.
+val voskModelCache = layout.projectDirectory.dir("../.gradle/model-cache")
+val voskAssetsDir = layout.buildDirectory.dir("generated/vosk/assets")
+
+val fetchVoskModel by tasks.registering {
+    description = "Downloads and verifies the bundled Vosk speech model."
+    val cached = voskModelCache.file("$voskModelName.zip").asFile
+    val staged = voskAssetsDir.map { it.file("$voskModelName.zip") }
+    outputs.file(staged)
+    outputs.upToDateWhen { staged.get().asFile.exists() }
+    doLast {
+        if (!cached.exists()) {
+            cached.parentFile.mkdirs()
+            logger.lifecycle("Fetching $voskModelName (~41 MB)...")
+            uri(voskModelUrl).toURL().openStream().use { input ->
+                cached.outputStream().use { input.copyTo(it) }
+            }
+        }
+        val digest = MessageDigest.getInstance("SHA-256").digest(cached.readBytes())
+        val actual = digest.joinToString("") { byte -> "%02x".format(byte) }
+        check(actual == voskModelSha256) {
+            "speech model checksum mismatch\n  expected $voskModelSha256\n  actual   $actual\n" +
+                "Delete ${cached.absolutePath} and rebuild, or update voskModelSha256 if the " +
+                "upstream model was intentionally changed."
+        }
+        val target = staged.get().asFile
+        target.parentFile.mkdirs()
+        cached.copyTo(target, overwrite = true)
+    }
 }
 
 android {
@@ -40,6 +93,23 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "UPDATE_REPOSITORY", "\"ChaseSunstrom/headway\"")
+
+        // Vosk ships a ~9 MB libvosk.so per ABI, and minSdk 33 means AGP stores
+        // native libraries uncompressed -- so a universal APK carries 36 MB of
+        // decoder to run 9 MB of it. Filtering is not an optimisation here, it
+        // is the difference between a 62 MB and a 90 MB download.
+        //
+        // A property rather than `splits { abi { } }`: split APKs need per-ABI
+        // versionCode offsets, and versionCode is HEADWAY_BUILD_NUMBER, which
+        // the in-app updater compares. Offsetting it would break updates.
+        //
+        // CI's instrumentation job passes -Pheadway.abis=arm64-v8a,x86_64.
+        ndk {
+            abiFilters += (providers.gradleProperty("headway.abis").orNull ?: "arm64-v8a")
+                .split(",")
+                .map(String::trim)
+                .filter(String::isNotEmpty)
+        }
     }
 
     // Sign every build with the same key.
@@ -111,9 +181,22 @@ android {
     // ordering removes the two usual sources of byte-level drift between
     // machines.
     androidResources {
-        noCompress += listOf("wav")
+        // The model zip is already deflated; asking AGP to compress it again
+        // costs build time and gains nothing. Shipping it as one opaque archive
+        // rather than 68 MB of loose assets is also what keeps it to a single
+        // checksum and a single atomic unpack on the device.
+        noCompress += listOf("wav", "zip")
+    }
+
+    sourceSets.named("main") {
+        assets.srcDir(voskAssetsDir)
     }
 }
+
+// The assets have to exist before AGP merges them, and merge tasks are created
+// per variant, so this hooks every one rather than guessing at names.
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
+    .configureEach { dependsOn(fetchVoskModel) }
 
 dependencies {
     implementation(project(":core-protocol"))
@@ -127,6 +210,15 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.lifecycle.service)
     implementation(libs.coroutines.android)
+
+    // The speech decoder. :core-voice declares the desktop jar `compileOnly` so
+    // it can stay a pure-JVM module and its acceptance test can run on the
+    // build machine; this is the Android build of the same library, exporting
+    // the same `org.vosk` classes, and it is what makes VoskSpeechRecognizer
+    // resolvable at runtime on a phone. Without it the reflective load in
+    // CarVoiceStream fails and voice degrades to "no on-device speech model",
+    // which is exactly what a real drive reported.
+    implementation(libs.vosk.android)
 
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.ext.junit)

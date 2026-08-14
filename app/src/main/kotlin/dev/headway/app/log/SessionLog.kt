@@ -286,7 +286,19 @@ class SessionLog(
 
     companion object {
         private const val TAG_TLS = "tls"
-        const val DEFAULT_CAPACITY: Int = 4_000
+        /**
+         * Lines kept before the oldest is evicted.
+         *
+         * Was 4 000, which a real drive blew through in **forty seconds** —
+         * the export arrived holding 1827 fewer lines than the session had
+         * produced, and the ones it dropped were the Bluetooth handshake, the
+         * Wi-Fi join and the TLS exchange, which is the entire reason anyone
+         * reads this file. Per-frame summarisation in `HeadwayService` is the
+         * real fix; this is the headroom that makes a half-hour drive fit
+         * afterwards. At roughly 150 bytes an entry it costs about 1.8 MB,
+         * which is cheap next to the video encoder already running.
+         */
+        const val DEFAULT_CAPACITY: Int = 12_000
         const val DIRECTORY: String = "logs"
 
         /** Below this a "secret" is too generic to scrub without destroying the log. */

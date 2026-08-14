@@ -30,6 +30,7 @@ import android.bluetooth.BluetoothDevice
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -51,8 +52,10 @@ import dev.headway.protocol.control.ControlMessageType
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.framing.MessageFragmenter
 import dev.headway.app.video.CarVideoStream
+import dev.headway.app.ui.CarLauncherActivity
 import dev.headway.app.voice.CarVoiceStream
 import dev.headway.app.voice.PhoneMediaControl
+import dev.headway.app.voice.VoiceOverlay
 import dev.headway.protocol.io.ChannelDemultiplexer
 import dev.headway.protocol.io.FramedConnection
 import dev.headway.protocol.io.MessageChannel
@@ -60,6 +63,7 @@ import dev.headway.protocol.session.AapSession
 import dev.headway.protocol.session.AuthenticationRejectedException
 import dev.headway.protocol.session.HeadUnitProfile
 import dev.headway.protocol.session.PhoneIdentity
+import dev.headway.video.EncoderConfiguration
 import dev.headway.transport.LinkState
 import dev.headway.transport.SessionSupervisor
 import dev.headway.transport.TcpTransport
@@ -77,6 +81,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Marks a failure that happened while joining the car's access point.
@@ -599,6 +604,10 @@ open class HeadwayService : Service() {
         // unit needs X to connect at all" override has to live, since the user
         // cannot get far enough to learn the unit's identity.
         val quirks = QuirkStore.inAppStorage(this).quirksFor(HeadUnitIdentity())
+        // Published for runChannels, which is a separate entry point and cannot
+        // see this local. Audio routing is a quirk, and getting it wrong is the
+        // difference between music and silence.
+        sessionQuirks = quirks
         if (quirks != HeadUnitQuirks.DEFAULT) {
             step("applying head unit quirks: ${quirks.describe()}")
         }
@@ -1004,11 +1013,30 @@ open class HeadwayService : Service() {
         // Built before the pump starts, so every view is registered first --
         // the demultiplexer's documented contract, and the reason these are
         // constructed here rather than inside the try below.
-        val audio = CarAudioStream.of(profile, connectionFor, applicationContext, ::step)
+        val audio = CarAudioStream.of(
+            profile = profile,
+            connectionFor = connectionFor,
+            context = applicationContext,
+            // The car goes silent on Bluetooth while it is projecting, so
+            // "leave media to A2DP" means no music at all. See ADR 0005.
+            mediaOverAap = sessionQuirks.mediaAudioOverAap,
+            projection = projection,
+            onStep = ::step,
+        )
         if (audio == null) {
             step("the head unit advertised no PCM audio sink, so Headway cannot speak in the car")
         }
-        val input = CarInputStream.of(profile, connectionFor, applicationContext, ::step)
+        // Set once voice exists. Input is built first because the voice stream
+        // does not depend on it, and this closes the loop without an ordering
+        // trap: the key cannot arrive before the channels are pumping anyway.
+        var startListening: () -> Unit = {}
+        val input = CarInputStream.of(
+            profile = profile,
+            connectionFor = connectionFor,
+            context = applicationContext,
+            onVoiceKey = { startListening() },
+            onStep = ::step,
+        )
         if (input == null) {
             step("the head unit advertised no touchscreen, so car touches will not be injected")
         }
@@ -1018,11 +1046,22 @@ open class HeadwayService : Service() {
             context = applicationContext,
             // Media and volume are the phone's to carry out; launching an app
             // and going home are the default executor's.
-            onCommand = voiceExecutor(),
+            onCommand = voiceExecutor(this, audio),
             onStep = ::step,
         )
         if (voice == null) {
             step("the head unit advertised no microphone, so voice is unavailable this session")
+        } else {
+            startListening = { voice.requestListening() }
+        }
+
+        // The two ways a driver can start talking to Headway from inside
+        // another app. The launcher's own Voice button covers only Headway's
+        // own screen, which is not where anyone is when they want it.
+        // Constructed here, shown after video negotiates: its size depends on
+        // the geometry the head unit chooses, which is not known until then.
+        val overlay = voice?.let {
+            VoiceOverlay(applicationContext, onPressed = { it.requestListening() }, onStep = ::step)
         }
 
         val pump = launch { demux.pump() }
@@ -1051,6 +1090,8 @@ open class HeadwayService : Service() {
             // Video is started first and inline; see the KDoc. The other three
             // return as soon as they have launched their own coroutines.
             video?.start(this)
+            showCarLauncher(video?.negotiated)
+            overlay?.show(voiceButtonSizePx(video?.negotiated))
             audio?.start(this)
             input?.start(this)
             voice?.start(this)
@@ -1064,6 +1105,7 @@ open class HeadwayService : Service() {
             audio?.let { runCatching { step(it.describe()) } }
             input?.let { runCatching { step(it.describe()) } }
             voice?.let { runCatching { step(it.describe()) } }
+            runCatching { overlay?.hide() }
             runCatching { video?.stop() }
             runCatching { audio?.stop() }
             runCatching { input?.stop() }
@@ -1086,13 +1128,95 @@ open class HeadwayService : Service() {
      * that Headway injects input but never reads the screen. Honouring that
      * promise costs dictation into third-party apps. Tracked in `BLOCKERS.md`.
      */
-    private fun voiceExecutor(): (VoiceCommand) -> Unit {
+    /**
+     * Puts Headway's launcher on the car screen when the session comes up.
+     *
+     * CLAUDE.md says the launcher is "the default cast content", and it was
+     * nothing of the kind: the only code that built its intent was the `GoHome`
+     * voice command, which needs the launcher's own Voice button to reach, which
+     * needs the launcher to be on screen. Nothing ever started it, so a real
+     * drive mirrored the phone's home screen and the log recorded zero
+     * utterances and zero touches — with nothing on the car screen worth
+     * touching, that is exactly what it should have recorded.
+     *
+     * The geometry comes from the configuration the head unit chose, which is
+     * what `carMinimumTargetPx` was written to consume and what nothing had ever
+     * passed it.
+     */
+    private fun showCarLauncher(configuration: EncoderConfiguration?) {
+        val intent = CarLauncherActivity.intent(
+            context = this,
+            carWidth = configuration?.width ?: 0,
+            carHeight = configuration?.height ?: 0,
+            carDensityDpi = configuration?.densityDpi ?: 0,
+        )
+        runCatching { startActivity(intent) }
+            .onSuccess { step("car launcher shown on the mirrored screen") }
+            .onFailure { step("could not show the car launcher: $it") }
+    }
+
+    /**
+     * How large the floating microphone button has to be to be hittable.
+     *
+     * The car rescales the mirrored phone display down to its own panel, so a
+     * button sized in phone pixels shrinks by that ratio before a finger ever
+     * reaches it. This inverts the scale: 48 dp at the *car's* density, divided
+     * by the projection ratio, then doubled — CLAUDE.md says to assume imprecise
+     * touches, and this one is pressed without looking.
+     */
+    private fun voiceButtonSizePx(configuration: EncoderConfiguration? = null): Int {
+        val density = resources.displayMetrics.density
+        val phoneMinimum = (MIN_TOUCH_TARGET_DP * density).toInt()
+        val carWidth = configuration?.width ?: 0
+        val carHeight = configuration?.height ?: 0
+        val carDpi = configuration?.densityDpi ?: 0
+        if (carWidth <= 0 || carHeight <= 0 || carDpi <= 0) return phoneMinimum * 2
+
+        val phoneWidth = resources.displayMetrics.widthPixels.toDouble()
+        val phoneHeight = resources.displayMetrics.heightPixels.toDouble()
+        val scale = minOf(carWidth / phoneWidth, carHeight / phoneHeight)
+        if (scale <= 0.0) return phoneMinimum * 2
+
+        val carTargetPx = MIN_TOUCH_TARGET_DP * carDpi / 160.0
+        return maxOf(phoneMinimum, (carTargetPx / scale).toInt()) * 2
+    }
+
+    private fun voiceExecutor(
+        scope: CoroutineScope,
+        audio: CarAudioStream?,
+    ): (VoiceCommand) -> Unit {
         val media = PhoneMediaControl(applicationContext, ::step)
         val fallback = CarVoiceStream.defaultExecutor(applicationContext, ::step)
+
+        // Spoken back over the car's guidance channel, which is the whole point
+        // of having one. Launched rather than awaited: the command should happen
+        // now, and the acknowledgement is allowed to arrive a moment later.
+        // Failure is logged by CarAudioStream and never reaches the driver as
+        // anything worse than silence.
+        fun say(text: String) {
+            val stream = audio ?: return
+            if (!stream.canSpeak) return
+            scope.launch { runCatching { stream.speak(text) } }
+        }
+
         return { command ->
             when (command) {
-                is VoiceCommand.Media -> media.perform(command.action)
+                is VoiceCommand.Media -> {
+                    media.perform(command.action)
+                    // Deliberately terse. A driver who said "pause" wants to
+                    // know it landed, not to sit through a sentence.
+                    say(command.action.name.lowercase().replace('_', ' '))
+                }
+
                 is VoiceCommand.Volume -> media.adjust(command.direction, command.steps)
+
+                is VoiceCommand.LaunchApp -> {
+                    fallback(command)
+                    if (command.packageName == null) say("I could not find ${command.query}")
+                }
+
+                is VoiceCommand.Unrecognised -> say("Sorry, I did not catch that")
+
                 else -> fallback(command)
             }
         }
@@ -1290,6 +1414,10 @@ open class HeadwayService : Service() {
     @Volatile
     private var channelNames: Map<Int, String> = emptyMap()
 
+    /** The quirks in force for the current session; see where it is set. */
+    @Volatile
+    private var sessionQuirks: HeadUnitQuirks = HeadUnitQuirks.DEFAULT
+
     /**
      * Channels logged as a byte count rather than as hex, for the same reason
      * and with the same fix.
@@ -1361,11 +1489,67 @@ open class HeadwayService : Service() {
             if (header.encrypted) append("|ENC")
         }
         if (header.channelId in highRateChannels) {
-            step("$arrow $channel [$flags] ${payload.size} bytes")
+            summariseFrame(arrow, channel, flags, payload.size)
             return
         }
         step("$arrow $channel [$flags] ${hex(payload)}")
     }
+
+    /**
+     * Collapses a media stream into a handful of lines instead of thousands.
+     *
+     * A real drive produced 1944 video lines in forty seconds and evicted 1827
+     * older ones — the entire Bluetooth handshake, Wi-Fi join, TLS exchange and
+     * channel bring-up — from a log whose only purpose is to explain why those
+     * steps went wrong. Per-frame lines are worth almost nothing individually
+     * and cost everything collectively.
+     *
+     * So the first few frames on a stream are logged (that is where a wrong
+     * codec config or an absent first keyframe shows up), and after that the
+     * stream is reported as a rate, once every few seconds. The counts are
+     * cumulative and the byte total is real, so a stalled or starved stream is
+     * still visible — as a summary line whose numbers stop moving.
+     */
+    private fun summariseFrame(arrow: String, channel: String, flags: String, bytes: Int) {
+        val key = "$arrow $channel"
+        val state = frameLogStates.getOrPut(key) { FrameLogState() }
+        val now = SystemClock.elapsedRealtime()
+        val seen: Long
+        val total: Long
+        val sinceLast: Long
+        val elapsed: Long
+        synchronized(state) {
+            state.frames++
+            state.bytes += bytes
+            seen = state.frames
+            total = state.bytes
+            if (seen <= FRAMES_LOGGED_IN_FULL) {
+                step("$arrow $channel [$flags] $bytes bytes (frame $seen)")
+                if (state.lastSummaryAt == 0L) state.lastSummaryAt = now
+                return
+            }
+            elapsed = now - state.lastSummaryAt
+            if (elapsed < FRAME_SUMMARY_INTERVAL_MILLIS) return
+            sinceLast = seen - state.framesAtLastSummary
+            state.lastSummaryAt = now
+            state.framesAtLastSummary = seen
+        }
+        val fps = if (elapsed > 0) sinceLast * 1000.0 / elapsed else 0.0
+        step(
+            "$arrow $channel [$flags] %,d frame(s) total, %,d KiB; %.1f/s over the last %.1f s"
+                .format(seen, total / 1024, fps, elapsed / 1000.0)
+        )
+    }
+
+    /** Per-direction, per-channel state for [summariseFrame]. */
+    private class FrameLogState {
+        var frames: Long = 0L
+        var bytes: Long = 0L
+        var framesAtLastSummary: Long = 0L
+        var lastSummaryAt: Long = 0L
+    }
+
+    private val frameLogStates = ConcurrentHashMap<String, FrameLogState>()
 
     private fun step(message: String) {
         // Into the exportable log, not only logcat. MainActivity tells the user
@@ -1471,6 +1655,25 @@ open class HeadwayService : Service() {
             ChannelId.MEDIA_SINK_SYSTEM_AUDIO.id,
             ChannelId.MEDIA_SOURCE_MICROPHONE.id,
         )
+
+        /**
+         * Frames logged individually before a stream collapses to summaries.
+         *
+         * Three, because the interesting ones are at the start: the codec
+         * config, the first keyframe, and one ordinary frame to show the
+         * steady-state size. Everything after that is the same line again.
+         */
+        private const val FRAMES_LOGGED_IN_FULL = 3
+
+        /** How often a running stream reports itself. */
+        private const val FRAME_SUMMARY_INTERVAL_MILLIS = 5_000L
+
+        /**
+         * The platform's minimum touch target, and CLAUDE.md's floor for the
+         * car surfaces. Duplicated from `CarLauncherActivity` rather than shared
+         * because both are leaf definitions of the same platform constant.
+         */
+        private const val MIN_TOUCH_TARGET_DP = 48.0
 
         /** Same 64-byte truncation the RFCOMM logger uses, for the same reason. */
         internal fun hex(bytes: ByteArray, limit: Int = 64): String {
