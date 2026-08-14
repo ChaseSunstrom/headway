@@ -162,9 +162,29 @@ object OverlayDisplay {
             onStep("car app display: $packageName has nothing to launch")
             return false
         }
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (displayId != Display.DEFAULT_DISPLAY) {
+            // On a secondary display, an app already open on the phone would
+            // otherwise be brought forward *there* instead, which from the car
+            // looks exactly like the launch being ignored.
+            intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        } else {
+            // On the phone's own display it is the opposite: MULTIPLE_TASK makes
+            // a second copy of the app every time the driver taps it, so a drive
+            // ends with a stack of Maps instances and none of them where they
+            // left off. Returning to what they last saw is the whole point.
+            intent.addFlags(Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+        }
         val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
-        val started = runCatching { context.startActivity(intent, options.toBundle()) }
+        // The application context on purpose. A caller inside the car screen
+        // holds a *display context* for the car display, and since Android 10 an
+        // activity started from one inherits that display -- which
+        // ActivityTaskSupervisor then refuses, because no third-party app
+        // declares android:allowEmbedded. The explicit launch display id should
+        // win, and starting from a context with no display of its own means it
+        // does not have to.
+        val launcher = context.applicationContext
+        val started = runCatching { launcher.startActivity(intent, options.toBundle()) }
         started.exceptionOrNull()?.let { error ->
             SessionLog.shared.warn(TAG, "could not launch $packageName on #$displayId: $error")
             onStep("car app display: $packageName would not open on the car display ($error)")
