@@ -655,6 +655,10 @@ open class HeadwayService : Service() {
         val car = resolveCar(adapter)
         Log.i(TAG, "connecting to ${car.address}")
 
+        // Before anything can fail because of it. A VPN produces a timeout with
+        // no cause attached, three steps later.
+        CarWifiNetwork.vpnAdvice(this@HeadwayService)?.let(::step)
+
         // Resolved before the link, because two of these knobs shape the Wi-Fi
         // association and one shapes the Bluetooth exchange itself. Identity is
         // unknown until service discovery, so this yields the catch-all profile
@@ -1316,21 +1320,21 @@ open class HeadwayService : Service() {
         if (!HeadwaySettings.of(this).getBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, false)) {
             return
         }
-        // Not while apps are rendering from the phone's own screen. The blackout
-        // is a window *on display 0*, so a capture of display 0 captures the
-        // blackout -- the app pane would show a perfectly black rectangle and
-        // every diagnostic would say the picture was arriving. Two settings that
-        // cannot both be honoured, and this is the one whose purpose (hide the
-        // simulated display's preview) does not apply when there is no simulated
-        // display.
-        if (!CarAppDisplay.native) {
-            step(
-                "\"blank the phone screen\" is on, but apps are rendering from the phone's own " +
-                    "screen this session -- covering it would black out the app pane, so it is " +
-                    "left alone",
-            )
-            return
-        }
+        // Compatible with single-app sharing, and not with whole-display
+        // sharing. The blackout is a window on display 0: a capture of the
+        // *display* captures it, and the app pane would show a perfectly black
+        // rectangle while every diagnostic reported frames arriving. A capture
+        // of a single *app* does not -- Android excludes "the status bar,
+        // navigation bar, notifications, and other system UI elements" from app
+        // screen sharing, and an accessibility overlay is none of the app's
+        // window either.
+        //
+        // That distinction is what makes a dark phone possible at all: the
+        // screen has to stay on for the shared app to keep drawing, so the best
+        // available is a screen that is on and black. Headway cannot tell which
+        // kind of sharing the driver chose, so it defers to them: the setting is
+        // off by default and its description says it belongs with single-app
+        // sharing.
         val service = HeadwayAccessibilityService.instance.value
         if (service == null) {
             step(

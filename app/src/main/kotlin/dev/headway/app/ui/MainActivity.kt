@@ -50,6 +50,7 @@ import dev.headway.app.dash.tiles.NowPlayingTile
 import dev.headway.app.diag.SelfTest
 import dev.headway.app.input.HeadwayAccessibilityService
 import dev.headway.app.link.CarCompanion
+import dev.headway.app.link.CarWifiNetwork
 import dev.headway.app.log.SessionLog
 import dev.headway.app.quirks.QuirkStore
 import dev.headway.app.service.HeadwayService
@@ -111,6 +112,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var autoConnectSwitch: SwitchCompat
     private var themeValue: android.widget.TextView? = null
     private var allowedAppsSummary: android.widget.TextView? = null
+    private var vpnCard: android.view.ViewGroup? = null
     private lateinit var updateValue: TextView
     private lateinit var certificateValue: TextView
     private lateinit var carWifiValue: TextView
@@ -429,6 +431,7 @@ class MainActivity : AppCompatActivity() {
         column.addView(buildChecklist())
         column.addView(Phone.sectionLabel(this, "The car"))
         column.addView(buildCarScreenCard())
+        column.addView(buildVpnCard())
         column.addView(buildAllowedAppsCard())
         column.addView(buildAppDisplayCard())
         column.addView(TabsCard(this) { }.also { tabsCard = it }.view)
@@ -835,6 +838,28 @@ class MainActivity : AppCompatActivity() {
      * by a coordinate stream from hardware Headway does not control. That is a
      * decision worth making once per app, parked, on a screen big enough to read.
      */
+    /**
+     * Shown only when a VPN is up, because otherwise it is noise.
+     *
+     * A VPN is the one thing that breaks the link with no symptom that names it:
+     * Bluetooth completes, the Wi-Fi join completes, and the TCP connect times
+     * out. Saying so here, before the drive, is worth a whole card.
+     */
+    private fun buildVpnCard(): View {
+        val card = Phone.card(this, "A VPN is running")
+        vpnCard = card
+        card.addView(Phone.body(this, CarWifiNetwork.vpnAdvice(this).orEmpty()))
+        card.visibility = if (CarWifiNetwork.vpnAdvice(this) == null) View.GONE else View.VISIBLE
+        return card
+    }
+
+    private fun refreshVpnCard() {
+        val advice = CarWifiNetwork.vpnAdvice(this)
+        vpnCard?.let { card ->
+            card.visibility = if (advice == null) View.GONE else View.VISIBLE
+        }
+    }
+
     private fun buildAllowedAppsCard(): View {
         val card = Phone.card(this, "Apps allowed on the car screen")
         card.addView(
@@ -1370,6 +1395,7 @@ class MainActivity : AppCompatActivity() {
      * the right Settings page, which is what the rows' buttons do.
      */
     private fun refreshGrants() {
+        refreshVpnCard()
         val notifications = NowPlayingTile.notificationAccessGranted(this)
         notificationStatus.set(
             if (notifications) Phone.Level.GOOD else Phone.Level.WARN,

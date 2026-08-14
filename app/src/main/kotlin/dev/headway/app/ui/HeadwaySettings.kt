@@ -90,6 +90,13 @@ object HeadwaySettings {
      *
      * Default off because it covers the status bar too, and a black screen the
      * driver did not ask for looks exactly like a phone that has crashed.
+     *
+     * Turn it on **with single-app sharing**, where it is the closest thing to a
+     * phone that is off: the screen has to stay lit for the shared app to keep
+     * drawing, and this makes it black to look at without touching what is
+     * captured, because app screen sharing excludes system UI. With
+     * whole-display sharing it blacks out the car screen too, which is why it is
+     * a choice and not a default.
      */
     const val KEY_BLANK_PHONE_SCREEN: String = "blank_phone_screen"
 

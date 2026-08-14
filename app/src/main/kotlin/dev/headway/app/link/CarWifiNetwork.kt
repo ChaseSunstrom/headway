@@ -1110,6 +1110,18 @@ class CarWifiNetwork(
                 socket.connect(InetSocketAddress(address, port), connectTimeoutMillis)
             } catch (e: Throwable) {
                 runCatching { socket.close() }
+                // The one failure whose cause is never in the exception. A
+                // socket bound to the car's network that cannot reach an address
+                // on that network, while a VPN is up, is a VPN in lockdown mode
+                // dropping it -- and the timeout says nothing at all.
+                vpnAdvice(appContext)?.let { advice ->
+                    onStep("could not reach the head unit at $host:$port. $advice")
+                    throw CarWifiException(
+                        "could not reach the head unit at $host:$port while a VPN is active. " +
+                            "$advice",
+                        e,
+                    )
+                }
                 throw e
             }
             socket
@@ -1514,6 +1526,39 @@ class CarWifiNetwork(
          * addresses rather than obtaining them" — the car DHCPs the phone, so it
          * does not apply.
          */
+        /**
+         * A line about the VPN, when one is up, or null.
+         *
+         * Static so the setup screen can say it *before* a drive rather than
+         * leaving the driver to find it in an exported log afterwards. A VPN is
+         * invisible in every other symptom: Bluetooth completes, the Wi-Fi join
+         * completes, and then the TCP connect times out with nothing anywhere
+         * naming the cause. A driver comparing against Android Auto has no
+         * reason to suspect it — Google's app is a privileged system component
+         * and the platform exempts it.
+         *
+         * Headway binds its own sockets and its whole process to the car's
+         * network, which is enough for an ordinary VPN. It is not enough for one
+         * in lockdown ("Block connections without VPN"), where netd drops
+         * non-VPN traffic for every app that is not exempt, and no unprivileged
+         * API exempts one: `CONNECTIVITY_USE_RESTRICTED_NETWORKS` is
+         * `signature|privileged`. That case needs the driver, so it asks them.
+         */
+        fun vpnAdvice(context: Context): String? {
+            val manager = context.getSystemService(ConnectivityManager::class.java) ?: return null
+            val active = runCatching { manager.allNetworks }.getOrNull() ?: return null
+            val up = active.any { candidate ->
+                runCatching { manager.getNetworkCapabilities(candidate) }.getOrNull()
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            }
+            if (!up) return null
+            return "A VPN is running. Headway binds itself to the car's network, which is " +
+                "normally enough. If the car never finishes connecting, the VPN is set to " +
+                "block connections that do not go through it: turn off \"Block connections " +
+                "without VPN\" for it, or add Headway to its excluded apps. Android gives no " +
+                "unprivileged way around that setting."
+        }
+
         fun buildRequest(spec: Spec, maxPreferredChannels: Int = 0): NetworkRequest =
             NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
