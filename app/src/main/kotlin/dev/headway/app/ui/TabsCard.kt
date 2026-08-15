@@ -30,6 +30,7 @@ import androidx.appcompat.app.AlertDialog
 import dev.headway.app.carapp.TemplateApps
 import dev.headway.app.dash.DashLayoutStore
 import dev.headway.app.dash.tiles.MapsTile
+import dev.headway.app.media.MediaApps
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.ui.theme.Phone
 import dev.headway.dash.DashLayout
@@ -89,6 +90,7 @@ internal class TabsCard(
             Phone.button(activity, "Add a layout") { addTab() },
         )
         addView(mapAppRow())
+        addView(mediaAppRow())
         addView(
             Phone.disclosure(
                 activity,
@@ -386,6 +388,68 @@ internal class TabsCard(
                     HeadwaySettings.of(activity).edit()
                         .putString(HeadwaySettings.KEY_MAP_APP, apps[which].first)
                         .apply()
+                    paint()
+                    dialog.dismiss()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+        paint()
+        return row.view
+    }
+
+    /**
+     * Which music app the Music and podcasts panel opens straight into.
+     *
+     * The Map app row's twin, and here for the same reasons: chosen once, from
+     * a list that can be long, and the panel wants the answer before it can
+     * show anything but a list.
+     *
+     * Unlike the map row this one offers **No default** as a first entry,
+     * because "open on the list of apps" is a legitimate preference for
+     * somebody with several players and there has to be a way back to it. The
+     * car screen sets this implicitly -- opening an app in the panel remembers
+     * it -- so without an explicit way to clear it a driver could never undo a
+     * tap.
+     */
+    private fun mediaAppRow(): View {
+        val row = Phone.StatusRow(activity, "Music app")
+        fun paint() {
+            val chosen = HeadwaySettings.mediaApp(activity)
+            val apps = MediaApps.installed(activity)
+            val label = apps.firstOrNull { it.packageName == chosen }?.label
+            row.set(
+                when {
+                    apps.isEmpty() -> Phone.Level.WARN
+                    label != null -> Phone.Level.GOOD
+                    else -> Phone.Level.IDLE
+                },
+                when {
+                    apps.isEmpty() -> "No app on this phone publishes a music library."
+                    label != null -> label
+                    // Says what will happen rather than what is missing: opening
+                    // on the list is a working state, not a gap.
+                    else -> "No default; the panel opens on the list of ${apps.size} app(s)"
+                },
+            )
+        }
+        row.withAction("Choose") {
+            val apps = MediaApps.installed(activity)
+            if (apps.isEmpty()) {
+                toast("No app on this phone publishes a music library")
+                return@withAction
+            }
+            val chosen = HeadwaySettings.mediaApp(activity)
+            val labels = listOf("No default — open on the app list") + apps.map { it.label }
+            val selected = apps.indexOfFirst { it.packageName == chosen }
+                .let { if (it < 0) 0 else it + 1 }
+            AlertDialog.Builder(activity)
+                .setTitle("Music app")
+                .setSingleChoiceItems(labels.toTypedArray(), selected) { dialog, which ->
+                    HeadwaySettings.setMediaApp(
+                        activity,
+                        if (which == 0) null else apps[which - 1].packageName,
+                    )
                     paint()
                     dialog.dismiss()
                 }

@@ -71,6 +71,21 @@ object HeadwaySettings {
     const val KEY_MAP_APP: String = "map_app"
 
     /**
+     * The music app the Music and podcasts panel opens straight into.
+     *
+     * Unset means the panel opens on its list of apps, which is the right
+     * default for somebody who has several and the wrong one for somebody who
+     * always uses the same player. The same reasoning as [KEY_MAP_APP], which
+     * this deliberately mirrors -- a driver who asked for one asked for the
+     * other in the same breath.
+     *
+     * A package name rather than a browse-service component, because the
+     * component can change with an update while the package does not, and
+     * `MediaApps.installed` resolves the current one anyway.
+     */
+    const val KEY_MEDIA_APP: String = "media_app"
+
+    /**
      * Whether a third-party app should render on a simulated secondary display
      * rather than be mirrored from the phone's screen.
      *
@@ -249,6 +264,20 @@ object HeadwaySettings {
     /** Whether [packageName] may be put on the car screen at all. */
     fun allowsApp(context: Context, packageName: String?): Boolean =
         AllowedApps.allows(allowedApps(context), packageName)
+
+    /** The chosen music app's package, or null to open on the app list. */
+    fun mediaApp(context: Context): String? =
+        runCatching { of(context).getString(KEY_MEDIA_APP, null) }.getOrNull()
+            ?.takeIf { it.isNotBlank() }
+
+    fun setMediaApp(context: Context, packageName: String?) {
+        runCatching {
+            of(context).edit().apply {
+                if (packageName.isNullOrBlank()) remove(KEY_MEDIA_APP)
+                else putString(KEY_MEDIA_APP, packageName)
+            }.apply()
+        }
+    }
 
     fun appPaneFill(context: Context): Boolean =
         of(context).getBoolean(KEY_APP_PANE_FILL, false)

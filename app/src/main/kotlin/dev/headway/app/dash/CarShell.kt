@@ -337,13 +337,13 @@ class CarShell(
         val pane = liveAppPane
         if (pane == null) {
             val appLayout = tabs.firstOrNull { it.leaves().any { leaf -> PaneKind.isApp(leaf.kind) } }
-            if (appLayout != null && appLayout.name != layout.name) {
-                show(appLayout)
-            } else if (appLayout == null) {
-                onStep("no layout has an app pane, so $packageName has nowhere to open")
-                showVoiceMessage("No layout has an App panel to open it in")
+                ?: makeAppLayout()
+            if (appLayout == null) {
+                onStep("no layout has an app pane and one could not be made for $packageName")
+                showVoiceMessage("Could not make a panel to open it in")
                 return
             }
+            if (appLayout.name != layout.name) show(appLayout)
         }
         val opened = OverlayDisplay.launch(context, packageName, CarAppDisplay.displayId, onStep)
         // Every branch out of here now says something on the *car* screen. It
@@ -365,6 +365,37 @@ class CarShell(
         // The pane may only have been created a moment ago by show(); binding
         // happens when its surface arrives, so nothing more is needed here.
         main.post { publishAppPaneRect() }
+    }
+
+    /**
+     * The full-screen App layout, made on demand when no layout has an app pane.
+     *
+     * `DashLayoutStore.APP_LAYOUT_NAME` has always been documented as "the
+     * layout an app opens into when the one on screen has no app pane", and it
+     * ships in `DEFAULT_TABS` -- but a driver who edits their layouts replaces
+     * that whole set, and nothing put it back. Tapping a pinned app then hit a
+     * refusal instead of the thing the constant exists to guarantee, which a
+     * driver reported as the rail saying "no app pane to open this in" rather
+     * than opening the app.
+     *
+     * Making it is better than refusing, and better than converting a pane the
+     * driver is looking at: it is one pane holding the app, which is what
+     * "full screen" means here, and it can be renamed, re-split or unpinned
+     * like any other layout.
+     *
+     * @return the layout, or null when it could not be saved -- in which case
+     *   the caller has something to say rather than a silent failure.
+     */
+    private fun makeAppLayout(): DashLayout? {
+        val made = DashLayout(
+            name = DashLayoutStore.APP_LAYOUT_NAME,
+            root = DashNode.Leaf(PaneKind.APP),
+        )
+        val saved = runCatching { store.save(made) }.isSuccess
+        if (!saved) return null
+        onStep("no layout had an app pane, so the '${made.name}' layout was created")
+        tabs = runCatching { store.list() }.getOrDefault(tabs + made)
+        return tabs.firstOrNull { it.name == made.name } ?: made
     }
 
     /** Back to the layout a session opens on. Bound to the voice "go home" command. */

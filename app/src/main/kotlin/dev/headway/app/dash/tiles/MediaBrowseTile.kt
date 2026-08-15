@@ -34,6 +34,7 @@ import dev.headway.app.media.BrowseState
 import dev.headway.app.media.CarMediaBrowser
 import dev.headway.app.media.MediaApp
 import dev.headway.app.media.MediaApps
+import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
 import dev.headway.dash.PaneKind
 
@@ -144,8 +145,23 @@ class MediaBrowseTile(
         // Re-read on every start rather than once: an app installed mid-drive
         // should appear, and the query is one cheap PackageManager call.
         apps = MediaApps.installed(appContext)
-        // Always the app list: stop() closes and nulls the session, so there is
-        // never one to resume. The branch that pretended otherwise was dead.
+        // The driver's chosen player, if they have one and it is still
+        // installed. A panel that opens on a list of one app every drive is a
+        // tap nobody wanted; the same reasoning as the Maps panel's own app
+        // setting, which a driver asked to have here too.
+        //
+        // Falls through to the list when nothing is chosen, when the chosen
+        // package has been uninstalled, or when it no longer publishes a
+        // library -- all three of which look identical from here and all three
+        // of which the list answers.
+        val preferred = HeadwaySettings.mediaApp(appContext)
+            ?.let { wanted -> apps.firstOrNull { it.packageName == wanted } }
+        if (preferred != null) {
+            openApp(preferred)
+            return
+        }
+        // Otherwise the app list: stop() closes and nulls the session, so there
+        // is never one to resume. The branch that pretended otherwise was dead.
         renderApps()
     }
 
@@ -171,6 +187,13 @@ class MediaBrowseTile(
     // --- navigation ------------------------------------------------------------
 
     private fun openApp(app: MediaApp) {
+        // Remembered on every open, including the driver picking from the list.
+        // Choosing an app in a picker *is* the act of setting a default; making
+        // them say it twice, once here and once in a settings screen on the
+        // phone, would be the kind of ceremony this pane exists to avoid. The
+        // phone's *Music app* row is where it is changed deliberately, and
+        // where "no default" can be chosen again.
+        runCatching { HeadwaySettings.setMediaApp(appContext, app.packageName) }
         session?.close()
         val next = CarMediaBrowser(appContext, app, onStep)
         session = next
