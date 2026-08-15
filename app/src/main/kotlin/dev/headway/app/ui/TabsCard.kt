@@ -33,6 +33,7 @@ import dev.headway.app.dash.tiles.MapsTile
 import dev.headway.app.media.MediaApps
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.ui.theme.Phone
+import dev.headway.dash.AllowedApps
 import dev.headway.dash.DashLayout
 import dev.headway.dash.DashNode
 import dev.headway.dash.PaneKind
@@ -446,10 +447,19 @@ internal class TabsCard(
             AlertDialog.Builder(activity)
                 .setTitle("Music app")
                 .setSingleChoiceItems(labels.toTypedArray(), selected) { dialog, which ->
-                    HeadwaySettings.setMediaApp(
-                        activity,
-                        if (which == 0) null else apps[which - 1].packageName,
-                    )
+                    val picked = if (which == 0) null else apps[which - 1]
+                    HeadwaySettings.setMediaApp(activity, picked?.packageName)
+                    // Allowed by the same act. The Music panel lists only apps
+                    // the driver has allowed, so a default chosen here and not
+                    // allowed would be a setting that names an app the panel
+                    // then refuses to open -- a contradiction the driver has no
+                    // way to see, let alone resolve.
+                    picked?.let { app ->
+                        HeadwaySettings.setAllowedApps(
+                            activity,
+                            AllowedApps.allow(HeadwaySettings.allowedApps(activity), app.packageName),
+                        )
+                    }
                     paint()
                     dialog.dismiss()
                 }

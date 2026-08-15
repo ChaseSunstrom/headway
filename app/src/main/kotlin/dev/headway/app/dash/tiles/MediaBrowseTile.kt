@@ -29,6 +29,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import dev.headway.app.dash.CarShell
 import dev.headway.app.dash.DashTile
 import dev.headway.app.media.BrowseState
 import dev.headway.app.media.CarMediaBrowser
@@ -36,6 +37,7 @@ import dev.headway.app.media.MediaApp
 import dev.headway.app.media.MediaApps
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
+import dev.headway.dash.AllowedApps
 import dev.headway.dash.PaneKind
 
 /**
@@ -106,6 +108,9 @@ class MediaBrowseTile(
     private var showingQueue = false
 
     private var apps: List<MediaApp> = emptyList()
+
+    /** Installed music apps the driver has not allowed. See [start]. */
+    private var pending: List<MediaApp> = emptyList()
 
     /** The last thing the current session said, for [describe]. */
     private var lastState: BrowseState = BrowseState.UNKNOWN
@@ -185,6 +190,15 @@ class MediaBrowseTile(
         // Allowed, not merely installed: every row here opens an app, and a row
         // the allow list would refuse is a dead button.
         apps = MediaApps.allowed(appContext)
+        // Kept separately, and only to explain an empty list. A driver asked
+        // for this panel to show what they had allowed rather than everything
+        // on the phone -- but "you have allowed none of your six music apps"
+        // and "this phone has no music apps" are different sentences, and
+        // saying the second when the first is true is how a gate comes to look
+        // like a missing feature.
+        pending = runCatching { MediaApps.installed(appContext) }
+            .getOrDefault(emptyList())
+            .filterNot { candidate -> apps.any { it.packageName == candidate.packageName } }
         // The driver's chosen player, if they have one and it is still
         // installed. A panel that opens on a list of one app every drive is a
         // tap nobody wanted; the same reasoning as the Maps panel's own app
@@ -213,6 +227,7 @@ class MediaBrowseTile(
         runCatching { nowPlaying.stop() }
         showingQueue = false
         lastItems = emptyList()
+        pending = emptyList()
         // The session goes with the pane. A browser left connected holds a
         // binding into another app's process, and its subscriptions call back
         // into views that are about to be thrown away.
@@ -341,7 +356,7 @@ Its controls still work.",
         // Nothing to go back to from the top of the tree.
         backTarget?.visibility = View.GONE
 
-        if (apps.isEmpty()) {
+        if (apps.isEmpty() && pending.isEmpty()) {
             list.gravity = Gravity.CENTER
             list.addView(
                 CarStyle.emptyState(
@@ -364,6 +379,56 @@ Its controls still work.",
                     browsable = true,
                 ) { openApp(app) }
             )
+        }
+        // Below the allowed ones, marked, never hidden. Filtering the list was
+        // the fix a driver asked for; hiding the way to un-filter it would have
+        // turned their own allow-list into a wall with no door, on a screen
+        // they cannot leave.
+        pending.forEach { app ->
+            list.addView(
+                row(
+                    context = context,
+                    icon = app.icon(context),
+                    title = app.label,
+                    subtitle = "Tap to allow on the car screen",
+                    browsable = true,
+                ) { askToAllow(app) }
+            )
+        }
+    }
+
+    /**
+     * Asks, from the seat, before an app the driver has not allowed is opened.
+     *
+     * The same ceremony the car-app pane uses and for the same reason: choosing
+     * an app in a picker is itself a deliberate act, so one confirmation is the
+     * whole of it, and a grant that can only be given on the phone is a grant
+     * nobody gives while driving.
+     */
+    private fun askToAllow(app: MediaApp) {
+        val shell = CarShell.active()
+        if (shell == null) {
+            onStep("media: ${app.label} is not allowed and there is no screen to ask on")
+            return
+        }
+        shell.confirm(
+            title = "Allow ${app.label}?",
+            detail = "Its library will be browsable on the car screen. You can " +
+                "change this in Headway on the phone.",
+            confirmLabel = "Allow",
+        ) {
+            HeadwaySettings.setAllowedApps(
+                appContext,
+                AllowedApps.allow(HeadwaySettings.allowedApps(appContext), app.packageName),
+            )
+            onStep("media: ${app.label} allowed from the car screen")
+            // The sheet outlives the tile -- any render() stops every tile and
+            // builds new ones -- so a grant given after this pane went away is
+            // still recorded and still read by whatever replaced it.
+            if (!running) return@confirm
+            apps = MediaApps.allowed(appContext)
+            pending = pending.filterNot { it.packageName == app.packageName }
+            openApp(app)
         }
     }
 
