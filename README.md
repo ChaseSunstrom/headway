@@ -138,16 +138,17 @@ panel, drag a divider, choose what each one shows, or take one away. Layouts are
 **locked by default**, so a thumb steadying itself on the dashboard cannot
 rearrange your car; the same row reads *Save and lock* while you are editing.
 
-Eleven kinds of panel, in the order the picker offers them:
+Twelve kinds of panel, in the order the picker offers them:
 
 | Panel | What it is |
 |---|---|
 | **App** | **A shared app, live, inside the panel.** One panel at a time shows it |
 | **Maps** | The navigating app's **own map**, drawn into the panel — when this build can host car apps and one of your allowed apps offers a navigation interface. Otherwise the next turn, large, and a button that opens your map app in the App panel |
 | **Now playing** | Whatever is playing, with transport controls, from `MediaSessionManager`. Any media app |
-| **Music and podcasts** | Walk a media app's library and start something, from its `MediaBrowserService` |
+| **Music and podcasts** | Walk a media app's library and start something, from its `MediaBrowserService`. What is playing sits at the foot of it, and tapping that shows the play queue |
 | **Phone** | The call in progress, and the last twelve calls from the call log |
-| **Messages** | Incoming messages, with the posting app's own inline reply |
+| **Notifications** | Everything the phone is showing, newest first |
+| **Messages** | Incoming messages only, with the posting app's own inline reply |
 | **Car app** | A third-party app's *own* car interface, drawn by Headway — **several of these can run at once** |
 | **Widget** | An app's own home-screen widget — **several of these can run at once, all different apps** |
 | **All apps** | A grid to open an app from. Every launchable app, or just the ones you pinned |
@@ -259,10 +260,18 @@ the point and the edges are chrome.
 **Blank the phone screen while driving**, on the phone's *The car screen* card,
 is **on by default**. It covers your phone with black for the drive so nothing of
 the phone shows. It is safe as a default only because it is self-gating: it goes
-up only once the capture has been *measured* as a single app — where Android
-excludes system UI, so the car never sees the cover — and never for a
-whole-display capture, where the cover would be the entire picture. It needs the
-accessibility grant, and says so in the log if it does not have it.
+up once the capture has been *measured* as something the cover is not inside —
+a single app, where Android excludes system UI, or the simulated display, which
+is not the display the cover is on — and never for a capture of the phone's own
+display, where the cover would be the entire picture. It needs the accessibility
+grant, and says so in the log if it does not have it.
+
+It also stands aside for anything that needs you to look at the phone. Adding a
+widget is the one that matters: the phone's own "Allow Headway to add widgets?"
+dialog cannot be drawn on the car and cannot be drawn over the cover, so the
+cover comes down for as long as that dialog is up and goes back afterwards. A
+build before that did exist, and it reported "That widget was not added" for a
+dialog you were never shown.
 
 Bring the screen back with **Show phone screen** on Headway's notification, or
 from the car screen's settings sheet. Not by tapping the cover: the car's touches
@@ -813,9 +822,42 @@ Every switch, its card and its default:
 | Tell the car which Wi-Fi channel we accept (`announceWifiChannel`) | If the car's Wi-Fi is never joined | off |
 | Only allow video apps while parked | Video while driving | off |
 
-Two more live on the car screen itself, under settings → *Apps and panels*: where
-apps run (the phone's screen, default; or a simulated display) and how their
-picture is placed (fitted inside, default; or cropped to fill).
+These live on the car screen itself, because the answer changes with the drive
+and a driver who has to find the phone to change one will simply never change it:
+
+| Where | What it sets | Default |
+|---|---|---|
+| Settings → *Opens on* | Which tab a session comes up on | the map |
+| Settings → *Panel size* | How large everything inside every panel draws | 100% |
+| Settings → *&lt;app&gt; size* | How large one hosted app draws, and its *Map detail* | 100%, 100% |
+| Settings → *Apps and panels* | Where apps run: the phone's screen, or a simulated display | the phone's screen |
+| Settings → *Apps and panels* | How the picture is placed: fitted inside, or cropped to fill | fitted inside |
+| Settings → *Apps and panels* | Turn the phone sideways for apps | off |
+
+**Opens on** is the map by default, resolved by what a tab *contains* rather than
+by its name — the first tab with a maps or car-app panel in it — so renaming or
+rebuilding your tabs does not break it. *Where you left off* is the old
+behaviour, and any tab can be named outright.
+
+**Map detail** is not the same knob as size, and it exists because some apps
+ignore size. Everything a host can tell a car app about how large to draw is
+advisory: the density in the configuration, the dpi on the surface. An app that
+sizes a marker in fixed pixels honours neither, and one driver found one — its
+location triangle stayed exactly as large while its own road labels shrank. The
+one number an app cannot ignore is the pixel size of the buffer it draws into,
+so *Map detail* makes that buffer larger and reports a proportionally larger dpi:
+anything sized from dpi lands on screen unchanged, anything sized in fixed pixels
+lands smaller. It costs memory as the square, so it starts at 100% and stops at
+300%.
+
+**Turn the phone sideways for apps** is the only unprivileged way to make a
+mirrored app *lay itself out* wide rather than be shrunk into a strip, because an
+app's layout is decided by the display its activity runs on and display 0's
+rotation is the one property of a display Headway can change. It needs *Modify
+system settings*, which is granted on the phone and which the row sends you to;
+it is written only while a session is up and put back when it ends; and it cannot
+help an app that declares itself portrait-only, which the platform documents.
+`BLOCKERS.md` B-025 has the five alternatives and the AOSP check that closes each.
 
 ### The quirk file
 
