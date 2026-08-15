@@ -519,11 +519,7 @@ class CarShell(
      * fifth of the dashboard on eight characters. The rail already runs the
      * full length of an edge and already has space after the pins.
      *
-     * Ticked by a receiver rather than a timer: `ACTION_TIME_TICK` fires on the
-     * minute, which is exactly the resolution a clock without seconds needs, and
-     * costs nothing between ticks. `ACTION_TIME_CHANGED` and
-     * `ACTION_TIMEZONE_CHANGED` are there so crossing a time zone does not leave
-     * the wrong hour on the car screen until the next minute.
+     * Builds the views and the repaint; [startClockTicks] is what makes it tick.
      */
     private fun buildRailClock(style: RailStyle): View {
         val m = railMetrics
