@@ -427,6 +427,24 @@ object HeadwaySettings {
         of(context).getBoolean(KEY_APP_PANE_FILL, false)
 
     /**
+     * Whether the phone is turned sideways for the drive, so apps lay out wide.
+     *
+     * Off by default and gated behind a permission the driver grants in
+     * Settings, because it changes the phone itself rather than anything
+     * Headway draws — `PhoneRotation` has the derivation, the costs, and the
+     * reason it is the only unprivileged way to make a mirrored app render in
+     * landscape at all.
+     */
+    const val KEY_LANDSCAPE_APPS: String = "landscape_apps"
+
+    fun landscapeApps(context: Context): Boolean =
+        of(context).getBoolean(KEY_LANDSCAPE_APPS, false)
+
+    fun setLandscapeApps(context: Context, on: Boolean) {
+        runCatching { of(context).edit().putBoolean(KEY_LANDSCAPE_APPS, on).apply() }
+    }
+
+    /**
      * Which units the car pane shows, as a `CarUnits` name.
      *
      * Unset means [CarUnits.AUTOMATIC] — follow the phone's region. Stored

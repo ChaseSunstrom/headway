@@ -59,6 +59,7 @@ import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.video.AppPaneHost
 import dev.headway.app.video.CarAppDisplay
 import dev.headway.app.video.CarVideoStream
+import dev.headway.app.video.PhoneRotation
 import dev.headway.app.voice.CarVoiceStream
 import dev.headway.app.voice.PhoneMediaControl
 import dev.headway.protocol.control.ControlKeepalive
@@ -308,6 +309,28 @@ open class HeadwayService : Service() {
             // and it has just come down.
             refreshNotification()
             step("the driver asked for the phone screen back")
+            return START_STICKY
+        }
+
+        // A hold, not a one-shot. Something on the phone has to be looked at --
+        // a system dialog Headway cannot draw over and cannot show on the car --
+        // and it has to stay visible for as long as it is on screen, not until
+        // the next thing that fancies covering the phone again.
+        if (intent?.action == ACTION_HOLD_PHONE) {
+            phoneHolds.incrementAndGet()
+            runCatching { HeadwayAccessibilityService.instance.value?.hideBlackout() }
+            refreshNotification()
+            step("the phone screen was uncovered for something that needs looking at")
+            return START_STICKY
+        }
+
+        // The matching release. Re-covers only when nothing else is holding,
+        // and only if the driver asked for a cover in the first place --
+        // `coverPhoneScreen` re-checks the setting and the sharing mode.
+        if (intent?.action == ACTION_COVER_PHONE) {
+            phoneHolds.updateAndGet { if (it > 0) it - 1 else 0 }
+            runCatching { coverPhoneScreen() }
+            refreshNotification()
             return START_STICKY
         }
 
@@ -1369,6 +1392,13 @@ open class HeadwayService : Service() {
                 runCatching { coverPhoneScreen() }
                     .onFailure { step("the phone screen could not be covered: $it") }
             }
+            // Sideways for the drive, if the driver asked. This is the only
+            // unprivileged way a mirrored app can be made to *lay itself out*
+            // wide rather than be scaled down into a strip; see `PhoneRotation`
+            // for the four closed routes and the one honest limit.
+            if (HeadwaySettings.landscapeApps(this@HeadwayService)) {
+                runCatching { PhoneRotation.applyLandscape(this@HeadwayService) { step(it) } }
+            }
             startSubsystem("audio") { audio?.start(this) }
             startSubsystem("input") { input?.start(this) }
             startSubsystem("voice") { voice?.start(this) }
@@ -1401,6 +1431,10 @@ open class HeadwayService : Service() {
             runCatching { AppPaneHost.onGrantLost = null }
             runCatching { AppPaneHost.detach() }
             runCatching { HeadwayAccessibilityService.instance.value?.hideBlackout() }
+            // Before the subsystems, because this is the driver's phone rather
+            // than Headway's and a session that ends badly must still give it
+            // back. No-op unless a rotation was actually taken.
+            runCatching { PhoneRotation.restore(this@HeadwayService) { step(it) } }
             runCatching { video?.stop() }
             runCatching { audio?.stop() }
             runCatching { input?.stop() }
@@ -1426,6 +1460,15 @@ open class HeadwayService : Service() {
      */
     private fun coverPhoneScreen() {
         if (!HeadwaySettings.of(this).getBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, true)) {
+            return
+        }
+        // Something on the phone is being looked at deliberately. Covering it
+        // now is how "That widget was not added" happened: the system's own
+        // "Allow Headway to add widgets?" dialog was drawn under an opaque
+        // accessibility overlay, so the driver saw a black screen, and the
+        // dialog finishes itself as CANCELED on the first pause it sees.
+        if (phoneHolds.get() > 0) {
+            step("the phone screen is being used, so it is left uncovered")
             return
         }
         // The safety gate, and the reason this can be on by default. A blackout
@@ -2128,6 +2171,27 @@ open class HeadwayService : Service() {
 
         /** Removes the phone-screen cover. See `HeadwayAccessibilityService.showBlackout`. */
         const val ACTION_SHOW_PHONE: String = "dev.headway.app.action.SHOW_PHONE"
+
+        /**
+         * Uncovers the phone and keeps it uncovered until [ACTION_COVER_PHONE].
+         *
+         * Paired, and counted, because two things can want the phone at once
+         * and a plain uncover would let either of their exits re-black the
+         * screen under the other.
+         */
+        const val ACTION_HOLD_PHONE: String = "dev.headway.app.action.HOLD_PHONE"
+
+        /** Releases one [ACTION_HOLD_PHONE], re-covering when the last one goes. */
+        const val ACTION_COVER_PHONE: String = "dev.headway.app.action.COVER_PHONE"
+
+        /**
+         * How many things currently need the phone screen visible.
+         *
+         * Process-wide rather than per-service instance: the holder is an
+         * activity, the cover is owned by the service, and the service can be
+         * restarted between the two halves of a hold.
+         */
+        private val phoneHolds = java.util.concurrent.atomic.AtomicInteger(0)
 
         /** Distinct from the stop action's, or the two PendingIntents collide. */
         private const val REQUEST_SHOW_PHONE: Int = 1

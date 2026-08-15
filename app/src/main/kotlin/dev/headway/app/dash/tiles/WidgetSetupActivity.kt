@@ -26,7 +26,10 @@ import android.os.Bundle
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import dev.headway.app.input.HeadwayAccessibilityService
 import dev.headway.app.log.SessionLog
+import dev.headway.app.service.HeadwayService
+import dev.headway.app.ui.HeadwaySettings
 
 private const val TAG = "HeadwayWidgets"
 
@@ -96,6 +99,23 @@ class WidgetSetupActivity : AppCompatActivity() {
     /** The [generation] whose bind dialog is outstanding, if any. */
     private var bindingFor: Int = NOT_CONFIGURING
 
+    /**
+     * Whether this activity took the phone-screen cover down and owes it back.
+     *
+     * The whole of "That widget was not added". Headway's *blank the phone
+     * screen* cover is on by default and is an opaque
+     * `TYPE_ACCESSIBILITY_OVERLAY` — window layer 31, above everything the
+     * system draws — so the platform's own "Allow Headway to add widgets?"
+     * dialog appeared underneath it. The driver looked at the phone and saw
+     * black. Worse, AOSP's `AllowBindAppWidgetActivity.onPause` is
+     * `if (!mClicked) finish()` with `RESULT_CANCELED` pre-set, so the first
+     * stray touch through the cover — or a gesture injected from the car onto
+     * display 0 — dismissed it as a refusal. Headway then dutifully deleted the
+     * id and reported that the widget was not added, which is exactly what the
+     * driver saw and exactly the wrong explanation.
+     */
+    private var uncovered: Boolean = false
+
     private val binding = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
         ::onBound,
@@ -103,6 +123,7 @@ class WidgetSetupActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        holdPhoneScreen(savedInstanceState)
         if (savedInstanceState != null) {
             // Restored rather than restarted. The manifest takes every
             // configuration change, but the system can still destroy a stopped
@@ -141,6 +162,46 @@ class WidgetSetupActivity : AppCompatActivity() {
         outState.putInt(STATE_GENERATION, generation)
         outState.putInt(STATE_CONFIGURING, configuring)
         outState.putInt(STATE_BINDING_FOR, bindingFor)
+        outState.putBoolean(STATE_UNCOVERED, uncovered)
+    }
+
+    /**
+     * Takes the phone-screen cover down for as long as this activity lives.
+     *
+     * A counted hold rather than a plain uncover, because the service's own
+     * bring-up and `AppPaneHost.onSharingKnown` both raise the cover and either
+     * could fire while the dialog is up. Restored rather than re-taken across a
+     * recreate: the hold is already counted, and taking a second one would
+     * leave the phone permanently uncovered for the rest of the drive.
+     */
+    private fun holdPhoneScreen(savedInstanceState: Bundle?) {
+        if (savedInstanceState != null) {
+            uncovered = savedInstanceState.getBoolean(STATE_UNCOVERED, false)
+            return
+        }
+        // Not "is the cover up right now": it may go up a moment from now.
+        // `AppPaneHost.onSharingKnown` raises it the first time a capture is
+        // measured, which can land while this dialog is on screen, and the
+        // whole point of the hold is that nothing can black the phone out under
+        // a dialog the driver has been sent to look at. So the test is whether
+        // a cover is *possible* -- the setting is on and the service that draws
+        // it exists -- and the release re-checks everything anyway.
+        val possible = runCatching {
+            HeadwayAccessibilityService.instance.value != null &&
+                HeadwaySettings.of(this)
+                    .getBoolean(HeadwaySettings.KEY_BLANK_PHONE_SCREEN, true)
+        }.getOrDefault(false)
+        if (!possible) return
+        uncovered = runCatching {
+            startService(
+                Intent(this, HeadwayService::class.java)
+                    .setAction(HeadwayService.ACTION_HOLD_PHONE),
+            )
+            true
+        }.getOrDefault(false)
+        if (uncovered) {
+            SessionLog.shared.info(TAG, "uncovered the phone so the widget dialog can be seen")
+        }
     }
 
     /**
@@ -168,6 +229,14 @@ class WidgetSetupActivity : AppCompatActivity() {
             WidgetTile.forget(this, widgetId) { SessionLog.shared.info(TAG, it) }
         }
         WidgetSetup.release(widgetId)
+        // Whoever was waiting on the flow this intent just replaced is told it
+        // failed, here, rather than being left to receive the *new* flow's
+        // result. `WidgetSetup` keeps one callback, and `WidgetTile.rebind`
+        // launches a repair through this activity without registering one of
+        // its own -- so a repair arriving during an add used to end with the
+        // add's pane being handed the repair's outcome, and "That widget was
+        // not added" for a flow the driver never started.
+        WidgetSetup.abandon()
         widgetId = AppWidgetManager.INVALID_APPWIDGET_ID
         provider = null
         ownsId = false
@@ -239,6 +308,16 @@ class WidgetSetupActivity : AppCompatActivity() {
         }
         bindingFor = NOT_CONFIGURING
         if (result.resultCode != Activity.RESULT_OK) {
+            // Not proof of a refusal. AOSP's dialog binds first and only then
+            // sets RESULT_OK, and it finishes itself as CANCELED on any pause
+            // at all -- so a bind that succeeded and a dialog that was brushed
+            // aside a moment later arrive here identically. Ask the host, which
+            // knows, rather than the result code, which does not.
+            if (WidgetTile.isBound(this, widgetId)) {
+                SessionLog.shared.info(TAG, "the dialog bound the widget before it was dismissed")
+                configureOrFinish()
+                return
+            }
             SessionLog.shared.info(TAG, "the driver declined to let Headway add widgets")
             cancel()
             return
@@ -350,6 +429,15 @@ class WidgetSetupActivity : AppCompatActivity() {
         // sweeps orphans.
         if (isChangingConfigurations) return
         if (WidgetSetup.pendingId == widgetId) WidgetSetup.release(widgetId)
+        if (uncovered) {
+            uncovered = false
+            runCatching {
+                startService(
+                    Intent(this, HeadwayService::class.java)
+                        .setAction(HeadwayService.ACTION_COVER_PHONE),
+                )
+            }
+        }
     }
 
     private fun deliver(id: Int) {
@@ -386,6 +474,7 @@ class WidgetSetupActivity : AppCompatActivity() {
         private const val STATE_GENERATION = "generation"
         private const val STATE_CONFIGURING = "configuring"
         private const val STATE_BINDING_FOR = "binding_for"
+        private const val STATE_UNCOVERED = "uncovered"
 
         /**
          * The intent that adds [provider] as a widget, from anywhere.
@@ -502,6 +591,17 @@ object WidgetSetup {
             SessionLog.shared.warn(TAG, "could not open the widget setup screen")
             deliver(AppWidgetManager.INVALID_APPWIDGET_ID, provider)
         }
+    }
+
+    /**
+     * Tells whoever is waiting that their flow was replaced, and forgets them.
+     *
+     * Distinct from [deliver] only in what it does not do: it never claims a
+     * later flow's result belongs to an earlier requester.
+     */
+    fun abandon() {
+        val waiting = synchronized(lock) { pending.also { pending = null } }
+        waiting?.invoke(AppWidgetManager.INVALID_APPWIDGET_ID, null)
     }
 
     /** Hands the result to whoever asked, and clears the request. */

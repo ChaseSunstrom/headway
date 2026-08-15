@@ -130,6 +130,19 @@
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
 
     <!--
+      Turning the phone sideways for the drive, so a mirrored app lays itself
+      out wide instead of arriving in a wide pane as a narrow strip.
+
+      Not an ordinary runtime permission and not one a prompt can grant: its
+      protection level carries `appop`, so the driver grants it on a Settings
+      screen Headway sends them to, and the app asks only when the landscape
+      setting is switched on. Off by default; nothing is written until then.
+      See PhoneRotation for why display 0's rotation is the only unprivileged
+      lever there is here.
+    -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+
+    <!--
       The car-app template host claims two global names, and both of them live
       in src/host/AndroidManifest.xml rather than here.
 

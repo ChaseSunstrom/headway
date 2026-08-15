@@ -61,6 +61,7 @@ import dev.headway.app.ui.theme.HeadwayTheme
 import dev.headway.app.video.AppPaneHost
 import dev.headway.app.video.CarAppDisplay
 import dev.headway.app.video.OverlayDisplay
+import dev.headway.app.video.PhoneRotation
 import dev.headway.dash.CarUiScale
 import dev.headway.dash.CarUnits
 import dev.headway.dash.DashLayout
@@ -1497,8 +1498,62 @@ class CarShell(
                 closeOverlay()
                 render()
             },
+            landscapeRow(),
         )
         showOverlay(sheet().build("Apps and panels", rows, onClose = ::closeOverlay))
+    }
+
+    /**
+     * Turning the phone sideways so a mirrored app lays itself out wide.
+     *
+     * Offered here rather than on the phone because it is the answer to the
+     * complaint the two rows above it only half-answer: cropping a portrait
+     * picture fills the pane, but the app is still *drawing* for a tall screen.
+     * `PhoneRotation` has the whole derivation, including the honest limit —
+     * an app that locks itself to portrait wins, and this does nothing for it.
+     */
+    private fun landscapeRow(): CarSheet.Row {
+        val on = HeadwaySettings.landscapeApps(context)
+        val granted = PhoneRotation.granted(context)
+        return CarSheet.Row(
+            title = "Turn the phone sideways for apps",
+            detail = when {
+                on && !granted -> "On, but the phone has not granted it — tap to fix on the phone"
+                on -> "Apps that can lay out wide will, from the next session"
+                granted -> "Off — apps mirror the phone's portrait screen"
+                else -> "Needs one permission on the phone; apps that lock to portrait are unaffected"
+            },
+            selected = on && granted,
+        ) {
+            if (!granted) {
+                // Switched on first, so granting the permission is the only
+                // remaining step rather than the first of two. Nothing is
+                // written to the phone's rotation until a session starts and
+                // the grant is re-checked.
+                HeadwaySettings.setLandscapeApps(context, true)
+                closeOverlay()
+                val sent = runCatching {
+                    context.applicationContext.startActivity(
+                        PhoneRotation.accessIntent(context.applicationContext),
+                    )
+                    true
+                }.getOrDefault(false)
+                showVoiceMessage(
+                    if (sent) {
+                        "Allow Headway to change system settings on the phone"
+                    } else {
+                        "Grant “Modify system settings” to Headway in the phone's Settings"
+                    },
+                )
+                return@Row
+            }
+            HeadwaySettings.setLandscapeApps(context, !on)
+            closeOverlay()
+            if (on) runCatching { PhoneRotation.restore(context) { onStep(it) } }
+            showVoiceMessage(
+                if (on) "The phone goes back to portrait" else "Reconnect for this to take effect",
+            )
+        }
     }
 
     private fun setAppSource(simulated: Boolean) {
@@ -2007,7 +2062,7 @@ class CarShell(
      * something the driver could see with a widget pane that is empty.
      */
     private fun addWidget(path: DashPath, provider: ComponentName) {
-        showVoiceMessage("Finish adding this widget on the phone")
+        showVoiceMessage("Look at the phone — it is asking whether Headway may add widgets")
         WidgetSetup.request(context, provider) { widgetId, bound ->
             // The driver was on the phone while this ran, and a session can end
             // there: a reconnect, a car switched off, an unplugged head unit.
@@ -2019,7 +2074,10 @@ class CarShell(
                 return@request
             }
             if (widgetId == AppWidgetManager.INVALID_APPWIDGET_ID || bound == null) {
-                showVoiceMessage("That widget was not added")
+                showVoiceMessage(
+                    "The phone's permission dialog was dismissed. " +
+                        "Try again, and tick \"Always allow\".",
+                )
                 return@request
             }
             layout = layout.setPane(
