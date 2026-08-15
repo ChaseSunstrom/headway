@@ -431,7 +431,9 @@ class NowPlayingTile(context: Context) : DashTile {
             metadata?.getString(key)?.takeIf { it.isNotBlank() }
         } ?: return null
         cachedArtUri?.let { if (it == uri) return cachedArt }
-        val box = artView.width.takeIf { it > 0 } ?: CarStyle.dp(appContext, ART_BOX_DP)
+        // `art`, the field -- `artView` is a local inside `render()` and is not
+        // in scope here. Falls back to the nominal box before the first layout.
+        val box = art?.width?.takeIf { it > 0 } ?: CarStyle.dp(appContext, ART_BOX_DP)
         val decoded = runCatching {
             val parsed = android.net.Uri.parse(uri)
             val bounds = android.graphics.BitmapFactory.Options().apply {
