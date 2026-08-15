@@ -74,6 +74,16 @@ object PaneKind {
     /** Recent notifications with inline reply, from `NotificationListenerService`. */
     const val MESSAGES = "messages"
 
+    /**
+     * Everything the phone is showing, not only the messages.
+     *
+     * A superset of [MESSAGES] and the one a driver asked for: the same
+     * `NotificationListenerService` stream, unfiltered, so a delivery, a
+     * calendar reminder or a low-battery warning reaches the car instead of
+     * being dropped for not looking like a conversation.
+     */
+    const val NOTIFICATIONS = "notifications"
+
     /** An app's own `RemoteViews`, hosted with `AppWidgetHost`. */
     const val WIDGET = "widget"
 
@@ -115,7 +125,8 @@ object PaneKind {
 
     /** Everything, in the order a picker should offer them. */
     val ALL: List<String> = listOf(
-        APP, MAPS, NOW_PLAYING, BROWSE, PHONE, MESSAGES, CAR_APP, WIDGET, LAUNCHER, SENSORS, CLOCK,
+        APP, MAPS, NOW_PLAYING, BROWSE, PHONE, NOTIFICATIONS, MESSAGES, CAR_APP, WIDGET,
+        LAUNCHER, SENSORS, CLOCK,
     )
 
     /**
@@ -137,6 +148,7 @@ object PaneKind {
         PHONE -> "Phone"
         CAR_APP -> "Car app"
         MESSAGES -> "Messages"
+        NOTIFICATIONS -> "Notifications"
         WIDGET -> "Widget"
         LAUNCHER -> "All apps"
         SENSORS -> "Car"
@@ -153,6 +165,7 @@ object PaneKind {
         PHONE -> "Recent calls, and the call in progress"
         CAR_APP -> "An app's own car interface — several of these can run at once"
         MESSAGES -> "Incoming messages, with replies"
+        NOTIFICATIONS -> "Everything the phone is showing, newest first"
         WIDGET -> "An app's own widget — several of these can run at once"
         LAUNCHER -> "A grid of every app, to open one here"
         SENSORS -> "Speed, revs, fuel and tyres, as the car reports them"

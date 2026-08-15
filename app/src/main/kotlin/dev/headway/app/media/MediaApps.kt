@@ -23,6 +23,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.graphics.drawable.Drawable
+import dev.headway.app.ui.HeadwaySettings
+import dev.headway.dash.AllowedApps
 
 /**
  * The media apps on this phone that publish a browsable library.
@@ -169,6 +171,23 @@ object MediaApps {
      * service the user has disabled is one they do not want, and listing it
      * would produce a row that can only ever fail to connect.
      */
+    /**
+     * The media apps the driver has allowed onto the car screen.
+     *
+     * The car screen's list, and the one a *panel* should offer: every row in it
+     * is something the driver can open, and a row that opens nothing is a dead
+     * button. A driver reported the music panel "showing all apps of that kind
+     * on the phone, not what the user gave access to".
+     *
+     * Distinct from [installed], which is discovery and stays unfiltered --
+     * that one feeds the phone's own picker, where hiding an app would hide the
+     * way to allow it. The same split the car-app pane already makes.
+     */
+    fun allowed(context: Context): List<MediaApp> {
+        val allowed = HeadwaySettings.allowedApps(context)
+        return installed(context).filter { AllowedApps.allows(allowed, it.packageName) }
+    }
+
     fun installed(context: Context): List<MediaApp> {
         val packages = context.packageManager
         // Legacy first, so that when an app declares both it is the legacy

@@ -321,16 +321,21 @@ data class HeadUnitQuirks(
     /**
      * Tenths of a kilometre per raw `OdometerData.kms_e1` unit.
      *
-     * 1 is the schema's own reading — `_e1` means times ten, like every other
-     * scaled field in the sensor set. 100 is a unit whose raw value is metres.
+     * **Defaults to the metres reading (100), not to the schema's (1).** The
+     * field is named `_e1` and every other scaled field in the sensor set
+     * follows that convention, so kilometres-times-ten is what the
+     * reverse-engineered schema says — and a real 2021 Chevrolet Infotainment 3
+     * disagrees by exactly a hundred, twice, reported from the driver's own
+     * dashboard on two separate drives.
      *
-     * A quirk because a real 2021 Chevrolet Infotainment 3 reads exactly a
-     * hundred times high under the schema, which is not a factor that arrives by
-     * accident. `SensorChannel` logs the raw value against the converted one
-     * once per session, so a driver who can read their own dashboard can settle
-     * it without another round of guessing. See `CarSensors.odometerKmFromE1`.
+     * Two independent observations of real hardware outrank a field name in a
+     * schema nobody has a specification for. The schema's reading is still one
+     * quirk-file line away for a car that turns out to honour it, and
+     * `SensorChannel` logs the raw value against the converted one once per
+     * session so any other car settles it in one drive. See
+     * `CarSensors.odometerKmFromE1`.
      */
-    val odometerScale: Int = CarSensors.ODOMETER_SCALE_E1,
+    val odometerScale: Int = CarSensors.ODOMETER_SCALE_METERS,
     val touch: TouchQuirks = TouchQuirks(),
 ) {
 

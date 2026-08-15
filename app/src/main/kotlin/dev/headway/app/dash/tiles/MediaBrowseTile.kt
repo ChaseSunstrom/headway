@@ -144,7 +144,9 @@ class MediaBrowseTile(
         running = true
         // Re-read on every start rather than once: an app installed mid-drive
         // should appear, and the query is one cheap PackageManager call.
-        apps = MediaApps.installed(appContext)
+        // Allowed, not merely installed: every row here opens an app, and a row
+        // the allow list would refuse is a dead button.
+        apps = MediaApps.allowed(appContext)
         // The driver's chosen player, if they have one and it is still
         // installed. A panel that opens on a list of one app every drive is a
         // tap nobody wanted; the same reasoning as the Maps panel's own app

@@ -22,6 +22,7 @@ import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -45,6 +46,7 @@ import dev.headway.app.dash.tiles.LauncherTile
 import dev.headway.app.dash.tiles.MapsTile
 import dev.headway.app.dash.tiles.MediaBrowseTile
 import dev.headway.app.dash.tiles.MessagesTile
+import dev.headway.app.dash.tiles.NotificationsTile
 import dev.headway.app.dash.tiles.NowPlayingTile
 import dev.headway.app.dash.tiles.PhoneTile
 import dev.headway.app.dash.tiles.SensorsTile
@@ -59,6 +61,7 @@ import dev.headway.app.ui.theme.HeadwayTheme
 import dev.headway.app.video.AppPaneHost
 import dev.headway.app.video.CarAppDisplay
 import dev.headway.app.video.OverlayDisplay
+import dev.headway.dash.CarUiScale
 import dev.headway.dash.CarUnits
 import dev.headway.dash.DashLayout
 import dev.headway.dash.DashNode
@@ -860,34 +863,74 @@ class CarShell(
         main.post { publishAppPaneRect() }
     }
 
+    /**
+     * The context every pane's content is built with, at the driver's panel size.
+     *
+     * One wrapper, and every size on every panel follows it: `CarStyle`'s whole
+     * vocabulary is dp and sp literals resolved against whatever context it is
+     * handed, so a configuration with a different density moves the text, the
+     * rows, the gutters and the corner radii of all of them together with no
+     * call site changed. It is the same lever the car-app pane already used for
+     * its own chrome, applied where a driver asked for it: "I want to be able
+     * to scale all UI in ALL panels, not just the maps one".
+     *
+     * Rebuilt with the shell rather than cached across sessions, because the
+     * car's own density is part of it.
+     */
+    private var paneContextAt: Context? = null
+
+    private val paneContext: Context
+        get() = paneContextAt ?: buildPaneContext().also { paneContextAt = it }
+
+    private fun buildPaneContext(): Context {
+        val scale = HeadwaySettings.panelScale(context)
+        val base = context.resources.configuration.densityDpi
+        val scaled = CarUiScale("", scale).densityFor(base)
+        return if (scaled == base) {
+            context
+        } else {
+            runCatching {
+                context.createConfigurationContext(
+                    Configuration(context.resources.configuration).apply {
+                        densityDpi = scaled
+                        // The phone's accessibility text size has no business
+                        // deciding how large a car panel reads from a metre away.
+                        fontScale = 1f
+                    },
+                )
+            }.getOrDefault(context)
+        }
+    }
+
     private fun tileFor(leaf: DashNode.Leaf, path: DashPath): DashTile? =
         when (PaneKind.canonical(leaf.kind)) {
-            PaneKind.NOW_PLAYING -> NowPlayingTile(context)
-            PaneKind.BROWSE -> MediaBrowseTile(context, onStep)
+            PaneKind.NOW_PLAYING -> NowPlayingTile(paneContext)
+            PaneKind.BROWSE -> MediaBrowseTile(paneContext, onStep)
             // A real map when one of the driver's allowed apps offers a car
             // interface -- the app draws its own map into the pane's surface and
             // Headway draws its templates over it -- and the turn card when none
             // does. Both are the Maps pane; which one a phone gets depends on
             // what is installed and allowed, not on what the driver picked.
             PaneKind.MAPS -> mapsTileFor(leaf)
-            PaneKind.PHONE -> PhoneTile(context, onStep)
+            PaneKind.PHONE -> PhoneTile(paneContext, onStep)
             // No host guard here on purpose: unlike a Maps pane, a Car app pane
             // has nothing to degrade *to* -- its whole content is the car app.
             // CarAppTile itself refuses to bind and says why, which is the
             // honest answer for a pane the driver explicitly asked to be a car
             // app. See CarHostCapability.
-            PaneKind.CAR_APP -> CarAppTile(context, leaf.argument, onStep) { service ->
+            PaneKind.CAR_APP -> CarAppTile(paneContext, leaf.argument, onStep) { service ->
                 // The pick has to reach the layout, or it lasts only as long as
                 // this view: render() rebuilds tiles on every divider drag and
                 // tab switch, and the pane would come back a picker each time.
                 rememberPaneArgument(path, PaneKind.CAR_APP, service.flattenToString())
             }
-            PaneKind.MESSAGES -> MessagesTile(context)
+            PaneKind.MESSAGES -> MessagesTile(paneContext)
+            PaneKind.NOTIFICATIONS -> NotificationsTile(paneContext)
             // The one pane whose content comes from the car rather than from the
             // phone: it draws whatever the AAP sensor channel reports, and says
             // so plainly when that is nothing.
-            PaneKind.SENSORS -> SensorsTile(context)
-            PaneKind.CLOCK -> ClockTile(context)
+            PaneKind.SENSORS -> SensorsTile(paneContext)
+            PaneKind.CLOCK -> ClockTile(paneContext)
             PaneKind.LAUNCHER -> LauncherTile(onStep)
             PaneKind.WIDGET -> WidgetTile.of(leaf, onStep)
             PaneKind.APP -> AppPaneTile(
@@ -1125,6 +1168,11 @@ class CarShell(
         rows += CarSheet.Row("The rail", railStyle.describe()) { showRailStyle() }
         rows += CarSheet.Row("Pinned", "What sits on the rail, and in what order") { showRailEditor() }
         rows += CarSheet.Row("Units", unitsSummary()) { showUnits() }
+        rows += CarSheet.Row(
+            title = "Panel size",
+            detail = "How large everything inside the panels draws — " +
+                CarUiScale.percentOf(HeadwaySettings.panelScale(context)),
+        ) { showPanelScale() }
         // Only while a car app is actually open, because the size is that app's
         // and the sentence would be meaningless without one. The pane itself has
         // no room for a control -- it is full of somebody else's map.
@@ -1253,6 +1301,39 @@ class CarShell(
         }
         showOverlay(
             sheet().build(title = "Units", rows = rows, onClose = ::closeOverlay),
+        )
+    }
+
+    /**
+     * How large every panel's content draws.
+     *
+     * A rebuild rather than a re-render, because the size is carried by the
+     * context each tile was *built* with -- that is what makes one setting move
+     * every dp and sp in every pane at once, and the price is that changing it
+     * builds them again.
+     */
+    private fun showPanelScale() {
+        val current = HeadwaySettings.panelScale(context)
+        val chips = CarUiScale.CHOICES.map { choice ->
+            CarSheet.Row(
+                title = CarUiScale.percentOf(choice),
+                selected = kotlin.math.abs(current - choice) < 0.001f,
+            ) {
+                HeadwaySettings.setPanelScale(context, choice)
+                closeOverlay()
+                onStep("car screen: panels now draw at ${CarUiScale.percentOf(choice)}")
+                paneContextAt = null
+                render()
+            }
+        }
+        showOverlay(
+            sheet().build(
+                title = "Panel size",
+                rows = emptyList(),
+                chips = chips,
+                chipsTitle = "Everything inside a panel",
+                onClose = ::closeOverlay,
+            ),
         )
     }
 

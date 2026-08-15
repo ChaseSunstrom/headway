@@ -674,6 +674,25 @@ class NowPlayingTile(context: Context) : DashTile {
 // ---------------------------------------------------------------------------
 
 /**
+ * One notification, flattened to what a car screen can show at a glance.
+ *
+ * Deliberately not [CarMessage]: that one models a *conversation* -- a sender, a
+ * reply slot, a thread -- and most of the shade is not one. A delivery, a
+ * calendar reminder and a low-battery warning have an app, a line, and a time,
+ * and that is all this needs to carry.
+ */
+data class CarNotice(
+    val key: String,
+    val packageName: String,
+    val appLabel: String,
+    val title: String,
+    val text: String,
+    val postedAtMillis: Long,
+    /** True for something still happening -- a download, a timer, a nav route. */
+    val ongoing: Boolean,
+)
+
+/**
  * One conversation notification, reduced to what a car screen can show.
  *
  * Deliberately not a `data class`: [reply] holds a `PendingIntent` and an array,
@@ -683,6 +702,7 @@ class NowPlayingTile(context: Context) : DashTile {
  * own notification key and is the stable identifier.
  */
 class CarMessage(
+
     /** `StatusBarNotification.getKey()`; unique and stable across updates. */
     val key: String,
     val packageName: String,
@@ -765,6 +785,156 @@ class ReplySlot(
  * are held and applied when the editor closes; one message stale for a few
  * seconds is a far better failure than a reply sent to the wrong conversation.
  */
+/**
+ * Everything the phone is showing, newest first.
+ *
+ * The Messages pane's superset, and the pane a driver asked for after finding
+ * that Messages "is still only showing messages": same
+ * `NotificationListenerService` stream, no conversation filter, so a delivery,
+ * a calendar reminder or a low-battery warning arrives instead of being dropped
+ * for not looking like a chat.
+ *
+ * Read-only on purpose. A notification's actions are arbitrary `PendingIntent`s
+ * an app can put anything behind, and a row of unlabelled buttons at
+ * seventy miles an hour is a worse idea than a list you glance at. Messages
+ * keeps its inline reply because a reply slot is a specific, named thing.
+ */
+class NotificationsTile(context: Context) : DashTile {
+
+    private val appContext: Context = context.applicationContext
+    private val handler = Handler(Looper.getMainLooper())
+
+    override val kind: String = PaneKind.NOTIFICATIONS
+
+    private var list: LinearLayout? = null
+
+    /**
+     * Holds the empty state, which is a `View` rather than a `TextView`.
+     *
+     * `CarStyle.emptyState` returns the styled block, not the label inside it,
+     * so the message is replaced by rebuilding rather than by assigning `.text`.
+     */
+    private var emptyHolder: FrameLayout? = null
+    private var shown: List<CarNotice> = emptyList()
+    private var running = false
+
+    /**
+     * Held in a field: removal is by identity, and the feed publishes from
+     * whichever thread the platform used, so the hop to the main thread happens
+     * here rather than in every caller.
+     */
+    private val feed: (List<CarNotice>) -> Unit = { notices ->
+        handler.post {
+            shown = notices
+            render()
+        }
+    }
+
+    override fun createView(context: Context): View {
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        }
+        val holder = FrameLayout(context)
+        val frame = FrameLayout(context).apply {
+            addView(
+                ScrollView(context).apply {
+                    isFillViewport = true
+                    addView(column, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+                    layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+                },
+            )
+            addView(holder, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.CENTER))
+        }
+        list = column
+        emptyHolder = holder
+        render()
+        return frame
+    }
+
+    override fun start() {
+        if (running) return
+        running = true
+        HeadwayNotificationListener.observeNotices(feed)
+    }
+
+    override fun stop() {
+        if (!running) return
+        running = false
+        HeadwayNotificationListener.unobserveNotices(feed)
+    }
+
+    override fun describe(): String =
+        "notifications: ${shown.size} showing" +
+            if (HeadwayNotificationListener.isConnected) "" else " (no notification access)"
+
+    private fun render() {
+        val column = list ?: return
+        val context = column.context
+        column.removeAllViews()
+        val holder = emptyHolder
+        if (shown.isEmpty()) {
+            holder?.removeAllViews()
+            holder?.addView(
+                CarStyle.emptyState(
+                    context,
+                    if (HeadwayNotificationListener.isConnected) {
+                        "Nothing on the phone right now."
+                    } else {
+                        GRANT_HINT
+                    },
+                ),
+            )
+            holder?.visibility = View.VISIBLE
+            return
+        }
+        holder?.visibility = View.GONE
+        shown.forEach { notice -> column.addView(row(context, notice)) }
+    }
+
+    private fun row(context: Context, notice: CarNotice): View {
+        val gap = CarStyle.gutter(context)
+        val card = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Headway.panel(CarStyle.radius(context), CarStyle.SURFACE)
+            setPadding(gap, gap / 2, gap, gap / 2)
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                bottomMargin = gap / 3
+            }
+        }
+        card.addView(
+            CarStyle.label(context, 13f, CarStyle.DIM).apply {
+                // App and time on one line: which app it came from is how a
+                // driver decides whether it matters before reading the words.
+                text = listOf(notice.appLabel, timeOf(notice.postedAtMillis))
+                    .filter { it.isNotBlank() }
+                    .joinToString(" \u00b7 ")
+            },
+        )
+        notice.title.takeIf { it.isNotBlank() }?.let { title ->
+            card.addView(
+                CarStyle.label(context, 17f, CarStyle.TEXT, bold = true).apply { text = title },
+            )
+        }
+        notice.text.takeIf { it.isNotBlank() }?.let { body ->
+            card.addView(CarStyle.label(context, 15f, CarStyle.TEXT).apply { text = body })
+        }
+        return card
+    }
+
+    private fun timeOf(millis: Long): String = runCatching {
+        if (millis <= 0L) "" else android.text.format.DateFormat
+            .getTimeFormat(appContext)
+            .format(java.util.Date(millis))
+    }.getOrDefault("")
+
+    private companion object {
+        const val GRANT_HINT: String =
+            "Headway needs notification access to show what the phone is showing.\n" +
+                "Turn it on in Headway on the phone, under Now playing and messages."
+    }
+}
+
 class MessagesTile(context: Context) : DashTile {
 
     private val appContext: Context = context.applicationContext
@@ -1196,6 +1366,15 @@ class HeadwayNotificationListener : NotificationListenerService() {
             .sortedByDescending { it.postedAtMillis }
             .take(MAX_MESSAGES)
         deliver(messages)
+
+        // The same sweep, unfiltered, for the Notifications pane. Built here
+        // rather than in a second listener because the platform binds one
+        // component per app and this one already has the active set in hand.
+        deliverNotices(
+            active.mapNotNull { noticeOf(this, it) }
+                .sortedByDescending { it.postedAtMillis }
+                .take(MAX_NOTICES),
+        )
     }
 
     companion object {
@@ -1227,6 +1406,81 @@ class HeadwayNotificationListener : NotificationListenerService() {
          * rare while the read happens on every notification.
          */
         private val observers = CopyOnWriteArrayList<(List<CarMessage>) -> Unit>()
+
+        // --- the unfiltered feed ------------------------------------------
+
+        /**
+         * How many notifications the feed keeps.
+         *
+         * More than [MAX_MESSAGES] because this is the whole shade rather than
+         * the conversations in it, and a driver looking at it is looking for
+         * one thing among many. Still bounded: a pane is not a scrollback.
+         */
+        const val MAX_NOTICES: Int = 24
+
+        @Volatile
+        private var currentNotices: List<CarNotice> = emptyList()
+
+        /** The most recent unfiltered feed, for a tile that has not observed yet. */
+        val latestNotices: List<CarNotice> get() = currentNotices
+
+        private val noticeObservers = CopyOnWriteArrayList<(List<CarNotice>) -> Unit>()
+
+        fun observeNotices(observer: (List<CarNotice>) -> Unit) {
+            noticeObservers.addIfAbsent(observer)
+            observer(currentNotices)
+        }
+
+        fun unobserveNotices(observer: (List<CarNotice>) -> Unit) {
+            noticeObservers.remove(observer)
+        }
+
+        private fun deliverNotices(notices: List<CarNotice>) {
+            currentNotices = notices
+            noticeObservers.forEach { observer ->
+                runCatching { observer(notices) }
+                    .onFailure { SessionLog.shared.warn(TAG, "notice observer failed: $it") }
+            }
+        }
+
+        /**
+         * Turns any notification into a [CarNotice], or null when it is noise.
+         *
+         * Far more permissive than [conversationOf], which is the point -- this
+         * pane exists because a driver wanted "all notifications on the phone",
+         * not the subset that looks like a chat. Only three things are dropped:
+         * a group summary, because it repeats its children; Headway's own,
+         * because a pane reporting the service drawing it is a mirror facing a
+         * mirror; and one with neither a title nor any text, which would draw as
+         * an empty row.
+         */
+        private fun noticeOf(context: Context, sbn: StatusBarNotification): CarNotice? {
+            val notification = sbn.notification ?: return null
+            if ((notification.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return null
+            if (sbn.packageName == context.packageName) return null
+            val extras = notification.extras
+            val title = extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim()
+            val text = (
+                extras?.getCharSequence(Notification.EXTRA_TEXT)
+                    ?: extras?.getCharSequence(Notification.EXTRA_BIG_TEXT)
+                    ?: extras?.getCharSequence(Notification.EXTRA_SUB_TEXT)
+                )?.toString()?.trim()
+            if (title.isNullOrBlank() && text.isNullOrBlank()) return null
+            return CarNotice(
+                key = sbn.key.orEmpty(),
+                packageName = sbn.packageName.orEmpty(),
+                appLabel = appLabelOf(context, sbn.packageName.orEmpty()),
+                title = title.orEmpty(),
+                text = text.orEmpty(),
+                postedAtMillis = sbn.postTime,
+                ongoing = (notification.flags and Notification.FLAG_ONGOING_EVENT) != 0,
+            )
+        }
+
+        private fun appLabelOf(context: Context, packageName: String): String = runCatching {
+            val packages = context.packageManager
+            packages.getApplicationLabel(packages.getApplicationInfo(packageName, 0)).toString()
+        }.getOrDefault(packageName)
 
         /**
          * Registers [observer] and immediately hands it the current feed.

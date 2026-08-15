@@ -274,6 +274,25 @@ object HeadwaySettings {
      */
     const val KEY_APP_UI_SCALE: String = "app_ui_scale"
 
+    /**
+     * How large every panel's own content draws, as a `CarUiScale` factor.
+     *
+     * One number for the whole car screen, distinct from [KEY_APP_UI_SCALE]
+     * which is per hosted app. A driver asked for both: the per-app one because
+     * a map and a messenger disagree about what 100% means, and this one because
+     * "all UI in ALL panels" should be movable without visiting each app.
+     */
+    const val KEY_PANEL_SCALE: String = "panel_scale"
+
+    fun panelScale(context: Context): Float =
+        runCatching { of(context).getFloat(KEY_PANEL_SCALE, CarUiScale.DEFAULT) }
+            .getOrDefault(CarUiScale.DEFAULT)
+            .coerceIn(CarUiScale.MIN, CarUiScale.MAX)
+
+    fun setPanelScale(context: Context, scale: Float) {
+        runCatching { of(context).edit().putFloat(KEY_PANEL_SCALE, scale).apply() }
+    }
+
     /** Every app's chosen panel scale. */
     fun appUiScales(context: Context): Map<String, Float> =
         CarUiScale.readAll(
