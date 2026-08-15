@@ -61,7 +61,7 @@ class DashLayoutStoreTest {
     // --- the shipped default -------------------------------------------------
 
     @Test
-    fun `the default is the app grid beside a clock stacked over now-playing`() {
+    fun `the default is the app grid beside the car readings over now-playing`() {
         val root = DashLayoutStore.DEFAULT.root as? DashNode.Split
             ?: error("the default must divide the screen")
 
@@ -72,7 +72,9 @@ class DashLayoutStoreTest {
             ?: error("the second pane must be the stacked column")
 
         assertEquals(DashNode.Orientation.VERTICAL, column.orientation)
-        assertEquals(DashNode.Leaf(PaneKind.CLOCK), column.first)
+        // The rail draws the clock, so the shipped layout does not: two clocks
+        // on one 800x480 screen is a pane spent on nothing.
+        assertEquals(DashNode.Leaf(PaneKind.SENSORS), column.first)
         assertEquals(DashNode.Leaf(PaneKind.NOW_PLAYING), column.second)
 
         // No legacy mirror pane. It meant "a hole through which the whole

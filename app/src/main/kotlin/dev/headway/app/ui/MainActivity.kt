@@ -910,10 +910,16 @@ class MainActivity : AppCompatActivity() {
                 this,
                 "What blanking does, and why the phone stays on",
                 "Covers your phone with black for the drive, so nothing of the phone " +
-                    "shows and nothing can be tapped by accident. The screen has to stay " +
-                    "on -- Android stops a shared app drawing when its display sleeps -- " +
-                    "so this is the closest there is to \"off\". Tap the black screen to " +
-                    "bring the phone back, and turn the brightness right down.\n\n" +
+                    "shows. The screen has to stay on -- Android stops a shared app " +
+                    "drawing when its display sleeps -- so this is the closest there is " +
+                    "to \"off\". Turn the brightness right down.\n\n" +
+                    "The cover does not take touches: it cannot, because the car's " +
+                    "touches are injected into the same pipeline and a cover that took " +
+                    "them would swallow every one. So the app underneath still responds " +
+                    "to a finger on the phone even though you cannot see it -- keep the " +
+                    "phone somewhere it will not be pressed. Bring the screen back with " +
+                    "**Show phone screen** on Headway's notification, or from the car " +
+                    "screen's settings.\n\n" +
                     "It is applied only when you shared a single app, where the car " +
                     "cannot see it; sharing your whole screen leaves the phone alone, " +
                     "because the cover would be all the car got. Covering needs the " +

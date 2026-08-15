@@ -159,7 +159,12 @@ class CarAppTile(
         // time the pane appears -- which is the flow a saved layout takes on
         // every single drive. renderPicker() shows why instead.
         if (wanted != null && CarHostCapability.available(appContext)) {
-            open(wanted)
+            // Through the same gate as a picked app, not straight to `open`. The
+            // allow-list used to be applied during discovery, so a pinned app
+            // that was not allowed simply never resolved here; now that
+            // discovery lists everything, a saved layout would have been the one
+            // route onto the car screen that asked nobody.
+            chooseOrAsk(wanted)
         } else {
             renderPicker()
         }

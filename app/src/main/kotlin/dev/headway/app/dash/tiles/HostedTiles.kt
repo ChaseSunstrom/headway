@@ -576,32 +576,6 @@ class WidgetTile(
 }
 
 /**
- * The one `AppWidgetHost` for the process, and a count of who wants it
- * listening.
- *
- * ## Why there cannot be one per tile
- *
- * `AppWidgetService` identifies a host by the pair (package, host id), not by the
- * object. Two `AppWidgetHost` instances sharing a host id are the same host as
- * far as the service is concerned, and `startListening` *replaces* the registered
- * callback rather than adding to it — so with a host per tile, only whichever
- * tile called `startListening` last would ever receive a `RemoteViews` update.
- * The others would show whatever their widget looked like at the moment they were
- * created and then freeze, which is a bug that looks exactly like a slow widget.
- *
- * Giving each tile a *different* host id would avoid the collision and create a
- * worse one: ids are allocated per host, so `AppWidgetHost.getAppWidgetIds` could
- * no longer enumerate everything Headway owns and `WidgetTile.releaseOrphans`
- * would have nothing to work from.
- *
- * ## Why the count
- *
- * `stopListening` is host-wide, so the first pane to hide would silence every
- * other pane. Counting retains means the host listens while any tile is showing
- * and stops when the last one goes, which is what `DashTile` asks of a tile that
- * observes something expensive.
- */
-/**
  * An `AppWidgetHost` whose failure states are Headway's words, not the platform's.
  *
  * ## Why this exists
@@ -662,6 +636,32 @@ private class HeadwayWidgetHostView(
     }
 }
 
+/**
+ * The one `AppWidgetHost` for the process, and a count of who wants it
+ * listening.
+ *
+ * ## Why there cannot be one per tile
+ *
+ * `AppWidgetService` identifies a host by the pair (package, host id), not by the
+ * object. Two `AppWidgetHost` instances sharing a host id are the same host as
+ * far as the service is concerned, and `startListening` *replaces* the registered
+ * callback rather than adding to it — so with a host per tile, only whichever
+ * tile called `startListening` last would ever receive a `RemoteViews` update.
+ * The others would show whatever their widget looked like at the moment they were
+ * created and then freeze, which is a bug that looks exactly like a slow widget.
+ *
+ * Giving each tile a *different* host id would avoid the collision and create a
+ * worse one: ids are allocated per host, so `AppWidgetHost.getAppWidgetIds` could
+ * no longer enumerate everything Headway owns and `WidgetTile.releaseOrphans`
+ * would have nothing to work from.
+ *
+ * ## Why the count
+ *
+ * `stopListening` is host-wide, so the first pane to hide would silence every
+ * other pane. Counting retains means the host listens while any tile is showing
+ * and stops when the last one goes, which is what `DashTile` asks of a tile that
+ * observes something expensive.
+ */
 internal object SharedWidgetHost {
 
     /**

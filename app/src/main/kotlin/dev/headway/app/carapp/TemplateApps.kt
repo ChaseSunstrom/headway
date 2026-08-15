@@ -141,13 +141,10 @@ object TemplateApps {
         navigators(context).filter { it.allowed(context) }
 
     /**
-     * Every car app on the phone, by label.
+     * Every car app on the phone, allowed or not, by label.
      *
      * `MATCH_ALL` is deliberately not passed: a disabled component should not be
      * offered, and the default match already excludes it.
-     */
-    /**
-     * Every car app on the phone, allowed or not.
      *
      * ## Why the allow-list is not applied here
      *

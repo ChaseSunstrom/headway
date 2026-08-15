@@ -88,8 +88,8 @@ ADR removes.
 
 ### The rail
 
-The top of the car screen is a settings button, a microphone button, and the
-driver's pinned items — layouts and apps, in one ordered list, and nothing else.
+One edge of the car screen is a settings button, a microphone button, the
+driver's pinned items — layouts and apps, in one ordered list — and the clock.
 
 The five hardcoded tabs are gone. They were five arrangements Headway chose, and
 a driver who only uses two of them was still paying for five touch targets across
@@ -97,6 +97,18 @@ an 800-pixel panel. A pinned layout *is* a tab; a pinned app opens in the live
 app pane. Both are the driver's choice, so both live in `Rail` (`core-dash`) as
 an ordered list, because a button that moves between drives is a button that has
 to be read rather than reached for.
+
+Which edge, how big, and whether the clock is on it are the driver's too, held in
+`RailStyle` (`core-dash`) apart from the pins: pinning an app is a daily act and
+moving the rail is a once-ever one, and an unreadable style must not be able to
+cost somebody their pins. Size is applied by scaling `CarMetrics` rather than by
+setting a thickness, so the buttons, pills, icons and clock move together and the
+44-pixel touch floor still applies at the smallest setting — a rail that is
+thinner than its own buttons is what the thickness-only version produced.
+
+The clock is on the rail rather than in a pane because a pane is a fifth of an
+800x480 dashboard and the time is eight characters. The `CLOCK` pane stays, for a
+driver who wants the link status with it.
 
 ### Editing, on the car, behind a lock
 
@@ -220,9 +232,16 @@ says this where the choice is made.
 ### Nothing without permission
 
 An app cannot be opened, pinned, or launched by voice on the car until the driver
-has allowed it, one at a time, on the phone. Empty by default. `AllowedApps`
-holds the rule and `CarShell.openApp` is the single gate every route passes
-through.
+has allowed it, one at a time. Empty by default. `AllowedApps` holds the rule and
+`CarShell.openApp` is the single gate every route passes through; the `CAR_APP`
+pane passes through `CarAppTile.chooseOrAsk`, on both the picked and the pinned
+path.
+
+The *asking* is not phone-only. Discovery lists every installed car app and the
+pane asks for the grant on the one the driver taps, because filtering inside
+discovery made an app the driver had not ticked invisible rather than blocked —
+a shorter list with nothing to say why, and no route from the seat to the setting
+that would have revealed the rest.
 
 ## Consequences
 

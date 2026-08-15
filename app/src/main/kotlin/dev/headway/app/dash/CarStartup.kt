@@ -30,7 +30,6 @@ import dev.headway.app.ui.theme.Headway
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sin
 
 /**
  * What the car shows in the first second and a half of a session.
@@ -260,18 +259,29 @@ class CarStartupView(
     }
 
     /**
-     * [ease] with a small overshoot, so a bar arrives with weight.
+     * A curve that passes its resting place and comes back, so a bar has weight.
      *
      * A rule that decelerates to exactly its resting place looks correct and
-     * dead. Passing it by a few percent and coming back is what makes the
-     * arrival read as a physical object stopping rather than an interpolation
-     * ending. The overshoot is deliberately small: this plays on a dashboard, at
-     * arm's length, once per drive.
+     * dead. Passing it by a few percent and returning is what makes the arrival
+     * read as a physical object stopping rather than an interpolation ending.
+     *
+     * The shape is AOSP's `OvershootInterpolator`,
+     * `1 + (t-1)^2 * ((tension+1)(t-1) + tension)`, which is exactly 0 at 0 and
+     * exactly 1 at 1 whatever the tension — so a bar always lands where the
+     * layout says, and only the route there changes.
+     *
+     * It replaces `ease(t)` plus a half-sine bump scaled by `(1 - t)`, which was
+     * not an overshoot at all: both factors of that bump vanish as `t` approaches
+     * 1, so it peaked in the *middle* of the travel and was identically zero at
+     * the arrival it was meant to decorate -- a bulge mid-flight worth a fraction
+     * of a pixel, and a landing as dead as the plain ease.
+     *
+     * [TENSION] is deliberately low. This plays on a dashboard, at arm's length,
+     * once per drive; the platform's own default of 2.0 is a bounce.
      */
     private fun settle(value: Float): Float {
-        val eased = ease(value)
-        val back = sin(value.coerceIn(0f, 1f) * Math.PI.toFloat())
-        return eased + back * OVERSHOOT * (1f - value)
+        val t = value.coerceIn(0f, 1f) - 1f
+        return 1f + t * t * ((TENSION + 1f) * t + TENSION)
     }
 
     private fun withAlpha(color: Int, fraction: Float): Int = Color.argb(
@@ -308,7 +318,15 @@ class CarStartupView(
         const val EXIT_FROM = 0.86f
 
         /** How far a bar passes its resting place before coming back. */
-        const val OVERSHOOT = 0.035f
+        /**
+         * How hard a bar overshoots, in `OvershootInterpolator`'s units.
+         *
+         * 0.9 peaks about 3% past the resting place, roughly two-thirds of the
+         * way through the travel. On a 300-pixel bar that is a dozen pixels --
+         * enough to read as momentum from the driver's seat, small enough not to
+         * read as a bounce.
+         */
+        const val TENSION = 0.9f
 
         /** Letter spacing as the wordmark appears, and where it settles. */
         const val WORD_SPACING_WIDE = 0.55f

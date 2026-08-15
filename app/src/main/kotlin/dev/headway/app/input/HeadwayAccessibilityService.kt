@@ -277,7 +277,10 @@ class HeadwayAccessibilityService : AccessibilityService() {
             return
         }
         blackout = view
-        SessionLog.shared.info(TAG, "phone screen covered; tap it to bring the phone back")
+        SessionLog.shared.info(
+            TAG,
+            "phone screen covered; \"Show phone screen\" on the notification brings it back",
+        )
     }
 
     /** True while the phone-screen cover is up. */

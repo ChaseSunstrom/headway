@@ -366,6 +366,19 @@ data class CarMetrics(val widthPx: Int, val heightPx: Int, val densityDpi: Int) 
 
     fun describe(): String = "${widthPx}x$heightPx @ $densityDpi dpi, unit ${unit}px"
 
+    /**
+     * The same screen at a different control size, for one part of the layout.
+     *
+     * Scales [densityDpi], because every size below is derived from it -- so a
+     * scaled copy moves the touch target, the gutter and the corner radius
+     * together and nothing has to be scaled twice. The 44-pixel floor still
+     * applies, which is the point: a driver who shrinks the rail cannot shrink
+     * a button below what a moving car lets them hit.
+     */
+    fun scaled(factor: Float): CarMetrics =
+        if (factor == 1f) this
+        else copy(densityDpi = (densityDpi * factor).toInt().coerceAtLeast(1))
+
     private companion object {
         const val MIN_TARGET_DP = 48.0
         const val BASE_DPI = 160.0

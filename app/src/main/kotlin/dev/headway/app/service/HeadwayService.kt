@@ -301,6 +301,9 @@ open class HeadwayService : Service() {
         // this action is always reachable.
         if (intent?.action == ACTION_SHOW_PHONE) {
             runCatching { HeadwayAccessibilityService.instance.value?.hideBlackout() }
+            // The action only belongs on the notification while the cover is up,
+            // and it has just come down.
+            refreshNotification()
             step("the driver asked for the phone screen back")
             return START_STICKY
         }
@@ -1426,6 +1429,12 @@ open class HeadwayService : Service() {
             return
         }
         service.showBlackout()
+        // The "Show phone screen" action is built from `covering`, which was
+        // false when the notification was last posted -- every notification so
+        // far in this session predates the cover. Without this re-post the only
+        // way back to the phone is the car screen's settings sheet, which is no
+        // way back at all for a driver who has left the car.
+        refreshNotification()
     }
 
     /**
@@ -1704,6 +1713,7 @@ open class HeadwayService : Service() {
     }
 
     private fun updateNotification(text: String) {
+        notificationText = text
         // Posting without POST_NOTIFICATIONS is a no-op on the platform side but
         // the compat layer can throw; a failed status update must never take the
         // session down with it.
@@ -1713,6 +1723,21 @@ open class HeadwayService : Service() {
                 buildNotification(getString(R.string.app_name), text),
             )
         }
+    }
+
+    /**
+     * The last status line posted, so the notification can be rebuilt without one.
+     *
+     * [buildNotification] reads state beyond its arguments -- whether the phone
+     * screen is covered decides whether the "Show phone screen" action is there
+     * -- so that state changing has to re-post, and re-posting needs the text
+     * that was already on it.
+     */
+    private var notificationText: String = "Starting"
+
+    /** Re-posts the ongoing notification against current state, same text. */
+    private fun refreshNotification() {
+        updateNotification(notificationText)
     }
 
     /** Notification text. Terse: this is read at a glance, in a car. */

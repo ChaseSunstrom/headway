@@ -113,11 +113,18 @@ rule about what the car screen may show is executable in CI.
 ## What the car screen actually shows
 
 Not the phone. Headway draws at the head unit's own resolution and density: a
-**rail** across the top and a **tree of panels** underneath it.
+**rail** along one edge and a **tree of panels** filling the rest.
 
-The rail holds three things and nothing else — a settings button, a microphone
-button, and whatever you pinned. A pinned item is either one of your layouts or
-an app you open often. Both are your choice, in your order.
+The rail holds four things — a settings button, a microphone button, whatever you
+pinned, and the clock. A pinned item is either one of your layouts or an app you
+open often. Both are your choice, in your order.
+
+**Where the rail goes and how big it is are yours too**, from the car screen's
+settings under *Rail*: any of the four edges, five sizes, and the clock with or
+without the date (or off, if you would rather have a Clock panel). The size moves
+every control on the rail together — buttons, pins, the clock — and stops at a
+44-pixel touch target, because a rail you cannot hit at speed is not a smaller
+rail, it is a broken one.
 
 A layout is any arrangement of panels, of any depth, and you edit it **on the car
 screen**: the rail's settings button, then *Edit this layout*, then split a
@@ -176,12 +183,20 @@ Adding a widget costs one tap on the phone the first time ever: Android makes an
 app prove it may host widgets, and the permission that skips that dialog is
 reserved for system apps. After that, widgets add with no phone interaction.
 
-**Which apps may appear at all is yours to decide, one app at a time**, on the
-phone, parked, under *Apps allowed on the car screen* → **Choose apps**. Nothing
-is allowed by default. The app picker, the widget picker and the car-app list are
-each filtered by that set, and every route that actually *opens* an app — the
-rail, the grid, a map hand-off, a voice command — funnels through one check, so
-an app you have not allowed cannot reach the car screen by any route.
+**Which apps may appear at all is yours to decide, one app at a time.** Nothing
+is allowed by default, and every route that actually *opens* an app — the rail,
+the grid, a map hand-off, a voice command, a pinned Car app panel — funnels
+through one check, so an app you have not allowed cannot reach the car screen by
+any route.
+
+There are two places to make that choice. On the phone, parked, under *Apps
+allowed on the car screen* → **Choose apps**, which is the one with a keyboard
+and a full screen to read on. Or from the seat: a **Car app** panel lists every
+car app you have installed and asks for the grant on the one you tap. It lists
+them all rather than only the allowed ones on purpose — filtering inside
+*discovery* meant an app you had not ticked was not blocked but invisible, with
+nothing on the car screen to say why or how to fix it, and a filter you cannot
+see is a bug rather than a permission gate.
 
 **Themes**: three bases (dark, true black, light) and six accents, one of which
 is no accent at all. Changed from the car screen or from the phone.
@@ -237,12 +252,18 @@ the point and the edges are chrome.
 
 **Blank the phone screen while driving**, on the phone's *The car screen* card,
 is **on by default**. It covers your phone with black for the drive so nothing of
-the phone shows and nothing can be tapped by accident. It is safe as a default
-only because it is self-gating: it goes up only once the capture has been
-*measured* as a single app — where Android excludes system UI, so the car never
-sees the cover — and never for a whole-display capture, where the cover would be
-the entire picture. It needs the accessibility grant, and says so in the log if
-it does not have it. Tap the black screen to bring the phone back.
+the phone shows. It is safe as a default only because it is self-gating: it goes
+up only once the capture has been *measured* as a single app — where Android
+excludes system UI, so the car never sees the cover — and never for a
+whole-display capture, where the cover would be the entire picture. It needs the
+accessibility grant, and says so in the log if it does not have it.
+
+Bring the screen back with **Show phone screen** on Headway's notification, or
+from the car screen's settings sheet. Not by tapping the cover: the car's touches
+are injected into the phone's own input pipeline, so a cover that accepted
+touches would swallow every one of them and the car screen would go dead. The
+flip side is that the app underneath still responds to a finger on the phone even
+though you cannot see it — keep the phone somewhere it will not be pressed.
 
 The screen stays *on*, and that is not a bug to be fixed: Android stops a shared
 app drawing when its display sleeps, so a phone that is on and black is the

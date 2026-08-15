@@ -339,7 +339,11 @@ class DashLayoutStore(private val storage: Storage) {
                     second = DashNode.Split(
                         orientation = DashNode.Orientation.VERTICAL,
                         ratio = 0.42f,
-                        first = DashNode.Leaf(PaneKind.CLOCK),
+                        // Not CLOCK: the rail carries the time by default, and
+                        // a shipped layout that puts a second clock beside it
+                        // spends a pane on something already on screen. The car
+                        // pane is the one that cannot be anywhere else.
+                        first = DashNode.Leaf(PaneKind.SENSORS),
                         second = DashNode.Leaf(PaneKind.NOW_PLAYING),
                     ),
                 ),

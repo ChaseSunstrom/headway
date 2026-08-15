@@ -78,18 +78,12 @@ class RailStyleTest {
     }
 
     @Test
-    fun `the rail is never thinner than a pixel`() {
-        // A unit of zero is what a head unit that reports no density gives, and
-        // a zero-height rail is a dashboard with no controls at all.
-        assertTrue(RailStyle(scale = RailStyle.MIN_SCALE).thicknessPx(0) >= 1)
-        assertTrue(RailStyle(scale = RailStyle.MIN_SCALE).thicknessPx(1) >= 1)
-    }
-
-    @Test
-    fun `thickness follows the unit and the scale`() {
-        assertEquals(96, RailStyle(scale = 1.0f).thicknessPx(96))
-        assertEquals(120, RailStyle(scale = 1.25f).thicknessPx(96))
-        assertEquals(67, RailStyle(scale = 0.7f).thicknessPx(96))
+    fun `every offered size survives the clamp`() {
+        // The picker offers these, so none of them may be silently changed into
+        // something else on the way to the rail.
+        RailStyle.SCALE_CHOICES.forEach { choice ->
+            assertEquals(choice, RailStyle(scale = choice).effectiveScale, "size $choice")
+        }
     }
 
     @Test

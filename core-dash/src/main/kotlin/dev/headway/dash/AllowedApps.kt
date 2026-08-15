@@ -28,10 +28,20 @@ package dev.headway.dash
  * hardware Headway does not control. "Everything installed, one tap away" makes
  * that decision silently, once, for a banking app and a map alike.
  *
- * So nothing is offered on the car until it is allowed on the phone — one
- * deliberate choice per app, made while parked, with a keyboard and a full
- * screen to read on. An empty list is the correct starting state and the car
- * says so rather than showing a picker of everything.
+ * So nothing *runs* on the car until it is allowed — one deliberate choice per
+ * app. An empty list is the correct starting state.
+ *
+ * ## Where the choice is made
+ *
+ * On the phone, parked, with a keyboard and a full screen to read on; and from
+ * the seat, where the car-app pane lists what is installed and asks for the
+ * grant on the one the driver taps. Both write the same set through the same
+ * functions here.
+ *
+ * What this list does **not** do is hide apps from a picker. Filtering inside
+ * discovery made an unticked app invisible rather than blocked, with nothing on
+ * the car screen to say why or how to change it — a filter nobody can see is a
+ * bug, not a gate. Pickers show everything; [allows] decides what may open.
  *
  * ## Why the list is stored and not derived
  *

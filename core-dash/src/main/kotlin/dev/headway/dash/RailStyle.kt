@@ -67,8 +67,12 @@ enum class RailEdge {
  * the Clock pane becomes what it should always have been: optional.
  *
  * @param edge which side the rail is fixed to.
- * @param scale a multiplier on the rail's thickness and its glyphs. Clamped to
- *   [MIN_SCALE]..[MAX_SCALE]; 1.0 is one touch target thick.
+ * @param scale a multiplier on every control the rail carries -- buttons,
+ *   pills, icons, the clock -- and so on the rail's thickness, which is
+ *   whatever those need. Clamped to [MIN_SCALE]..[MAX_SCALE]; 1.0 is a button
+ *   one touch target square. The car screen applies it by scaling its metrics
+ *   (`CarMetrics.scaled`), which keeps the 44-pixel touch floor, so the
+ *   smallest setting is still hittable at speed.
  * @param showClock whether the time appears at the far end of the rail.
  * @param showDate whether the date appears under (or beside) the time. Ignored
  *   when [showClock] is false, because a date with no time reads as a label
@@ -86,9 +90,6 @@ data class RailStyle(
 
     /** True when the date should really be drawn. */
     val clockShowsDate: Boolean get() = showClock && showDate
-
-    /** The rail's thickness in car pixels, given the layout unit. */
-    fun thicknessPx(unitPx: Int): Int = (unitPx * effectiveScale).toInt().coerceAtLeast(1)
 
     fun describe(): String = buildString {
         append(edge.describe())

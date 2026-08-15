@@ -299,22 +299,11 @@ object AppPaneHost {
                     override fun onCapturedContentResize(width: Int, height: Int) {
                         if (width <= 0 || height <= 0) return
                         val origin = captureOrigin(context, width, height)
-                        val display = sourceGeometry(context)
-                        // A capture that is the display, to within a pixel of
-                        // rounding, is a display capture. Anything smaller is one
-                        // app's window.
-                        // Measured against whatever display Headway believes is
-                        // being captured -- `sourceGeometry` already returns the
-                        // simulated display's size when one is in use -- so a
-                        // capture smaller than it is a single app wherever it is.
-                        //
-                        // This used to short-circuit on `CarAppDisplay.active ==
-                        // null`, which made a simulated-display session
-                        // whole-display *by construction*: a driver who picked
-                        // "a single app" in the consent sheet still got no
-                        // origin correction and no blackout, and the pane was
-                        // fitted to a rectangle the capture did not have.
-                        val single = display.first - width > 1 || display.second - height > 1
+                        // A capture the size of a display, to within a pixel of
+                        // rounding, is that display. Anything smaller than every
+                        // display it could be is one app's window. See
+                        // [capturesSingleApp] for why "every" rather than "the".
+                        val single = capturesSingleApp(context, width, height)
                         val changed = synchronized(lock) {
                             if (sourceWidth == width && sourceHeight == height) {
                                 false
@@ -579,6 +568,41 @@ object AppPaneHost {
      */
     private fun sourceGeometry(context: Context): Pair<Int, Int> {
         CarAppDisplay.active?.let { return it.width to it.height }
+        return phoneGeometry(context)
+    }
+
+    /**
+     * Whether a capture of [width]x[height] is one app's window rather than a display.
+     *
+     * The question this answers decides whether the phone screen may be covered,
+     * and getting it wrong in one direction sends the car a black rectangle for
+     * the rest of the drive. So it is asked of *every* display the capture could
+     * be, and answers "single app" only when the capture is smaller than all of
+     * them.
+     *
+     * Comparing against one display is not enough once a simulated display
+     * exists. That display can be larger than the phone's own screen -- a
+     * 1920x720 car geometry against a 1080x2400 panel is wider than it -- so a
+     * driver who configured one and then shared their whole *phone* screen
+     * produced a capture narrower than the reference and was called single-app,
+     * which raised the cover over the very picture the car was being sent.
+     *
+     * Erring the other way is cheap: a single app mistaken for a display gets no
+     * cover and a pane fitted to the display's rectangle, which is what every
+     * build before app sharing did.
+     */
+    private fun capturesSingleApp(context: Context, width: Int, height: Int): Boolean {
+        val candidates = buildList {
+            CarAppDisplay.active?.let { add(it.width to it.height) }
+            add(phoneGeometry(context))
+        }
+        return candidates.all { (displayWidth, displayHeight) ->
+            displayWidth - width > 1 || displayHeight - height > 1
+        }
+    }
+
+    /** Display 0, as it is oriented right now. */
+    private fun phoneGeometry(context: Context): Pair<Int, Int> {
         val manager = context.getSystemService(DisplayManager::class.java)
         val display = manager?.getDisplay(Display.DEFAULT_DISPLAY)
         // The display *as it is oriented*, not its physical panel. `Display.Mode`
@@ -605,10 +629,16 @@ object AppPaneHost {
      * anything else.
      */
     private fun captureOrigin(context: Context, width: Int, height: Int): Pair<Int, Int> {
-        // A simulated display is captured whole, so its capture starts at its
-        // own origin and there are no system bars in the way.
-        if (CarAppDisplay.active != null) return 0 to 0
-        val display = sourceGeometry(context)
+        // A simulated display is captured whole and has no system bars, so its
+        // capture starts at its own origin. Decided by the measurement rather
+        // than by the display merely existing: a driver who has one configured
+        // and shares a single app on the *phone* is capturing display 0, bars
+        // and all, and short-circuiting on `active != null` gave that capture an
+        // origin of (0, 0) and a picture offset by the height of a status bar.
+        CarAppDisplay.active?.let { simulated ->
+            if (simulated.width - width <= 1 && simulated.height - height <= 1) return 0 to 0
+        }
+        val display = phoneGeometry(context)
         val displayWidth = display.first
         val displayHeight = display.second
         if (displayWidth <= 0 || displayHeight <= 0) return 0 to 0

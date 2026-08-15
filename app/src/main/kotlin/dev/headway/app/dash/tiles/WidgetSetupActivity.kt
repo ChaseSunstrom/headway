@@ -72,6 +72,16 @@ class WidgetSetupActivity : AppCompatActivity() {
     private var widgetId: Int = AppWidgetManager.INVALID_APPWIDGET_ID
     private var provider: ComponentName? = null
 
+    /**
+     * Whether [widgetId] was allocated here, and so is this activity's to throw away.
+     *
+     * False on the repair path, where the id came from a saved layout that still
+     * points at it. Backing out of a repair used to delete that id, which left
+     * the pane referring to a widget the host no longer knows -- a pane bricked
+     * by the act of trying to fix it, with no way back but deleting it.
+     */
+    private var ownsId: Boolean = false
+
     private val binding = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
         ::onBound,
@@ -96,6 +106,7 @@ class WidgetSetupActivity : AppCompatActivity() {
             SessionLog.shared.info(TAG, "repairing the binding for widget $existing")
             existing
         } else {
+            ownsId = true
             WidgetTile.allocate(this) { SessionLog.shared.info(TAG, it) }
         }
         // Claimed before anything can run that sweeps orphans. Between allocate
@@ -144,8 +155,15 @@ class WidgetSetupActivity : AppCompatActivity() {
         // So verify rather than repeat. The dialog also returns the id it bound,
         // which is authoritative over the one allocated here.
         result.data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
-            ?.takeIf { it != AppWidgetManager.INVALID_APPWIDGET_ID }
-            ?.let { widgetId = it }
+            ?.takeIf { it != AppWidgetManager.INVALID_APPWIDGET_ID && it != widgetId }
+            ?.let {
+                // The claim has to move with the id, or an orphan sweep during
+                // the provider's setup screen deletes the one actually bound
+                // while protecting one that no longer matters.
+                widgetId = it
+                ownsId = true
+                WidgetSetup.claim(it)
+            }
         if (!WidgetTile.isBound(this, widgetId)) {
             SessionLog.shared.warn(TAG, "the approval dialog returned OK but nothing is bound")
             cancel()
@@ -191,8 +209,22 @@ class WidgetSetupActivity : AppCompatActivity() {
     }
 
     private fun cancel() {
-        WidgetTile.forget(this, widgetId) { SessionLog.shared.info(TAG, it) }
+        // Only an id allocated here. A repair carries the id a saved layout
+        // still names, and releasing that would turn a pane whose binding needs
+        // fixing into a pane pointing at nothing at all.
+        if (ownsId) {
+            WidgetTile.forget(this, widgetId) { SessionLog.shared.info(TAG, it) }
+        }
         deliver(AppWidgetManager.INVALID_APPWIDGET_ID)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // A flow that ends any way other than [deliver] -- the system reclaiming
+        // this activity while the driver is in a provider's setup screen -- would
+        // otherwise leave the claim standing for the life of the process, and an
+        // id no sweep will ever collect.
+        if (WidgetSetup.pendingId == widgetId) WidgetSetup.release(widgetId)
     }
 
     private fun deliver(id: Int) {
@@ -290,6 +322,11 @@ object WidgetSetup {
     /** Marks [id] as in flight, so an orphan sweep leaves it alone. */
     fun claim(id: Int) {
         pendingId = id
+    }
+
+    /** Drops the claim on [id], if it is still the one standing. */
+    fun release(id: Int) {
+        if (pendingId == id) pendingId = AppWidgetManager.INVALID_APPWIDGET_ID
     }
 
     /**

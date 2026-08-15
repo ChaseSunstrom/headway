@@ -31,12 +31,17 @@ result on 2026-08-13. What remains unverified on hardware is listed under
 
 ## What the car screen is, as of this build
 
-A **rail** across the top and a **tree of panels** under it.
+A **rail** along one edge and a **tree of panels** filling the rest.
 
-The rail holds exactly three kinds of thing: a settings button, a microphone
-button, and whatever the driver pinned — their own layouts and their own apps,
-in their own order. The six hardcoded tabs are gone; a pinned layout *is* a tab,
-and a driver who only uses two of them now has two buttons rather than six.
+The rail holds four kinds of thing: a settings button, a microphone button,
+whatever the driver pinned — their own layouts and their own apps, in their own
+order — and the clock. The six hardcoded tabs are gone; a pinned layout *is* a
+tab, and a driver who only uses two of them now has two buttons rather than six.
+
+Its **edge, size and clock are settings** (`RailStyle`, `core-dash`): any of the
+four edges, five sizes, clock with or without the date. The size is applied by
+scaling the car screen's `CarMetrics`, so every control on the rail moves
+together and the 44-pixel touch floor still holds at the smallest setting.
 
 A layout is a binary split tree of any depth, so "any number of panels" is true
 without a limit anywhere. It is **editable on the car screen** — split a pane,
@@ -54,6 +59,7 @@ re-locks.
 | Car app | `androidx.car.app` templates, drawn by Headway (ADR 0007) |
 | Messages | `NotificationListenerService` + the app's own `RemoteInput` |
 | Widget | the app's own `RemoteViews`, through `AppWidgetHost` — **any number, all different apps, all at once** |
+| Car | the head unit's own AAP sensor channel — speed, revs, fuel, range, tyre pressures, outside temperature, odometer |
 | All apps / Clock | Headway's own |
 
 **The App pane is the change that answers "why doesn't opening an app work?".**
@@ -83,9 +89,14 @@ the phone the first time ever, because `bindAppWidgetIdIfAllowed` needs the
 system's host-approval dialog once and `BIND_APPWIDGET` is `signature|privileged`.
 
 **Nothing reaches the car screen until the driver allows that app**, one at a
-time, on the phone, parked. Empty by default. The app picker, the widget picker,
-the car-app list, the launcher grid and the voice "open X" command all pass
-through the same gate.
+time. Empty by default. The app picker, the widget picker, the car-app panel, the
+launcher grid and the voice "open X" command all pass through the same gate.
+
+The *asking* happens in two places: on the phone, parked, under *Apps allowed on
+the car screen*, and from the seat, where a Car app panel lists every installed
+car app and asks for the grant on the one the driver taps. Discovery is
+deliberately unfiltered — an app filtered out of a picker is invisible rather
+than blocked, with nothing on the car screen saying why.
 
 Themes are three bases (dark, true black, light) times six accents, one of which
 is *no* accent. Eighteen combinations, composed rather than hand-written, with
