@@ -305,7 +305,13 @@ object AppPaneHost {
                         // [capturesSingleApp] for why "every" rather than "the".
                         val single = capturesSingleApp(context, width, height)
                         val changed = synchronized(lock) {
-                            if (sourceWidth == width && sourceHeight == height) {
+                            // `sourceMeasured` is part of the test, not just the
+                            // size. `detach` clears it, and a re-attach on the
+                            // same grant does not re-register this callback --
+                            // so without it, a session whose capture is the same
+                            // size as the last one would keep the "not measured
+                            // yet" answer and never derive a verdict at all.
+                            if (sourceMeasured && sourceWidth == width && sourceHeight == height) {
                                 false
                             } else {
                                 sourceWidth = width
@@ -485,6 +491,16 @@ object AppPaneHost {
             runCatching { display?.surface = null }
             sourceWidth = 0
             sourceHeight = 0
+            // The verdict goes with the geometry it was derived from. Left
+            // standing, a `true` latched from a session that shared one app
+            // makes `HeadwayService.coverPhoneScreen` -- which is gated on
+            // exactly this flag and runs eagerly at bring-up, before any
+            // measurement -- black out the phone at the start of a *later*
+            // session that is sharing the whole display. The car's picture then
+            // is the cover. Zeroing the size while leaving "measured" true was
+            // its own contradiction: a measurement of 0x0.
+            sourceMeasured = false
+            sharingSingleApp = false
             pictureRect = PaneRect(0, 0, 0, 0)
             onStep = {}
         }

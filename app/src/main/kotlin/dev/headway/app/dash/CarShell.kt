@@ -196,6 +196,11 @@ class CarShell(
 
     override fun onStart() {
         super.onStart()
+        // A shell that has been torn down is finished. Nothing dismisses and
+        // re-shows one -- `CarSurface` builds a new shell per session -- and
+        // re-registering from a dead instance would put the observers back with
+        // no `onStop` to take them out again.
+        if (tornDown) return
         DashLayoutStore.observeChanges(layoutsChanged)
         HeadwayTheme.observe(themeChanged)
         AppPaneHost.observe(appPaneChanged)
@@ -206,6 +211,35 @@ class CarShell(
     }
 
     override fun onStop() {
+        teardown()
+        super.onStop()
+    }
+
+    /** True once [teardown] has run, so a second call is free. */
+    private var tornDown = false
+
+    /**
+     * Everything this shell registered, given back — without needing `onStop`.
+     *
+     * `onStop` is not a guarantee. `Dialog.show()` runs `dispatchOnCreate()`,
+     * then `onStart()`, and only then `WindowManager.addView`, setting
+     * `mShowing` last; `dismissDialog()` returns immediately when `mShowing` is
+     * false. So a window refused at `addView` -- a display torn down between
+     * being created and being shown, which is a car that was switched off
+     * mid-bring-up -- leaves a shell that has fully started and can never stop.
+     *
+     * What that used to leak is not one receiver. It is the three observers
+     * `onStart` takes out, the clock's minute tick, every tile's media-session
+     * and notification binding, and `shown` still pointing at the dead shell --
+     * which `active()` then hands to the touch router and the car-app pane for
+     * the life of the process.
+     *
+     * Idempotent, because the caller that catches a failed `show()` and the
+     * `onStop` of a shell that did come up can both reach it.
+     */
+    fun teardown() {
+        if (tornDown) return
+        tornDown = true
         DashLayoutStore.unobserveChanges(layoutsChanged)
         HeadwayTheme.unobserve(themeChanged)
         AppPaneHost.unobserve(appPaneChanged)
@@ -220,7 +254,6 @@ class CarShell(
         // the process, and the only symptom is battery.
         live.forEach { runCatching { it.stop() } }
         AppPaneHost.pictureRect = EMPTY_RECT
-        super.onStop()
     }
 
     // --- what the outside world asks of the shell -----------------------------

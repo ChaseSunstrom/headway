@@ -366,25 +366,68 @@ class CarSurface private constructor(
             metrics: CarMetrics,
             onStep: (String) -> Unit,
         ): CarShell? {
-            fun build(): CarShell? = runCatching {
-                CarShell(context, display, metrics, onStep).also { it.show() }
-            }.getOrElse {
-                onStep("car surface: the dashboard window was refused ($it)")
-                null
+            // The shell is held outside the `runCatching` so a failed `show`
+            // still has something to tear down. `Dialog.show()` runs
+            // `dispatchOnCreate` and `onStart` *before* `addView`, and sets
+            // `mShowing` only after it -- so a window refused at `addView`
+            // leaves a shell that has fully started and that `dismiss()` will
+            // not stop, holding three observers, the clock's minute tick, every
+            // tile's bindings, and `CarShell.shown`.
+            fun build(): CarShell? {
+                val shell = runCatching { CarShell(context, display, metrics, onStep) }
+                    .getOrElse {
+                        onStep("car surface: the dashboard could not be built ($it)")
+                        return null
+                    }
+                return runCatching { shell.show(); shell }.getOrElse {
+                    onStep("car surface: the dashboard window was refused ($it)")
+                    shell.teardown()
+                    null
+                }
             }
 
             if (Looper.myLooper() == Looper.getMainLooper()) return build()
 
             val done = java.util.concurrent.CountDownLatch(1)
             val built = AtomicReference<CarShell?>(null)
+            // One lock over both "publish what I built" and "give up and take
+            // whatever was published", because the two race. Two independent
+            // flags leave a window -- the builder tests `abandoned` as false,
+            // the waiter times out and finds `built` still null, and the builder
+            // then publishes a shell nobody will ever collect. Deciding under
+            // one lock makes exactly one of the two branches happen.
+            val gate = Any()
+            var abandoned = false
             Handler(Looper.getMainLooper()).post {
-                built.set(build())
+                val shell = build()
+                val orphaned = synchronized(gate) {
+                    if (!abandoned) built.set(shell)
+                    abandoned && shell != null
+                }
+                if (orphaned) {
+                    // Shown, started and observing, and the caller has already
+                    // returned null and released the display -- so this would
+                    // sit there for the life of the process with no route to it.
+                    onStep("car surface: the dashboard arrived too late to be used; taking it back down")
+                    shell?.teardown()
+                    runCatching { shell?.dismiss() }
+                }
                 done.countDown()
             }
             // Bounded: a main thread this busy has worse problems, and hanging
             // the session's bring-up on it would spend the head unit's video
             // deadline.
             if (!done.await(SHOW_TIMEOUT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                val late = synchronized(gate) {
+                    abandoned = true
+                    built.getAndSet(null)
+                }
+                // Published between the timeout and the lock: same orphan, other
+                // side of the race.
+                late?.let {
+                    it.teardown()
+                    Handler(Looper.getMainLooper()).post { runCatching { it.dismiss() } }
+                }
                 onStep("car surface: the dashboard window did not appear within $SHOW_TIMEOUT_MILLIS ms")
                 return null
             }
