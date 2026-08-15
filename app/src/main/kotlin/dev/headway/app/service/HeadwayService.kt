@@ -1285,6 +1285,17 @@ open class HeadwayService : Service() {
                         .onFailure { step("the phone screen could not be covered: $it") }
                 }
             }
+            // A lost grant has to reach the field the service holds, or nothing
+            // ever offers screen sharing again. See `AppPaneHost.onGrantLost`.
+            AppPaneHost.onGrantLost = {
+                projection = null
+                step(
+                    "screen sharing ended -- on Android 15 and later the platform stops it " +
+                        "whenever the phone locks, and no app can opt out. Tap the " +
+                        "notification to start it again",
+                )
+                runCatching { offerScreenSharing() }
+            }
             runCatching { coverPhoneScreen() }
                 .onFailure { step("the phone screen could not be covered: $it") }
             startSubsystem("audio") { audio?.start(this) }
@@ -1311,6 +1322,7 @@ open class HeadwayService : Service() {
             voice?.let { runCatching { step(it.describe()) } }
             runCatching { CarShell.onVoiceRequested = null }
             runCatching { AppPaneHost.onSharingKnown = null }
+            runCatching { AppPaneHost.onGrantLost = null }
             runCatching { AppPaneHost.detach() }
             runCatching { HeadwayAccessibilityService.instance.value?.hideBlackout() }
             runCatching { video?.stop() }

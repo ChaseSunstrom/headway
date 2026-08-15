@@ -259,12 +259,20 @@ display. So an app can be told to lay itself out for 720×480 instead.
    and produce a black car screen with no error. To check which one you got,
    press **Run the self-test** on the setup screen — its Displays section prints
    every display's flags and says which are usable.
-2. Same screen → **Disable screen-share protections for apps and notifications**.
-   Android 15 and later stop a screen capture when the phone locks and ask for
-   consent again on the next unlock, which would cost the car its picture every
-   time; this toggle is the reported mitigation, though whether it is the one
-   that governs that behaviour is not something this project has been able to
-   confirm from source. Harmless to try, and B-015 records the uncertainty.
+2. Nothing. **There is no toggle for the lock-screen problem** — an earlier
+   version of this file pointed at *Disable screen-share protections for apps
+   and notifications*, and that was wrong. That option governs screenshare
+   *protections* (redacting notifications, hiding password fields); it has
+   nothing to do with the stop-on-lock. On Android 15 QPR1 and later the
+   platform stops a screen capture **unconditionally when the device locks**,
+   with no app-side exemption, and the app is simply told `onStop()`.
+
+   What actually helps is not letting the phone lock: keep *Blank the phone
+   screen while driving* on, which holds the screen awake behind a black
+   window. That defeats the screen **timeout**, which is how a drive normally
+   ends up locked — it cannot stop you pressing the power button. If the
+   capture does stop, Headway now notices and re-offers it in the notification
+   shade instead of leaving app panes dead for the rest of the session.
 3. Headway's setup screen → *How apps reach the car* → **Render apps on the car
    display instead of mirroring**. Or, on the car screen, settings → *Apps and
    panels* → **Run apps on a simulated display**. Either way it takes effect on

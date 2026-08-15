@@ -746,6 +746,14 @@ the other host is the one apps are reading.
 
 **Status:** Open. The route is built and gated; one device session settles it.
 
+> **One half of this entry is now settled, against us.** It used to also carry
+> the question of whether *Disable screen-share protections for apps and
+> notifications* prevents Android 15's stop-on-lock. It does not: that option
+> governs screenshare *protections* — notification redaction and sensitive-field
+> hiding — while the stop-on-lock is unconditional from Android 15 QPR1 with no
+> app-side exemption, the app being told only `onStop()`. Nothing to try, and
+> B-020 records what Headway does about it instead.
+
 **Blocked:** Confirming that the system's screen-capture chooser offers the
 simulated secondary display as its own row, so Headway can record *that* display
 instead of display 0.
@@ -967,6 +975,23 @@ display 0 goes with it, so the driver gets a car screen that works, goes black,
 and comes back only if they pick the phone up. A window flag rather than a wake
 lock — no permission, scoped to the view's lifetime, and it cannot outlive the
 session.
+
+**Corrected 2026-08-15.** This entry used to say the flag handled the lock. It
+does not, and the distinction matters: `FLAG_KEEP_SCREEN_ON` defeats the screen
+*timeout*, which is how a drive normally ends up locked, but it cannot stop an
+explicit power-button press. And when the device does lock, **Android 15 QPR1
+and later stop the MediaProjection outright** — unconditionally, with no
+app-side exemption, the app receiving only `MediaProjection.Callback.onStop()`.
+The Developer-options item this project once pointed at governs screenshare
+*protections* (notification redaction, sensitive-field hiding), not the
+stop-on-lock; README and B-015 are corrected to match.
+
+What was genuinely broken, and is now fixed, is that nothing recovered. The
+service held its own reference to the grant and only `AppPaneHost` cleared its
+copy, so after one lock the stale token suppressed the re-offer for the life of
+the process and every later session was handed a dead grant. `onGrantLost` now
+clears it, says in the log why it happened, and puts the "share your screen"
+notification back.
 
 It is **on by default** as of this build, because Headway can now tell which kind
 of sharing is running rather than having to ask: `onCapturedContentResize`

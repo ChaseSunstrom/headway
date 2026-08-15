@@ -154,6 +154,17 @@ object AppPaneHost {
     var onSharingKnown: ((Boolean) -> Unit)? = null
 
     /**
+     * Called when the platform takes the capture grant away.
+     *
+     * The usual cause is not the driver: **Android 15 QPR1 and later stop a
+     * MediaProjection unconditionally when the device locks**, and there is no
+     * app-side exemption for it. Whoever owns the grant has to hear about that
+     * and offer it again, or the app pane is dead until the app is restarted.
+     */
+    @Volatile
+    var onGrantLost: (() -> Unit)? = null
+
+    /**
      * Where the captured region's top-left corner sits on the phone's screen.
      *
      * ## Why a capture is not always at (0, 0)
@@ -345,6 +356,13 @@ object AppPaneHost {
                             this@AppPaneHost.projection = null
                         }
                         announce("screen sharing stopped")
+                        // The service holds its own reference to the same grant,
+                        // and clearing only this one left that copy stale for the
+                        // life of the process: the "share your screen" notification
+                        // was never re-offered, and every later session handed the
+                        // dead token back. A lock screen therefore killed app panes
+                        // permanently rather than until the next unlock.
+                        runCatching { onGrantLost?.invoke() }
                     }
                 }
                 runCatching { projection.registerCallback(callback, main) }
