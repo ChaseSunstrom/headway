@@ -18,9 +18,9 @@
 package dev.headway.app.quirks
 
 import org.json.JSONObject
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
 
 /**
  * The three lists that describe a quirk profile must agree.
@@ -51,9 +51,9 @@ class QuirkKeyCoverageTest {
         val written = writtenKeys()
         val unknown = written - QuirkStore.knownProfileKeys
         assertTrue(
+            unknown.isEmpty(),
             "serialize() writes $unknown, which PROFILE_KEYS does not list, so a file " +
                 "round-tripped through Headway warns about its own output",
-            unknown.isEmpty(),
         )
     }
 
@@ -66,9 +66,9 @@ class QuirkKeyCoverageTest {
         val optional = setOf("pinBssid", "certificate")
         val missing = QuirkStore.knownProfileKeys - writtenKeys() - optional
         assertTrue(
+            missing.isEmpty(),
             "PROFILE_KEYS lists $missing, which the template never writes, so the " +
                 "starting point Headway generates hides a knob it accepts",
-            missing.isEmpty(),
         )
     }
 
@@ -76,9 +76,9 @@ class QuirkKeyCoverageTest {
     fun `a template round-trips without warnings`() {
         val loaded = QuirkStore.parse(templateJson())
         assertEquals(
-            "a file Headway generated must load with nothing to say about it",
             emptyList<String>(),
             loaded.warnings,
+            "a file Headway generated must load with nothing to say about it",
         )
     }
 
