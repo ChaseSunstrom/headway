@@ -332,7 +332,10 @@ class CarAppSession(
             return
         }
         send("onHandshakeCompleted") {
-            remote.onHandshakeCompleted(handshake, callback("handshake") { onHandshakeDone() })
+            remote.onHandshakeCompleted(
+                handshake,
+                callback(HANDSHAKE_STEP) { onHandshakeDone() },
+            )
         }
     }
 
@@ -730,12 +733,22 @@ class CarAppSession(
                     // A security error at any point in the handshake is the app
                     // declining Headway, not a bug in Headway. Telling the two
                     // apart matters because one of them is worth retrying.
-                    if (failure?.errorType == FailureResponse.SECURITY_EXCEPTION ||
-                        failure?.errorType == FailureResponse.INVALID_PARAMETER_EXCEPTION
-                    ) {
-                        refuse("${app.label} declined Headway as a car host ($what: $why)")
+                    // A refusal is a decision the app makes about *Headway's
+                    // identity*, and it can only make it while validating the
+                    // host -- which is the handshake. `INVALID_PARAMETER_EXCEPTION`
+                    // is simply how `androidx.car.app` reports every
+                    // IllegalArgumentException, and one thrown out of
+                    // `getTemplate` or `onAppCreate` is an ordinary bug in a
+                    // screen. Calling that a refusal marked it never-retry and
+                    // sent the driver looking for a permission problem that was
+                    // not there.
+                    val refused = failure?.errorType == FailureResponse.SECURITY_EXCEPTION ||
+                        (failure?.errorType == FailureResponse.INVALID_PARAMETER_EXCEPTION &&
+                            what == HANDSHAKE_STEP)
+                    if (refused) {
+                        refuse("${app.label} declined Headway as a car host. $why")
                     } else {
-                        fail("${app.label} failed at $what: $why")
+                        fail("${app.label} failed at $what. $why")
                     }
                 }
             }
@@ -743,12 +756,38 @@ class CarAppSession(
     }
 
     /**
-     * The first line of the app's stack trace, which is the part that names the
-     * problem. The rest is pages of binder frames.
+     * What went wrong, in words a driver can act on.
+     *
+     * ## Why the raw stack trace does not go on the car screen
+     *
+     * It used to. `FailureResponse.stackTrace` is the *app's* stack trace, so
+     * its first line is that app's exception -- and this string is rendered
+     * verbatim in the pane by `TemplateRenderer.messageFor`. A driver who
+     * selected HERE WeGo read `java.lang.IllegalArgumentException` on their
+     * dashboard and reported a Headway crash. Nothing had crashed: HERE WeGo's
+     * `HostValidator` had thrown while declining Headway, and Headway quoted the
+     * throw back at them.
+     *
+     * The full first line still goes to the session log, where it is genuinely
+     * the most useful line there is. What the pane gets is the message without
+     * the Java class name in front of it, or a sentence derived from the error
+     * type when there is no message worth showing.
      */
-    private fun describeFailure(failure: FailureResponse): String =
-        failure.stackTrace.lineSequence().firstOrNull()?.trim()?.take(200)
-            ?: "error type ${failure.errorType}"
+    private fun describeFailure(failure: FailureResponse): String {
+        val head = failure.stackTrace.lineSequence().firstOrNull()?.trim().orEmpty()
+        onStep("car app: ${app.label} failed with $head")
+        // `java.lang.IllegalStateException: the actual message` -> `the actual
+        // message`. Only a leading fully-qualified exception name is stripped,
+        // so a trace head that is already a sentence survives untouched.
+        val message = EXCEPTION_PREFIX.replace(head, "").trim().take(160)
+        if (message.isNotEmpty()) return message
+        return when (failure.errorType) {
+            FailureResponse.SECURITY_EXCEPTION -> "It did not accept Headway's identity."
+            FailureResponse.INVALID_PARAMETER_EXCEPTION -> "It rejected what Headway sent."
+            FailureResponse.ILLEGAL_STATE_EXCEPTION -> "It was not ready."
+            else -> "No reason was given."
+        }
+    }
 
     /**
      * A deadline, because an app that never answers produces no callback at all.
@@ -802,6 +841,39 @@ class CarAppSession(
     }
 
     companion object {
+
+        /**
+         * The step name passed to `callback` for the host-validation round trip.
+         *
+         * A refusal can only be decided there, so it is the only step at which
+         * an `IllegalArgumentException` is read as one. Shared between the call
+         * site and the classification so the two cannot drift apart into a
+         * silent misclassification.
+         */
+        private const val HANDSHAKE_STEP = "handshake"
+
+        /**
+         * A leading fully-qualified exception class name, with its colon.
+         *
+         * Used to turn `java.lang.IllegalArgumentException: no such host` into
+         * `no such host` before it reaches the car screen. Anchored, so a
+         * message that merely mentions an exception mid-sentence is untouched.
+         *
+         * The colon and message are optional on purpose: a trace head that is
+         * *only* a class name -- `java.lang.IllegalArgumentException`, which is
+         * what a validator throwing with no message produces, and precisely the
+         * string a driver reported reading on their dashboard -- reduces to
+         * nothing, and the caller then falls back to a sentence about the error
+         * type rather than showing a Java class name.
+         *
+         * The trailing `${'$'}` is an end-of-input anchor, spelled the long way
+         * because a bare dollar opens a string template inside a Kotlin raw
+         * string. For the same reason the class-name pattern is `\w` rather than
+         * a character class containing a literal dollar; exception classes do not
+         * carry one outside generated inner classes, which never reach here.
+         */
+        private val EXCEPTION_PREFIX =
+            Regex("""^(?:[a-zA-Z_]\w*\.)+[A-Z]\w*(?:Exception|Error|Throwable)(?::\s*|${'$'})""")
 
         /**
          * The car API level Headway speaks.

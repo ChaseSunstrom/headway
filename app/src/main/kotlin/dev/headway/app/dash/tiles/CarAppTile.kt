@@ -29,6 +29,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import androidx.car.app.model.Template
 import dev.headway.app.carapp.CarAppSession
+import dev.headway.app.carapp.CarHostCapability
 import dev.headway.app.carapp.HostState
 import dev.headway.app.carapp.TemplateApp
 import dev.headway.app.carapp.TemplateApps
@@ -122,9 +123,17 @@ class CarAppTile(
         if (running) return
         running = true
         apps = TemplateApps.installed(appContext)
-        val pinned = argument
-            ?.let { ComponentName.unflattenFromString(it) }
-            ?.let { component -> apps.firstOrNull { it.service == component } }
+        // Both argument formats, because a leaf can hold either. A car-app pane
+        // saves a flattened ComponentName; a Maps pane may carry a bare package
+        // name from `HeadwaySettings.KEY_MAP_APP` or from any layout written
+        // before car-app maps existed. Matching only the flattened form dropped
+        // those pins silently and sent the driver back to the picker on every
+        // rebuild.
+        val pinned = argument?.let { text ->
+            val component = ComponentName.unflattenFromString(text)
+            apps.firstOrNull { it.service == component }
+                ?: apps.firstOrNull { it.packageName == text }
+        }
         val wanted = chosen ?: pinned
         if (wanted != null) open(wanted) else renderPicker()
     }
@@ -228,14 +237,25 @@ class CarAppTile(
         list.visibility = View.VISIBLE
         list.removeAllViews()
 
+        // Said before a single bind is attempted. On a build that cannot hold
+        // the renderer permission every one of these apps will refuse, and the
+        // driver's remedy is a different APK rather than a different app -- see
+        // CarHostCapability. Offering the list anyway spends a bind and a
+        // handshake per tap to arrive at that same sentence.
+        val blocked = CarHostCapability.explain(context)
+        if (blocked != null) {
+            list.gravity = Gravity.CENTER
+            list.addView(CarStyle.emptyState(context, blocked))
+            return
+        }
         if (apps.isEmpty()) {
             list.gravity = Gravity.CENTER
             list.addView(
                 CarStyle.emptyState(
                     context,
-                    "No app on this phone offers a car interface.\n" +
+                    "No allowed app on this phone offers a car interface.\n" +
                         "Apps that do — maps, podcast players, messengers — appear here " +
-                        "and are drawn by Headway rather than mirrored.",
+                        "once you allow them in Headway on the phone.",
                 ),
             )
             return

@@ -34,6 +34,7 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import dev.headway.app.carapp.CarHostCapability
 import dev.headway.app.carapp.TemplateApps
 import dev.headway.app.dash.tiles.AppPaneTile
 import dev.headway.app.dash.tiles.CarAppTile
@@ -531,9 +532,7 @@ class CarShell(
             // Headway draws its templates over it -- and the turn card when none
             // does. Both are the Maps pane; which one a phone gets depends on
             // what is installed and allowed, not on what the driver picked.
-            PaneKind.MAPS -> TemplateApps.navigators(context).firstOrNull()
-                ?.let { CarAppTile(context, leaf.argument ?: it.service.flattenToString(), onStep) }
-                ?: MapsTile(context, onStep)
+            PaneKind.MAPS -> mapsTileFor(leaf)
             PaneKind.PHONE -> PhoneTile(context, onStep)
             PaneKind.CAR_APP -> CarAppTile(context, leaf.argument, onStep)
             PaneKind.MESSAGES -> MessagesTile(context)
@@ -1140,6 +1139,42 @@ class CarShell(
                 .toSet()
         }.getOrNull() ?: return
         runCatching { WidgetTile.releaseOrphans(context, keep, onStep) }
+    }
+
+    /**
+     * A real map when one can be drawn, and the turn card when one cannot.
+     *
+     * Three things have to be true for the map: this build can host car apps at
+     * all, a navigator among the allowed apps offers a car interface, and the
+     * argument -- if the layout has one -- resolves to something installed.
+     *
+     * The host check is the one that was missing, and it is not cosmetic. On a
+     * `compat` install no car app can ever accept Headway (see
+     * [CarHostCapability]), so building a `CarAppTile` there guarantees a bind, a
+     * handshake, and a pane that ends up showing the app's own refusal. The turn
+     * card is a working Maps pane; a refusal is not. Degrading is strictly
+     * better than explaining.
+     *
+     * The argument is resolved rather than trusted because a `MAPS` leaf can
+     * legitimately hold either format: a bare package name, which is what
+     * `HeadwaySettings.KEY_MAP_APP` and every layout saved before car-app maps
+     * existed contain, or a flattened `ComponentName`, which is what a car-app
+     * pane saves. Passing a bare package straight through left
+     * `ComponentName.unflattenFromString` returning null, the pin silently
+     * dropped, and -- because the elvis bound to the argument first -- the
+     * navigator fallback disabled for exactly the drivers who already had a map
+     * app chosen.
+     */
+    private fun mapsTileFor(leaf: DashNode.Leaf): DashTile {
+        if (!CarHostCapability.available(context)) return MapsTile(context, onStep)
+        val navigators = TemplateApps.navigators(context)
+        if (navigators.isEmpty()) return MapsTile(context, onStep)
+        val wanted = leaf.argument?.let { argument ->
+            navigators.firstOrNull { it.service.flattenToString() == argument }
+                ?: navigators.firstOrNull { it.packageName == argument }
+        }
+        val app = wanted ?: navigators.first()
+        return CarAppTile(context, app.service.flattenToString(), onStep)
     }
 
     // --- the widget list ------------------------------------------------------
