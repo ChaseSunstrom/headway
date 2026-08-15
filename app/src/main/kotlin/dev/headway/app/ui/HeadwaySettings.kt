@@ -83,26 +83,30 @@ object HeadwaySettings {
     /**
      * Cover the phone screen, and the simulated display's preview, while driving.
      *
-     * Off by default. It is the only way to hide the preview window Developer
-     * options puts on the phone — Android has no setting for it and the window
-     * cannot be closed, because it *is* the simulated display's output surface.
-     * Covering needs a `TYPE_ACCESSIBILITY_OVERLAY`, which only the
-     * accessibility service can add, so this does nothing until that is granted.
+     * **On by default**, and safe to be because the cover gates itself:
+     * `HeadwayService.coverPhoneScreen` raises it only once `AppPaneHost` has
+     * *measured* the capture as a single app, never for a whole-display one —
+     * where the black would be the entire picture the car receives.
      *
-     * Default off because it covers the status bar too, and a black screen the
-     * driver did not ask for looks exactly like a phone that has crashed.
+     * With single-app sharing it is the closest thing to a phone that is off.
+     * The screen has to stay lit for the shared app to keep drawing, so the
+     * cover makes it black to look at without touching what is captured: app
+     * screen sharing excludes system UI, and an accessibility overlay is not
+     * part of the shared app's window either. It also hides the preview window
+     * that Developer options puts on the phone for a simulated display, which
+     * Android offers no setting for and which cannot be closed, because it *is*
+     * that display's output surface.
      *
-     * Turn it on **with single-app sharing**, where it is the closest thing to a
-     * phone that is off: the screen has to stay lit for the shared app to keep
-     * drawing, and this makes it black to look at without touching what is
-     * captured, because app screen sharing excludes system UI. With
-     * whole-display sharing it would black out the car screen too.
+     * Two things it needs, and one it no longer does. It needs the accessibility
+     * service, because only that can add a `TYPE_ACCESSIBILITY_OVERLAY`, and it
+     * needs the screen to stay awake, which the same window does with
+     * `FLAG_KEEP_SCREEN_ON`. It is *not* dismissed by tapping it any more: a
+     * touchable full-screen overlay sits above everything and swallowed every
+     * gesture injected from the car. The way back is the notification action or
+     * the car screen's settings sheet.
      *
-     * **On by default**, which is only safe because the cover gates itself:
-     * `HeadwayService.coverPhoneScreen` puts it up once `AppPaneHost` has
-     * *measured* the capture as a single app, and never for a whole-display one.
-     * This KDoc said "a choice and not a default" while both readers passed
-     * `true`.
+     * This KDoc previously said "off by default" in two places and "on by
+     * default" in a third, while both readers passed `true`.
      */
     const val KEY_BLANK_PHONE_SCREEN: String = "blank_phone_screen"
 
