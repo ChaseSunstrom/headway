@@ -130,7 +130,21 @@ data class DashLayout(
     val name: String,
     val root: DashNode,
     val locked: Boolean = true,
+    /**
+     * An icon the rail draws instead of this layout's name. See [TabIcon].
+     *
+     * Stored as a token rather than as a [TabIcon] so that a layout naming an
+     * icon a later build added round-trips through this one untouched instead
+     * of being silently rewritten to null on the next save. [icon] is the
+     * resolved value and is null when this build cannot draw it, at which point
+     * the rail falls back to [name] -- which is always there, because an icon
+     * replaces the *label* and never the identity.
+     */
+    val iconName: String? = null,
 ) {
+
+    /** The icon this build can actually draw, or null to show [name]. */
+    val icon: TabIcon? get() = TabIcon.of(iconName)
 
     /** Every leaf, left-to-right and top-to-bottom. */
     fun leaves(): List<DashNode.Leaf> = leafPaths().map { it.leaf }
@@ -249,6 +263,9 @@ data class DashLayout(
         .put(KEY_NAME, name)
         .put(KEY_LOCKED, locked)
         .put(KEY_ROOT, encode(root))
+        // Omitted when absent, so a layout with no icon reads exactly as it did
+        // before icons existed and a diff of the store stays short.
+        .apply { iconName?.let { put(KEY_ICON, it) } }
 
     private fun encode(node: DashNode): JSONObject = when (node) {
         is DashNode.Leaf -> JSONObject()
@@ -268,6 +285,7 @@ data class DashLayout(
         private const val KEY_NAME = "name"
         private const val KEY_ROOT = "root"
         private const val KEY_LOCKED = "locked"
+        private const val KEY_ICON = "icon"
         private const val KEY_TYPE = "type"
         private const val KEY_KIND = "kind"
         private const val KEY_ARGUMENT = "arg"
@@ -297,6 +315,7 @@ data class DashLayout(
                 name = json.getString(KEY_NAME),
                 root = root,
                 locked = json.optBoolean(KEY_LOCKED, false),
+                iconName = json.optString(KEY_ICON).takeIf { it.isNotEmpty() },
             )
         }.getOrNull()
 

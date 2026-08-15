@@ -69,6 +69,7 @@ import dev.headway.dash.Rail
 import dev.headway.dash.RailEdge
 import dev.headway.dash.RailItem
 import dev.headway.dash.RailStyle
+import dev.headway.dash.TabIcon
 import dev.headway.dash.ThemeAccent
 import dev.headway.dash.ThemeBase
 
@@ -740,6 +741,26 @@ class CarShell(
     /** A layout pill on the rail, sized by the rail's own metrics. */
     private fun layoutPill(item: RailItem.Layout): View {
         val selected = item.name == layout.name
+        // An icon replaces the *label*, never the name: the layout is still
+        // found, activated and pinned by name, and a build that cannot draw the
+        // icon a later one saved falls back to the word. See `TabIcon`.
+        val icon = tabs.firstOrNull { it.name == item.name }?.icon
+        CarGlyph.forTab(icon)?.let { glyph ->
+            return CarGlyphButton(
+                context,
+                railMetrics,
+                glyph,
+                // Still the name, because this is the only thing a driver using
+                // TalkBack or reading the log has to go on once the word is gone.
+                item.name,
+                active = selected,
+            ) { switchTo(item.name) }.apply {
+                setOnLongClickListener {
+                    showRailItemMenu(item)
+                    true
+                }
+            }
+        }
         return Headway.title(context, railMetrics.unit, item.name).apply {
             gravity = Gravity.CENTER
             setTextColor(if (selected) Headway.ON_ACCENT else Headway.TEXT_MUTED)
@@ -1875,19 +1896,66 @@ class CarShell(
     }
 
     private fun showRailItemMenu(item: RailItem) {
+        val rows = mutableListOf<CarSheet.Row>()
+        if (item is RailItem.Layout) {
+            val current = tabs.firstOrNull { it.name == item.name }?.icon
+            rows += CarSheet.Row(
+                title = "Icon",
+                detail = current?.name?.lowercase()?.replaceFirstChar { it.uppercase() }
+                    ?: "The layout's name, in words",
+            ) { showTabIconPicker(item.name) }
+        }
+        rows += CarSheet.Row("Unpin", "Take it off the rail", destructive = true) {
+            runCatching { store.setRail(Rail.unpin(rail(), item)) }
+            fillRail()
+            closeOverlay()
+        }
+        rows += CarSheet.Row("Pinned items", "Reorder everything on the rail") {
+            showRailEditor()
+        }
         showOverlay(
-            sheet().build(
-                title = railLabel(item),
-                rows = listOf(
-                    CarSheet.Row("Unpin", "Take it off the rail", destructive = true) {
-                        runCatching { store.setRail(Rail.unpin(rail(), item)) }
-                        fillRail()
-                        closeOverlay()
-                    },
-                    CarSheet.Row("Pinned items", "Reorder everything on the rail") {
-                        showRailEditor()
-                    },
-                ),
+            sheet().build(title = railLabel(item), rows = rows, onClose = ::closeOverlay),
+        )
+    }
+
+    /**
+     * Chooses the icon a layout wears on the rail, or goes back to its name.
+     *
+     * On the car screen because that is where the rail is: the reason to want an
+     * icon is that six words across an 800-pixel panel do not fit, which is a
+     * thing you notice while looking at it.
+     *
+     * The chips are the icons themselves, drawn at the rail's own size, so the
+     * choice is made by looking at the thing rather than at a list of words for
+     * it.
+     */
+    private fun showTabIconPicker(name: String) {
+        val layoutFor = tabs.firstOrNull { it.name == name } ?: return
+        fun apply(icon: TabIcon?) {
+            runCatching { store.save(layoutFor.copy(iconName = icon?.name)) }
+            tabs = runCatching { store.list() }.getOrDefault(tabs)
+            if (layout.name == name) layout = tabs.firstOrNull { it.name == name } ?: layout
+            closeOverlay()
+            onStep("car screen: '$name' now shows ${icon?.name?.lowercase() ?: "its name"}")
+            fillRail()
+        }
+        val rows = mutableListOf<CarSheet.Row>()
+        rows += CarSheet.Row(
+            title = "Use the name",
+            detail = "Show \"$name\" in words",
+            selected = layoutFor.icon == null,
+        ) { apply(null) }
+        showOverlay(
+            sheet().buildIcons(
+                title = "Icon for $name",
+                rows = rows,
+                icons = TabIcon.ALL.map { icon ->
+                    CarSheet.IconChoice(
+                        glyph = CarGlyph.forTab(icon) ?: CarGlyph.APPS,
+                        description = icon.name.lowercase(),
+                        selected = layoutFor.icon == icon,
+                    ) { apply(icon) }
+                },
                 onClose = ::closeOverlay,
             ),
         )

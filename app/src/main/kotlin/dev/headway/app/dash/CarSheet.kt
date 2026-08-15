@@ -24,6 +24,7 @@ import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
+import android.widget.GridLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -78,6 +79,8 @@ class CarSheet(
         rows: List<Row>,
         chips: List<Row> = emptyList(),
         chipsTitle: String? = null,
+        /** Appended under the rows; see [buildIcons], its only caller. */
+        extra: View? = null,
         onClose: () -> Unit,
     ): View {
         val scrim = FrameLayout(context).apply {
@@ -111,6 +114,7 @@ class CarSheet(
             body.addView(chipRow(chips))
         }
         rows.forEach { body.addView(if (it.isSection) sectionLabel(it.title) else row(it)) }
+        extra?.let { body.addView(it) }
 
         val scroller = ScrollView(context).apply {
             isFillViewport = true
@@ -120,6 +124,56 @@ class CarSheet(
         panel.addView(scroller)
         scrim.addView(panel)
         return scrim
+    }
+
+    /**
+     * A choice shown as the icon itself rather than as a word for it.
+     *
+     * @param glyph what is drawn.
+     * @param description what a screen reader says, and what the log records.
+     */
+    class IconChoice(
+        val glyph: CarGlyph,
+        val description: String,
+        val selected: Boolean = false,
+        val onChosen: () -> Unit,
+    )
+
+    /**
+     * [build], with a grid of icons under the rows.
+     *
+     * A separate entry point rather than another optional parameter on `build`,
+     * which already carries five: this one lays out a wrapping grid rather than
+     * a list, and the two have nothing in common but the panel around them.
+     *
+     * The icons are drawn at the car's own touch-target size, so choosing one is
+     * a matter of looking at the thing that will appear rather than reading a
+     * list of names for shapes.
+     */
+    fun buildIcons(
+        title: String,
+        rows: List<Row>,
+        icons: List<IconChoice>,
+        onClose: () -> Unit,
+    ): View {
+        val grid = GridLayout(context).apply {
+            val pad = metrics.gutter / 2
+            setPadding(pad, pad, pad, pad)
+            // Whatever fits, at least two. The rail's panel can be narrow.
+            columnCount = maxOf(2, (metrics.widthPx / (metrics.touchTargetPx * 2)).coerceAtMost(8))
+        }
+        icons.forEach { choice ->
+            grid.addView(
+                CarGlyphButton(
+                    context,
+                    metrics,
+                    choice.glyph,
+                    choice.description,
+                    active = choice.selected,
+                ) { choice.onChosen() },
+            )
+        }
+        return build(title = title, rows = rows, extra = grid, onClose = onClose)
     }
 
     private fun header(title: String, onClose: () -> Unit): View {
