@@ -143,6 +143,24 @@ object AppPaneHost {
         private set
 
     /**
+     * Whether the capture is of the *simulated* display rather than display 0.
+     *
+     * The other case in which the phone screen can safely be covered, and the
+     * one that was missing. `sharingSingleApp` answers "is this smaller than
+     * every display it could be", so a whole capture of a 720x480 simulated
+     * display measures as *not* single-app — correctly — and the cover was then
+     * refused. But the thing being recorded there is the simulated display, and
+     * the blackout is a window on display 0, which is not in that recording at
+     * all. So the phone can be black and the car still gets a picture.
+     *
+     * That is what makes the Developer-options preview window hideable, which
+     * the README has claimed and this had quietly stopped delivering.
+     */
+    @Volatile
+    var sharingOtherDisplay: Boolean = false
+        private set
+
+    /**
      * Called on the first measurement, with whether it is a single-app capture.
      *
      * Exists because the answer arrives *after* the session is up: the
@@ -304,6 +322,7 @@ object AppPaneHost {
                         // display it could be is one app's window. See
                         // [capturesSingleApp] for why "every" rather than "the".
                         val single = capturesSingleApp(context, width, height)
+                        val other = capturesOtherDisplay(context, width, height)
                         val changed = synchronized(lock) {
                             // `sourceMeasured` is part of the test, not just the
                             // size. `detach` clears it, and a re-attach on the
@@ -320,6 +339,7 @@ object AppPaneHost {
                                 sourceOriginX = origin.first
                                 sourceOriginY = origin.second
                                 sharingSingleApp = single
+                                sharingOtherDisplay = other
                                 true
                             }
                         }
@@ -501,6 +521,7 @@ object AppPaneHost {
             // its own contradiction: a measurement of 0x0.
             sourceMeasured = false
             sharingSingleApp = false
+            sharingOtherDisplay = false
             pictureRect = PaneRect(0, 0, 0, 0)
             onStep = {}
         }
@@ -524,6 +545,7 @@ object AppPaneHost {
             sourceOriginX = 0
             sourceOriginY = 0
             sharingSingleApp = false
+            sharingOtherDisplay = false
             contentVisible = true
             pictureRect = PaneRect(0, 0, 0, 0)
             onStep = {}
@@ -607,6 +629,24 @@ object AppPaneHost {
      * cover and a pane fitted to the display's rectangle, which is what every
      * build before app sharing did.
      */
+    /**
+     * Whether this capture is the simulated display, whole.
+     *
+     * Deliberately narrow: it matches the simulated display's own geometry and
+     * nothing else, so a phone that happens to be the same size as the car
+     * display is still excluded by the second test. See [sharingOtherDisplay]
+     * for what it is used for and why the answer differs from
+     * [capturesSingleApp].
+     */
+    private fun capturesOtherDisplay(context: Context, width: Int, height: Int): Boolean {
+        val simulated = CarAppDisplay.active ?: return false
+        val matches = kotlin.math.abs(simulated.width - width) <= 1 &&
+            kotlin.math.abs(simulated.height - height) <= 1
+        if (!matches) return false
+        val (phoneWidth, phoneHeight) = phoneGeometry(context)
+        return kotlin.math.abs(phoneWidth - width) > 1 || kotlin.math.abs(phoneHeight - height) > 1
+    }
+
     private fun capturesSingleApp(context: Context, width: Int, height: Int): Boolean {
         val candidates = buildList {
             CarAppDisplay.active?.let { add(it.width to it.height) }

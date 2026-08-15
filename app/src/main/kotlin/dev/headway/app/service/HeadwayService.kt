@@ -1348,7 +1348,7 @@ open class HeadwayService : Service() {
                 // looper -- `AppPaneHost` registers the callback with one -- so
                 // adding the overlay window from here is already on the right
                 // thread.
-                if (single) {
+                if (single || AppPaneHost.sharingOtherDisplay) {
                     runCatching { coverPhoneScreen() }
                         .onFailure { step("the phone screen could not be covered: $it") }
                 } else {
@@ -1477,7 +1477,14 @@ open class HeadwayService : Service() {
         // `AppPaneHost.sharingSingleApp`. Until the first measurement arrives the
         // answer is "not yet", so the cover waits for `onSharingKnown` instead of
         // guessing, and a session sharing the whole display never gets one.
-        if (!AppPaneHost.sharingSingleApp) return
+        // Two safe cases, not one. A capture of a single *app* excludes system
+        // UI, so a blackout is invisible to it; a capture of the *simulated
+        // display* records a display the blackout is not on. Only a capture of
+        // display 0 is ruined by covering display 0, and that is the case this
+        // now refuses rather than refusing both of the others with it -- which
+        // is why the Developer-options preview window was still visible on a
+        // simulated-display session the README said it would not be.
+        if (!AppPaneHost.sharingSingleApp && !AppPaneHost.sharingOtherDisplay) return
         // Compatible with single-app sharing, and not with whole-display
         // sharing. The blackout is a window on display 0: a capture of the
         // *display* captures it, and the app pane would show a perfectly black

@@ -1202,3 +1202,62 @@ valid list.
 
 **How to close it:** not closable. The only routes are a platform change or a
 privileged app, and both are out of scope by CLAUDE.md's second hard constraint.
+
+---
+
+## B-025 — A mirrored app that locks itself to portrait stays portrait
+
+**Status:** Open, with the general case shipped and this one case impossible.
+
+**Where:** `PhoneRotation`, `HeadwaySettings.KEY_LANDSCAPE_APPS`,
+`CarShell.landscapeRow`
+
+**What:** A driver asked whether a mirrored phone app can lay itself out in
+landscape when the pane is wider than it is tall. On an 800x480 panel a
+1080x2404 portrait source fits into 216 of 800 columns — 27% of the pane — and
+scaling it up does not make a tall map a wide one, because an app's layout is
+decided by the display its activity is running on.
+
+Headway now turns display 0 sideways for the drive, which fixes it for every
+app that will accept a landscape window. It cannot fix it for an app that
+declares `android:screenOrientation="portrait"`, and the platform says so in
+the field's own documentation: `USER_ROTATION` applies "when
+`ACCELEROMETER_ROTATION` is zero **and no on-screen Activity expresses a
+preference**". A portrait-locked activity expresses one and wins.
+
+**The routes that are closed,** each checked against AOSP rather than assumed:
+
+- **A display Headway creates.** `ActivityTaskSupervisor.isCallerAllowedToLaunchOnDisplay`
+  requires the *target* activity to declare `android:allowEmbedded` on any
+  display without `FLAG_TRUSTED` — a property of somebody else's manifest, so
+  holding a permission would not help — and `ADD_TRUSTED_DISPLAY` is
+  `signature|role`. `VIRTUAL_DISPLAY_FLAG_TRUSTED` is not in the public SDK at
+  all.
+- **The display `MediaProjection` hands back.** Forced into mirroring
+  (`setWindowManagerMirroringEnabled(true)` on every overload), so it is a
+  recording sink, not a surface an activity can be placed on. Its token
+  satisfies the video-capture check and not the trust check.
+- **Overriding the app's orientation request.** Per-display
+  `setIgnoreOrientationRequest` is gated by `MANAGE_ACTIVITY_TASKS`,
+  `signature|recents`.
+- **Activity embedding.** Untrusted embedding needs the *embedded* app to
+  declare `android:allowUntrustedActivityEmbedding`; the host-side escapes are
+  `signature|privileged` and `internal|role`.
+- **Freeform launch bounds.** `ActivityOptions.setLaunchBounds` is public, but
+  `canUseActivityOptionsLaunchBounds` returns false unless the device supports
+  freeform window management, which on a Pixel is a Developer-options toggle
+  behind an `@hide` global setting and needs a reboot. Untested, and not shipped
+  on.
+
+**Workaround, shipped:** `Settings.System.USER_ROTATION` with
+`ACCELEROMETER_ROTATION` off, behind `WRITE_SETTINGS` — whose protection level
+carries `appop`, which is what makes it grantable by the driver from a Settings
+screen. Off by default, asked for only when the setting is switched on, and the
+driver's own two values are saved before anything is written and restored when
+the session ends. Costs: Headway's own phone UI, the lock screen and the shade
+rotate too, and a process death mid-drive leaves the phone sideways until the
+driver's own rotation control puts it back.
+
+**How to close it:** not closable for a portrait-locked app without a
+privileged API. Freeform is the one untested surface and would need a device
+that supports it to evaluate at all.
