@@ -65,11 +65,21 @@ import java.util.Locale
  *
  * ## Units
  *
- * Speed is shown in the unit the driver's own locale uses for road speed, from
- * [CarSensors.speedKph] and [CarSensors.speedMph]. There is no setting for it
- * and deliberately so: a preference that must be found before the speedometer is
- * right is worse than a default that is right for almost everybody, and both
- * conversions already exist and are tested.
+ * One choice, applied to every reading on the pane: speed, the odometer, the
+ * outside temperature and the tyre pressures. `CarUnits` holds it and the
+ * conversions; `HeadwaySettings.KEY_CAR_UNITS` stores it; the car screen's
+ * *Units* row sets it.
+ *
+ * It defaults to following the phone's region, by road signs rather than by
+ * language — which is what keeps Canada on kilometres. There *is* a setting, and
+ * there has to be: the region is a guess about a person, and a driver reading a
+ * number at speed should not also have to work out which unit it is in.
+ *
+ * Before this, only speed followed the region and everything else was hard-coded
+ * metric, so a car in the United States showed miles per hour above an odometer
+ * in kilometres, a temperature in Celsius and pressures in kilopascals. A driver
+ * reported exactly that. The protocol carries SI throughout, so the conversion
+ * belongs here and it belongs to all of it at once.
  *
  * Fuel level and range are shown as the bare numbers the car sent, with no unit
  * at all, because **no reference states one** — see [CarSensors.fuelLevel] and

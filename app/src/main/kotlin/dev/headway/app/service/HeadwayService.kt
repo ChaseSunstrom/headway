@@ -1836,6 +1836,15 @@ open class HeadwayService : Service() {
             // while the session runs over Wi-Fi. So it is remembered, and spent
             // here: the first time the session actually fails after it.
             step("the car's Bluetooth is gone and the session has ended; stopping rather than retrying")
+            // Before the return, not after it. Car apps learn that projection
+            // has ended from this broadcast and cache the answer in a LiveData
+            // that only refreshes when told; `onDestroy`'s `publish(Idle)`
+            // cannot cover for it either, because the state above has already
+            // been overwritten so its own `wasConnected` is false by then. A
+            // nav app would have gone on reporting PROJECTION for the rest of
+            // its process life -- and this is the one stop path a driver takes
+            // every time they walk away.
+            runCatching { dev.headway.app.carapp.CarConnectionProvider.announce(this) }
             stopSelf()
             return
         }

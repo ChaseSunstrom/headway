@@ -46,6 +46,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -185,6 +186,21 @@ class CarAudioStream(
     @Volatile
     private var refusals: List<String> = emptyList()
 
+    /**
+     * Whether the media pump currently holds focus, as a field rather than a local.
+     *
+     * It has to be shared, because it is not only the pump that can lose it.
+     * `PhoneAudioFocus` keeps one focus slot with no ownership or refcount, so a
+     * spoken prompt's `withFocus` takes that slot and its `finally` releases it
+     * -- sending an AAP RELEASE that cancels the *media* GAIN as well. With the
+     * flag as a local in the pump loop it stayed true across that, the
+     * `if (!holdingFocus)` guard never re-requested, and every buffer after the
+     * first voice reply was streamed to a car that had switched back to its own
+     * radio: music silently gone for the rest of the drive after one prompt.
+     */
+    @Volatile
+    private var mediaFocusHeld: Boolean = false
+
     /** The car's latest focus notification, since [AudioFocus.state] cannot be. */
     @Volatile
     var lastCarFocus: AudioFocusState? = null
@@ -320,14 +336,46 @@ class CarAudioStream(
         }
         // Outer loop: one pass per grant. A capture ends when the driver's grant
         // does -- Android 15 and later stop projection at every lock screen --
-        // and the old code treated that as the end of media for the session.
+        // and the first version of this treated that as the end of media for
+        // the session.
+        var failures = 0
         while (currentCoroutineContext().isActive) {
             val projection = awaitProjection() ?: return
-            pumpMediaWith(channel, projection, format)
-            // Only wait again if this grant is genuinely gone. A capture that
-            // stopped for any other reason should not spin.
-            if (liveProjection.value === projection) liveProjection.value = null
+            val started = pumpMediaWith(channel, projection, format)
+            // Somebody else has already moved on -- a new grant arrived, or the
+            // platform's callback reported this one lost. Nothing to decide.
+            if (liveProjection.value !== projection) {
+                failures = 0
+                continue
+            }
+            // This is the correction to a fix that was worse than the bug. The
+            // grant is *still live*: the capture ended for its own reasons --
+            // `AudioRecord` refusing to initialise, an audioserver restart
+            // returning ERROR_DEAD_OBJECT, `streamPcm` throwing on a link
+            // hiccup. Clearing it here, as the first version did unconditionally,
+            // parked the pump forever on a grant nobody would ever re-issue and
+            // told the driver to share a screen they were already sharing.
+            failures = if (started) 0 else failures + 1
+            if (failures >= MEDIA_CAPTURE_ATTEMPTS) {
+                onStep(
+                    "media: playback capture would not start $failures times running; giving up " +
+                        "on this screen-sharing grant. Sharing again will start it over"
+                )
+                // compareAndSet, so a grant that arrived while this was deciding
+                // is never clobbered.
+                liveProjection.compareAndSet(projection, null)
+                failures = 0
+                continue
+            }
+            // Always a pause before going round, so a capture that fails
+            // instantly and forever cannot spin the CPU for the drive.
+            sleepBetweenCaptures()
         }
+    }
+
+    /** A pause between capture attempts, overridable by tests. */
+    private suspend fun sleepBetweenCaptures() {
+        delay(MEDIA_RETRY_MILLIS)
     }
 
     /**
@@ -351,18 +399,18 @@ class CarAudioStream(
         return runCatching { liveProjection.first { it != null } }.getOrNull()
     }
 
+    /** @return whether the capture actually started; see [pumpMedia]'s retry. */
     private suspend fun pumpMediaWith(
         channel: AudioChannel,
         projection: MediaProjection,
         format: PcmFormat,
-    ) {
+    ): Boolean {
         onStep(PhoneAudioCapture.describeCapturePolicy())
         val capture = PhoneAudioCapture(projection, format, onStep)
-        if (!capture.start()) return
+        if (!capture.start()) return false
         mediaCapture = capture
 
         val buffer = ByteArray(capture.bufferBytes)
-        var holdingFocus = false
         var idleSince = 0L
         try {
             while (currentCoroutineContext().isActive) {
@@ -375,10 +423,13 @@ class CarAudioStream(
                 val playing = PhoneAudioCapture.isMusicPlaying(audioManager)
                 if (playing) {
                     idleSince = 0L
-                    if (!holdingFocus) {
-                        holdingFocus = requestMediaFocus()
+                    // Re-reads the shared flag every buffer, so focus taken away
+                    // by a spoken prompt is noticed and taken back rather than
+                    // assumed. See [mediaFocusHeld].
+                    if (!mediaFocusHeld) {
+                        mediaFocusHeld = requestMediaFocus()
                     }
-                } else if (holdingFocus) {
+                } else if (mediaFocusHeld) {
                     // Not released on the first silent buffer: a track change is
                     // a second of silence, and giving the radio back and taking
                     // it again across every gap would make the car click.
@@ -386,11 +437,11 @@ class CarAudioStream(
                     if (idleSince == 0L) idleSince = now
                     if (now - idleSince >= MEDIA_IDLE_RELEASE_MILLIS) {
                         releaseMediaFocus()
-                        holdingFocus = false
+                        mediaFocusHeld = false
                     }
                 }
 
-                if (!holdingFocus) continue
+                if (!mediaFocusHeld) continue
                 val sent = channel.streamPcm(
                     if (read == buffer.size) buffer else buffer.copyOf(read)
                 )
@@ -404,10 +455,14 @@ class CarAudioStream(
             // component that decides the session is over.
             onStep("media stream ended: ${failed.message ?: failed::class.java.simpleName}")
         } finally {
-            if (holdingFocus) runCatching { releaseMediaFocus() }
+            if (mediaFocusHeld) {
+                runCatching { releaseMediaFocus() }
+                mediaFocusHeld = false
+            }
             runCatching { capture.close() }
             onStep(capture.describe())
         }
+        return true
     }
 
     /** Takes focus for continuous playback, on both the phone and the car. */
@@ -703,6 +758,15 @@ class CarAudioStream(
             false
         } finally {
             phoneFocus.release()
+            // The release above is not only this prompt's. `PhoneAudioFocus`
+            // holds one slot, so it also cancelled any GAIN the media pump was
+            // holding -- on the phone and, via the control channel, on the car.
+            // Saying so lets the pump take it back on its next buffer instead of
+            // streaming into a head unit that has switched back to its radio.
+            if (mediaFocusHeld) {
+                mediaFocusHeld = false
+                onStep("media: the prompt's focus release also dropped music focus; retaking it")
+            }
         }
         // AudioChannelException is deliberately not caught. It means this class
         // drove the channel out of sequence -- a bug here, not a car being
@@ -810,6 +874,24 @@ class CarAudioStream(
 
         /** The live stream, or null between sessions. */
         val current: CarAudioStream? get() = live.get()
+
+        /**
+         * How long to wait before trying a failed playback capture again.
+         *
+         * Long enough that a capture failing instantly cannot spin, short
+         * enough that a transient refusal -- an audioserver restart is the
+         * realistic one -- costs a few seconds of music rather than the drive.
+         */
+        const val MEDIA_RETRY_MILLIS: Long = 3_000
+
+        /**
+         * Consecutive failed capture starts before the grant is set aside.
+         *
+         * Not one: `AudioRecord` refusing once is ordinary. Not unbounded
+         * either, because a grant that can never be captured from should stop
+         * being retried and let the driver re-share.
+         */
+        const val MEDIA_CAPTURE_ATTEMPTS: Int = 3
         /**
          * Any non-zero value works; the head unit echoes it back in every
          * acknowledgement so the two sides can tell streams apart. The same id on
@@ -963,11 +1045,24 @@ class CarAudioStream(
 
             if (advertised.isEmpty()) return null
 
-            val wanted = streamsFor(mediaOverAap && projection != null)
+            // Not `mediaOverAap && projection != null`. The channel has to be
+            // opened before a grant exists, because the grant usually arrives
+            // *after* the session -- a link that comes up on its own has none
+            // travelling with it, and the driver answers the consent
+            // notification later.
+            //
+            // Making the channel conditional on the grant is what made the fix
+            // for that inert: with no media channel, `pumpMedia` returns at its
+            // `channelFor(...) ?: return` and never reaches the code that waits
+            // for a grant, so a driver who shared afterwards still got silence
+            // for the whole drive. An open channel with nothing on it costs the
+            // car nothing; it is fed only when there is something to feed it.
+            val wanted = streamsFor(mediaOverAap)
             if (mediaOverAap && projection == null) {
                 onStep(
-                    "audio: media is routed over AAP but there is no screen capture grant to " +
-                        "tap playback with, so music cannot be sent this session"
+                    "audio: media is routed over AAP and there is no screen capture grant yet, " +
+                        "so the media channel opens empty and starts carrying music the moment " +
+                        "screen sharing is allowed"
                 )
             }
             val driven = wanted.mapNotNull { stream ->

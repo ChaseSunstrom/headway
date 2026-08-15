@@ -129,6 +129,15 @@ class CarPresenceReceiver : BroadcastReceiver() {
      * the broadcast. This only stops the *searching*.
      */
     private fun onDeviceDisconnected(context: Context, intent: Intent) {
+        // The same gate the connect path uses, and for a reason that is only
+        // visible from both sides at once. Every justification for stopping
+        // eagerly -- here, in `SessionSupervisor`, in the settings copy -- rests
+        // on "an ACL connection starts a fresh supervisor with no user action".
+        // With auto-connect off that is false: `onDeviceConnected` returns
+        // immediately, so nothing restarts. Stopping a hand-started session
+        // because the car's Bluetooth blipped would then be permanent, and the
+        // driver would have to find the phone and press Connect again.
+        if (!HeadwaySettings.autoConnect(context)) return
         val device = deviceOf(intent) ?: return
         val expected = HeadwaySettings.carAddress(context)
         // Only the car. Every other Bluetooth device on the phone -- headphones,

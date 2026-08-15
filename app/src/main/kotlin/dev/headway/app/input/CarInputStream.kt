@@ -128,9 +128,16 @@ import kotlinx.coroutines.launch
  * be indistinguishable in the log from a verified one. The single exception is
  * BACK, which the platform itself defines an equivalent for
  * (`GLOBAL_ACTION_BACK`), so honouring it is reading the platform rather than
- * guessing at the car — and the voice key, which is forwarded to [onVoiceKey]
- * rather than interpreted here. Media keys still belong to a `MediaSession` and
- * are not this class's to claim.
+ * guessing at the car — the voice key, which is forwarded to [onVoiceKey]
+ * rather than interpreted here — and the transport keys.
+ *
+ * The transport keys are the same argument as BACK rather than an exception to
+ * it. `KEYCODE_MEDIA_NEXT` and its neighbours mean one thing in the protocol and
+ * the same thing on the phone, and `AudioManager.dispatchMediaKeyEvent` is the
+ * platform's own unprivileged route to whichever app holds the media session —
+ * so nothing is invented and nothing is guessed. They used to be log-only, which
+ * a driver reported as the skip buttons doing nothing while the log cheerfully
+ * printed MEDIA_NEXT by name.
  *
  * The rotary knob is logged for the same reason and cannot do more: turning a
  * detent into focus movement needs to know what is on screen, and

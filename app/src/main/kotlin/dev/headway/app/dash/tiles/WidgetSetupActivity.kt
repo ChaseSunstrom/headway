@@ -82,6 +82,17 @@ class WidgetSetupActivity : AppCompatActivity() {
      */
     private var ownsId: Boolean = false
 
+    /**
+     * Which add this instance is on, so a superseded result can be recognised.
+     *
+     * Incremented by [onNewIntent]. See [onActivityResult] for what goes wrong
+     * without it.
+     */
+    private var generation: Int = 0
+
+    /** The [generation] whose configure activity is outstanding, if any. */
+    private var configuring: Int = NOT_CONFIGURING
+
     private val binding = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
         ::onBound,
@@ -89,7 +100,32 @@ class WidgetSetupActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState != null) {
+            // Restored rather than restarted. The manifest takes every
+            // configuration change, but the system can still destroy a stopped
+            // activity -- and this one spends its whole life stopped, behind the
+            // system's bind dialog or a provider's setup screen. Beginning again
+            // would allocate a *second* widget id, move the claim to it, and
+            // leave the first bound, in no layout and unprotected, for the next
+            // orphan sweep to delete out from under the driver.
+            widgetId = savedInstanceState.getInt(STATE_WIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
+            ownsId = savedInstanceState.getBoolean(STATE_OWNS_ID, false)
+            provider = savedInstanceState.getString(STATE_PROVIDER)
+                ?.let { ComponentName.unflattenFromString(it) }
+            generation = savedInstanceState.getInt(STATE_GENERATION, 0)
+            WidgetSetup.claim(widgetId)
+            SessionLog.shared.info(TAG, "restored an add already in flight for widget $widgetId")
+            return
+        }
         begin()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt(STATE_WIDGET_ID, widgetId)
+        outState.putBoolean(STATE_OWNS_ID, ownsId)
+        outState.putString(STATE_PROVIDER, provider?.flattenToString())
+        outState.putInt(STATE_GENERATION, generation)
     }
 
     /**
@@ -120,6 +156,10 @@ class WidgetSetupActivity : AppCompatActivity() {
         widgetId = AppWidgetManager.INVALID_APPWIDGET_ID
         provider = null
         ownsId = false
+        // A new add supersedes the old one, and any result still in flight for
+        // it. See [onActivityResult].
+        generation++
+        configuring = NOT_CONFIGURING
         begin()
     }
 
@@ -215,12 +255,14 @@ class WidgetSetupActivity : AppCompatActivity() {
         // Deliberately not fatal when it fails. A provider whose configure
         // activity will not start still renders its unconfigured default, and a
         // pane showing that beats no pane at all.
+        configuring = generation
         val started = runCatching {
             SharedWidgetHost.host(this).startAppWidgetConfigureActivityForResult(
                 this, widgetId, 0, REQUEST_CONFIGURE, null,
             )
             true
         }.getOrDefault(false)
+        if (!started) configuring = NOT_CONFIGURING
         if (!started) {
             SessionLog.shared.info(TAG, "the widget's setup screen would not open; using its default")
             deliver(widgetId)
@@ -230,6 +272,17 @@ class WidgetSetupActivity : AppCompatActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQUEST_CONFIGURE) return
+        // The request code alone is not enough to say which add this belongs
+        // to. Starting a second add with CLEAR_TOP finishes the provider's
+        // configure activity, and an activity started for a result that never
+        // called `setResult` delivers RESULT_CANCELED on its way out -- with the
+        // same request code as the add that has just replaced it. Without this
+        // the cancellation of add A finished add B, which had not begun.
+        if (configuring != generation) {
+            SessionLog.shared.info(TAG, "ignoring a setup result from a request that was replaced")
+            return
+        }
+        configuring = NOT_CONFIGURING
         // Cancelling configuration keeps the widget: several providers cancel
         // and configure themselves anyway, and the ones that do not still draw
         // something. Only an explicitly failed *bind* is worth throwing away.
@@ -294,6 +347,14 @@ class WidgetSetupActivity : AppCompatActivity() {
          * it, so the result arrives at [onActivityResult] the old way.
          */
         private const val REQUEST_CONFIGURE = 0x4857
+
+        /** A [generation] value that matches no add. */
+        private const val NOT_CONFIGURING = -1
+
+        private const val STATE_WIDGET_ID = "widget_id"
+        private const val STATE_OWNS_ID = "owns_id"
+        private const val STATE_PROVIDER = "provider"
+        private const val STATE_GENERATION = "generation"
 
         /**
          * The intent that adds [provider] as a widget, from anywhere.
