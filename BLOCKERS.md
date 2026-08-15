@@ -561,9 +561,28 @@ the last of four and only reached when the first three miss; an app with a
 stricter custom validator, or a future library that drops the branch, would still
 refuse. That is what remains open.
 
+**First real-world data point, 2026-08-15 — and it is a refusal.** A driver
+selected HERE WeGo (`com.here.app.maps`) as their maps app and reported
+`java.lang.IllegalArgumentException` on the car screen. Nothing had crashed:
+that is HERE WeGo's own exception, thrown inside its `HostValidator` while
+declining Headway, packaged by `androidx.car.app` into a `FailureResponse` whose
+`errorType` for an `IllegalArgumentException` is `INVALID_PARAMETER_EXCEPTION` —
+and Headway was rendering the first line of that *remote* stack trace as the
+pane's message. It no longer does; see `CarAppSession.describeFailure`.
+
+The refusal itself is **not yet evidence against route 4**, because the report
+does not say which APK was installed. On the `compat` build no car app can
+accept Headway at all — that flavour declares neither `TEMPLATE_RENDERER` nor the
+connection authority, by design (ADR 0009) — so a refusal there proves only that
+the driver was on compat. `CarHostCapability` now distinguishes the two cases
+before a bind is attempted, which means the next report will say which one it is
+rather than quoting an exception.
+
 **Blocked:** Confirming that a third-party `CarAppService` runs
 `HostValidator.isValidHost()` against Headway and returns true, so its templates
-reach the car screen.
+reach the car screen. **What would settle it:** a `-host` install (the log line
+naming the flavour is in the self-test) opening a Car app pane and either
+drawing a template or logging `declined Headway as a car host`.
 
 **Why:** The decision happens in the *app's* process, not Headway's.
 `CarAppBinder.onHandshakeCompleted` builds `HostInfo(claimedPackage,
