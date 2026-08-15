@@ -193,7 +193,12 @@ class CarShell(
         setCanceledOnTouchOutside(false)
 
         tabs = store.list()
-        layout = store.active()
+        layout = openingLayout()
+        // The active pointer means "what is on the car screen", and `reload()`
+        // re-reads it after any edit made from the phone. Leaving it naming the
+        // tab the *last* drive ended on would jump this drive back to that tab
+        // the first time a divider moved on the phone.
+        runCatching { store.setActive(layout.name) }
         releaseOrphanedWidgets()
         layOutRailAndStage()
         showStartup()
@@ -977,6 +982,32 @@ class CarShell(
 
     // --- switching, editing, saving -------------------------------------------
 
+    /**
+     * The tab a session comes up on.
+     *
+     * Not `store.active()` any more, which is the tab the *last* drive ended on.
+     * A car that opens on whatever was last on screen makes the map something
+     * to go and find, from the seat, at the start of every drive -- which is
+     * what a driver reported: "the map view doesnt pull up automatically, it
+     * only goes to the home view".
+     *
+     * The default resolves a *capability*, not a name, so it survives the tabs
+     * being renamed, re-split or replaced wholesale: the first layout with a
+     * pane that can show a map in it. Falling back to the remembered tab when
+     * there is no such layout matters -- somebody who deleted every map pane is
+     * telling you they do not want one, and a mapless start tab chosen on their
+     * behalf would be worse than remembering where they were.
+     */
+    private fun openingLayout(): DashLayout {
+        val wanted = HeadwaySettings.startLayout(context)
+        HeadwaySettings.startLayoutName(wanted)?.let { name ->
+            return tabs.firstOrNull { it.name == name } ?: store.active()
+        }
+        if (wanted != HeadwaySettings.START_LAYOUT_DRIVING) return store.active()
+        return tabs.firstOrNull { tab -> tab.leaves().any { it.kind in MAP_PANES } }
+            ?: store.active()
+    }
+
     private fun switchTo(name: String) {
         // Re-read rather than trust the pill: the driver can edit layouts from
         // the phone mid-drive, so a pill may name something that no longer
@@ -1117,10 +1148,25 @@ class CarShell(
      * to a title, a sentence and a row of chips because that is what the callers
      * need; a tile that wants more should be asking for less.
      */
-    fun showSheet(title: String, detail: String?, chips: List<CarSheet.Row>) {
+    fun showSheet(
+        title: String,
+        detail: String?,
+        chips: List<CarSheet.Row>,
+        chipsTitle: String? = null,
+        extraChips: List<CarSheet.Row> = emptyList(),
+        extraChipsTitle: String? = null,
+    ) {
         val rows = detail?.let { listOf(CarSheet.Row(it, null) {}) }.orEmpty()
         showOverlay(
-            sheet().build(title = title, rows = rows, chips = chips, onClose = ::closeOverlay),
+            sheet().build(
+                title = title,
+                rows = rows,
+                chips = chips,
+                chipsTitle = chipsTitle,
+                extraChips = extraChips,
+                extraChipsTitle = extraChipsTitle,
+                onClose = ::closeOverlay,
+            ),
         )
     }
 
@@ -1156,6 +1202,7 @@ class CarShell(
             unlockOrLock()
         }
         rows += CarSheet.Row("Layouts", "Switch, add or delete a layout") { showLayouts() }
+        rows += CarSheet.Row("Opens on", startLayoutSummary()) { showStartLayout() }
 
         rows += CarSheet.section("Apps")
         rows += CarSheet.Row("Open an app", "Show a running app in the app pane") {
@@ -1279,6 +1326,58 @@ class CarShell(
      * *reading* preference: the moment a driver notices it is wrong is the
      * moment they are looking at the number, and that number is on the car.
      */
+    /** What the *Opens on* row says without opening it. */
+    private fun startLayoutSummary(): String = when (val wanted = HeadwaySettings.startLayout(context)) {
+        HeadwaySettings.START_LAYOUT_LAST -> "Whichever tab the last drive ended on"
+        HeadwaySettings.START_LAYOUT_DRIVING ->
+            openingLayout().let { "The map — currently ${it.name}" }
+        else -> HeadwaySettings.startLayoutName(wanted)
+            ?.let { name ->
+                if (tabs.any { it.name == name }) name else "$name — no longer a tab"
+            }
+            ?: "Whichever tab the last drive ended on"
+    }
+
+    /**
+     * Which tab the next drive starts on.
+     *
+     * Offered on the car screen and not only on the phone, because the driver
+     * who wants this is the one sitting in front of the wrong tab.
+     */
+    private fun showStartLayout() {
+        val current = HeadwaySettings.startLayout(context)
+        val rows = mutableListOf<CarSheet.Row>()
+        rows += CarSheet.Row(
+            title = "The map",
+            detail = "Whichever tab can show a map — right now ${openingLayout().name}. " +
+                "Follows your tabs if you rename or rebuild them.",
+            selected = current == HeadwaySettings.START_LAYOUT_DRIVING,
+        ) { chooseStartLayout(HeadwaySettings.START_LAYOUT_DRIVING, "the map") }
+        rows += CarSheet.Row(
+            title = "Where you left off",
+            detail = "The tab that was on screen when the last drive ended",
+            selected = current == HeadwaySettings.START_LAYOUT_LAST,
+        ) { chooseStartLayout(HeadwaySettings.START_LAYOUT_LAST, "where you left off") }
+        rows += CarSheet.section("A tab, every time")
+        tabs.forEach { tab ->
+            val value = HeadwaySettings.START_LAYOUT_NAMED + tab.name
+            rows += CarSheet.Row(
+                title = tab.name,
+                detail = tab.leaves().joinToString(", ") { PaneKind.describe(it.kind) },
+                selected = current == value,
+            ) { chooseStartLayout(value, tab.name) }
+        }
+        showOverlay(
+            sheet().build(title = "Opens on", rows = rows, onClose = ::closeOverlay),
+        )
+    }
+
+    private fun chooseStartLayout(value: String, said: String) {
+        HeadwaySettings.setStartLayout(context, value)
+        closeOverlay()
+        onStep("car screen: the next drive opens on $said")
+    }
+
     private fun showUnits() {
         val current = HeadwaySettings.carUnits(context)
         val rows = CarUnits.entries.map { choice ->
@@ -2070,6 +2169,17 @@ class CarShell(
     }
 
     companion object {
+
+        /**
+         * The panes that can put a map in front of the driver.
+         *
+         * `MAPS` draws the turn card and opens a map app into the app pane;
+         * `CAR_APP` is where a navigation app draws its own map, which is the
+         * route the driver on the reported car is actually using. `APP` is
+         * deliberately absent: a bare app pane may hold anything, so treating
+         * it as a map would make the *App* tab the opening one on any phone.
+         */
+        private val MAP_PANES: Set<String> = setOf(PaneKind.MAPS, PaneKind.CAR_APP)
 
         /**
          * Installed by `CarVoiceStream` while a session has a microphone.

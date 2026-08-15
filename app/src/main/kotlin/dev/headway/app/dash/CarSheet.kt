@@ -79,6 +79,16 @@ class CarSheet(
         rows: List<Row>,
         chips: List<Row> = emptyList(),
         chipsTitle: String? = null,
+        /**
+         * A second labelled chip row, under the first.
+         *
+         * Two rows and not two sheets because the two numbers they set are only
+         * meaningful beside each other: the car-app size sheet offers "how large
+         * the app draws" and "how much to shrink what ignored that", and a
+         * driver choosing between them is comparing, not navigating.
+         */
+        extraChips: List<Row> = emptyList(),
+        extraChipsTitle: String? = null,
         /** Appended under the rows; see [buildIcons], its only caller. */
         extra: View? = null,
         onClose: () -> Unit,
@@ -112,6 +122,10 @@ class CarSheet(
         if (chips.isNotEmpty()) {
             chipsTitle?.let { body.addView(sectionLabel(it)) }
             body.addView(chipRow(chips))
+        }
+        if (extraChips.isNotEmpty()) {
+            extraChipsTitle?.let { body.addView(sectionLabel(it)) }
+            body.addView(chipRow(extraChips))
         }
         rows.forEach { body.addView(if (it.isSection) sectionLabel(it.title) else row(it)) }
         extra?.let { body.addView(it) }

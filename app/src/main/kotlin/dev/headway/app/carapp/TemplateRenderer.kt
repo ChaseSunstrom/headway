@@ -109,6 +109,14 @@ class TemplateRenderer(
     private val onStep: (String) -> Unit = {},
     /** Leaves the app entirely and goes back to the picker. */
     private val onLeave: () -> Unit = {},
+    /**
+     * How much larger than the pane the map buffer is. See [CarAppSurfaceView].
+     *
+     * Passed through rather than read here because this class owns the map
+     * surface's construction and nothing else does, and because it is a
+     * per-app setting the pane already reads for the density.
+     */
+    private val mapPixelScale: Float = 1f,
 ) {
 
     private val appContext: Context = context.applicationContext
@@ -578,7 +586,7 @@ class TemplateRenderer(
      */
     private fun attachMap(context: Context) {
         mapWanted = true
-        if (mapView == null) mapView = CarAppSurfaceView(context, session)
+        if (mapView == null) mapView = CarAppSurfaceView(context, session, mapPixelScale)
     }
 
     private fun releaseMap() {

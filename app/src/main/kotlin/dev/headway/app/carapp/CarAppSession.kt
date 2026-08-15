@@ -27,6 +27,7 @@ import android.location.Location
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.DisplayMetrics
 import android.view.Surface
 import androidx.car.app.AppInfo
 import androidx.car.app.CarAppService
@@ -156,6 +157,41 @@ class CarAppSession(
      * nothing better to say should pass.
      */
     private val densityDpi: Int = 0,
+    /**
+     * The pane's size in pixels, read when `onAppCreate` is about to be sent.
+     *
+     * ## Why a supplier and not two numbers
+     *
+     * Because the session is constructed before the pane has been measured.
+     * `onAppCreate` is three binder round-trips later, by which time the view
+     * has a size, so reading it late is the difference between the app's own
+     * idea of its screen being right and being zero.
+     *
+     * ## Why it matters at all
+     *
+     * `CarContext.attachBaseContext` builds the app's whole world from this
+     * `Configuration`: it creates a `VirtualDisplay` of
+     * `screenWidthDp` x `screenHeightDp` — used as *pixels*, which is the
+     * library's own quirk, not a mistake here — at `densityDpi`, then makes the
+     * app's resources from a display context on it. Headway used to send a copy
+     * of the *phone's* configuration with only the density overridden, so every
+     * app was told it was running on a tall narrow portrait screen of the
+     * phone's dimensions. Resource buckets, layout decisions and anything
+     * sized from `carContext.resources.displayMetrics` all came out
+     * phone-shaped, on a panel that is none of those things.
+     *
+     * Returning a zero or negative size leaves the phone's numbers in place,
+     * which is what a pane that has not been laid out should do.
+     */
+    private val paneSize: () -> Pair<Int, Int> = { 0 to 0 },
+    /**
+     * Whether the app should use its night resources.
+     *
+     * The car screen's own theme, not the phone's: Headway's dashboard is dark
+     * on every theme but one, and the phone's day/night has nothing to do with
+     * what a driver is looking at through a windscreen.
+     */
+    private val night: Boolean = true,
     private val onStep: (String) -> Unit = {},
 ) {
 
@@ -369,7 +405,50 @@ class CarAppSession(
                 // control for that.
                 fontScale = 1f
             }
+            // The pane's shape, in dp at the density above. See [paneSize] for
+            // why this is not the phone's, and for the library quirk that turns
+            // these two dp fields into the pixel size of the app's own display.
+            val (widthPx, heightPx) = runCatching { paneSize() }.getOrDefault(0 to 0)
+            val density = (if (densityDpi > 0) densityDpi else this.densityDpi)
+                .coerceAtLeast(1)
+            if (widthPx > 0 && heightPx > 0) {
+                val widthDp = widthPx * DisplayMetrics.DENSITY_DEFAULT / density
+                val heightDp = heightPx * DisplayMetrics.DENSITY_DEFAULT / density
+                screenWidthDp = widthDp
+                screenHeightDp = heightDp
+                smallestScreenWidthDp = minOf(widthDp, heightDp)
+                orientation = if (widthPx >= heightPx) {
+                    Configuration.ORIENTATION_LANDSCAPE
+                } else {
+                    Configuration.ORIENTATION_PORTRAIT
+                }
+                // The size bucket the app picks resources from. A car pane is
+                // small by any measure, and leaving the phone's NORMAL or LARGE
+                // in place is how an app comes to choose a layout built for a
+                // handset and draw it into a strip of dashboard.
+                screenLayout = (screenLayout and Configuration.SCREENLAYOUT_SIZE_MASK.inv()) or
+                    when {
+                        smallestScreenWidthDp >= 720 -> Configuration.SCREENLAYOUT_SIZE_XLARGE
+                        smallestScreenWidthDp >= 600 -> Configuration.SCREENLAYOUT_SIZE_LARGE
+                        smallestScreenWidthDp >= 320 -> Configuration.SCREENLAYOUT_SIZE_NORMAL
+                        else -> Configuration.SCREENLAYOUT_SIZE_SMALL
+                    }
+            }
+            // Car, and dark or not according to the car screen rather than the
+            // phone. `UI_MODE_TYPE_CAR` is how an app knows to use its car
+            // resources at all; the night bit is what stops a car app drawing a
+            // white template into a dashboard the driver has set to near-black,
+            // and follows the driver's theme rather than being assumed, because
+            // one of the themes on offer is a light one for daylight.
+            uiMode = (uiMode and Configuration.UI_MODE_TYPE_MASK.inv() and
+                Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                Configuration.UI_MODE_TYPE_CAR or
+                if (night) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO
         }
+        onStep(
+            "car app: ${app.label} told it is ${configuration.screenWidthDp}x" +
+                "${configuration.screenHeightDp} dp at ${configuration.densityDpi} dpi",
+        )
         send("onAppCreate") {
             remote.onAppCreate(
                 CarHost(),

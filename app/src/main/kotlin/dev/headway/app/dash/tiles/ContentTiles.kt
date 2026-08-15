@@ -124,12 +124,44 @@ private const val MAX_ART_SAMPLE = 32
  * session over that ordering matters when a paused podcast sorts above the music
  * that is audible in the cabin, which is the case a driver notices.
  */
-class NowPlayingTile(context: Context) : DashTile {
+class NowPlayingTile(
+    context: Context,
+    /**
+     * Draw as a strip inside another pane rather than as a pane of its own.
+     *
+     * The reason this exists is a driver's: "symfonium doesnt show the now
+     * playing UI inside of it, I dont want to have a seperate now playing
+     * panel, I want it to be just like the android auto version". Android Auto
+     * puts what is playing at the foot of the app's own library screen, not in
+     * a second panel beside it, and a car screen 480 pixels tall cannot afford
+     * to spend a whole pane on three lines and three buttons.
+     *
+     * Same session plumbing, same rendering, a shorter layout — and one
+     * behavioural difference: with nothing playing the strip disappears instead
+     * of explaining itself, because the pane around it is not about playback
+     * and a permanent "nothing is playing" would be a permanent tax on the
+     * library list.
+     */
+    private val compact: Boolean = false,
+    /**
+     * A package whose session should win when several are active.
+     *
+     * The strip belongs to the app being browsed, so it must follow that app
+     * and not whichever session happens to be first — otherwise opening a music
+     * library while a podcast is paused shows the podcast's controls under the
+     * music app's list. Null, or a package with no session, falls back to the
+     * ordinary "playing first" choice.
+     */
+    private val preferPackage: () -> String? = { null },
+) : DashTile {
 
     private val appContext: Context = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
 
     override val kind: String = PaneKind.NOW_PLAYING
+
+    /** The whole tile, so [compact] can collapse it when nothing is playing. */
+    private var rootView: View? = null
 
     private var art: ImageView? = null
     private var titleText: TextView? = null
@@ -183,6 +215,7 @@ class NowPlayingTile(context: Context) : DashTile {
      * left-aligned grey sentence and nothing else.
      */
     override fun createView(context: Context): View {
+        if (compact) return createStrip(context)
         val root = FrameLayout(context)
         val panel = CarStyle.panel(context)
         val gap = CarStyle.gutter(context)
@@ -270,9 +303,100 @@ class NowPlayingTile(context: Context) : DashTile {
         content = panel
         empty = emptyView
         emptyMessage = (emptyView as? LinearLayout)?.getChildAt(1) as? TextView
+        rootView = root
 
         render()
         return root
+    }
+
+    /**
+     * The same tile as one row: art, two lines, three controls, a rule.
+     *
+     * Horizontal rather than stacked, because the space this occupies is height
+     * taken from the list above it. Everything else — the fields, the binding,
+     * [render] — is shared with the full pane, so a fix to either reaches both.
+     */
+    private fun createStrip(context: Context): View {
+        val gap = CarStyle.gutter(context)
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val artSize = CarStyle.dp(context, 52f)
+        val artView = ImageView(context).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            clipToOutline = true
+            background = Headway.panel(CarStyle.radius(context), Headway.SURFACE_RAISED)
+            layoutParams = LinearLayout.LayoutParams(artSize, artSize).apply { marginEnd = gap }
+        }
+        val titleView = CarStyle.label(context, 16f, CarStyle.TEXT, bold = true).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        val artistView = CarStyle.label(context, 13f, CarStyle.DIM).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        // The source line is dropped, not hidden: inside a library the app is
+        // named by the pane's own header, and repeating it costs a line the
+        // strip does not have. The field still has to exist -- `render` reads
+        // it -- so it is a detached view nothing adds.
+        val sourceView = CarStyle.label(context, 13f, CarStyle.ACCENT)
+        val textColumn = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(titleView)
+            addView(artistView)
+        }
+
+        val controlSize = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
+        fun control(kind: Int, emphasis: Boolean, onPress: () -> Unit) =
+            TransportButton(context, kind, onPress).apply {
+                emphasised = emphasis
+                layoutParams = LinearLayout.LayoutParams(controlSize, controlSize).apply {
+                    marginStart = gap / 2
+                }
+            }
+        val controls = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(control(TransportButton.PREVIOUS, false) { command { it.skipToPrevious() } })
+        }
+        val playPauseView = control(TransportButton.PLAY, true) { togglePlayback() }
+        controls.addView(playPauseView)
+        controls.addView(control(TransportButton.NEXT, false) { command { it.skipToNext() } })
+
+        row.addView(artView)
+        row.addView(textColumn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        row.addView(controls)
+
+        val progressView = ProgressRule(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                MATCH_PARENT,
+                CarStyle.dp(context, 3f),
+            ).apply { topMargin = gap / 2 }
+        }
+
+        val strip = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(gap, gap / 2, gap, gap / 2)
+            addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(progressView)
+        }
+
+        art = artView
+        titleText = titleView
+        artistText = artistView
+        sourceText = sourceView
+        progress = progressView
+        transport = controls
+        playPause = playPauseView
+        content = strip
+        empty = null
+        emptyMessage = null
+        rootView = strip
+
+        render()
+        return strip
     }
 
     override fun start() {
@@ -387,6 +511,19 @@ class NowPlayingTile(context: Context) : DashTile {
 
     // --- session plumbing ----------------------------------------------------
 
+    /**
+     * Bind again, because the answer to [preferPackage] has changed.
+     *
+     * A strip inside a library follows the app that library belongs to, and
+     * that app changes when the driver opens a different one. Nothing in the
+     * media-session world announces that -- the sessions did not change, the
+     * preference did -- so the pane holding the strip has to say so.
+     */
+    fun reconsider() {
+        if (!running) return
+        refresh()
+    }
+
     /** Re-reads the active sessions and binds whichever one should be shown. */
     private fun refresh() {
         if (!running) {
@@ -407,7 +544,12 @@ class NowPlayingTile(context: Context) : DashTile {
                 SessionLog.shared.warn(TAG, "getActiveSessions refused: $it")
             }
         }.getOrNull().orEmpty()
-        bind(sessions.firstOrNull { isActive(it.playbackState?.state) } ?: sessions.firstOrNull())
+        val wanted = runCatching { preferPackage() }.getOrNull()
+        bind(
+            wanted?.let { name -> sessions.firstOrNull { it.packageName == name } }
+                ?: sessions.firstOrNull { isActive(it.playbackState?.state) }
+                ?: sessions.firstOrNull(),
+        )
         render()
     }
 
@@ -503,7 +645,6 @@ class NowPlayingTile(context: Context) : DashTile {
         val artistView = artistText ?: return
         val sourceView = sourceText ?: return
         val panel = content ?: return
-        val blank = empty ?: return
 
         val current = controller
         val message = when {
@@ -512,6 +653,14 @@ class NowPlayingTile(context: Context) : DashTile {
             else -> null
         }
         if (message != null) {
+            // A strip says nothing and takes no room. The pane it sits in has
+            // its own subject and its own empty state; a second sentence
+            // explaining that no music is playing would be under a library the
+            // driver is at that moment looking through in order to start some.
+            val blank = empty ?: run {
+                rootView?.visibility = View.GONE
+                return
+            }
             emptyMessage?.text = message
             if (blank.visibility != View.VISIBLE) {
                 blank.visibility = View.VISIBLE
@@ -520,7 +669,13 @@ class NowPlayingTile(context: Context) : DashTile {
             panel.visibility = View.GONE
             return
         }
-        blank.visibility = View.GONE
+        empty?.visibility = View.GONE
+        rootView?.let { root ->
+            if (root.visibility != View.VISIBLE) {
+                root.visibility = View.VISIBLE
+                if (compact) Headway.revealIn(root)
+            }
+        }
         if (panel.visibility != View.VISIBLE) {
             panel.visibility = View.VISIBLE
             Headway.revealIn(panel)

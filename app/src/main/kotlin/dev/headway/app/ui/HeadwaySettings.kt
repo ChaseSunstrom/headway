@@ -19,6 +19,7 @@ package dev.headway.app.ui
 
 import android.content.Context
 import android.content.SharedPreferences
+import dev.headway.app.carapp.CarAppSurfaceView
 import dev.headway.dash.AllowedApps
 import dev.headway.dash.CarUiScale
 import dev.headway.dash.CarUnits
@@ -293,6 +294,63 @@ object HeadwaySettings {
         runCatching { of(context).edit().putFloat(KEY_PANEL_SCALE, scale).apply() }
     }
 
+    /**
+     * The tab the car screen opens on when a session comes up.
+     *
+     * ## Why this is not simply "where you left off"
+     *
+     * It used to be, and it was wrong for the thing a car is for. The active
+     * tab is persisted, so ending one drive on the music tab meant the next
+     * drive started there — and a driver who wants the map has to find it
+     * first, every time, from the seat, usually while reversing off a drive.
+     * A driver reported exactly that: "the map view doesnt pull up
+     * automatically, it only goes to the home view".
+     *
+     * ## What the default means
+     *
+     * Unset is [START_LAYOUT_DRIVING] — the first tab that can show a map,
+     * which in the shipped set is *Drive* and in an edited one is whatever the
+     * driver built with a maps or car-app pane in it. Named, so a tab renamed
+     * or re-split still resolves; falls back to the remembered tab when no
+     * layout has a map in it at all, because forcing a mapless tab on somebody
+     * who deleted every map pane would be worse than remembering.
+     *
+     * [START_LAYOUT_LAST] restores the old behaviour, and any other value is a
+     * layout name.
+     */
+    const val KEY_START_LAYOUT: String = "start_layout"
+
+    /** [KEY_START_LAYOUT]: the first tab that can show a map. The default. */
+    const val START_LAYOUT_DRIVING: String = "driving"
+
+    /** [KEY_START_LAYOUT]: whichever tab the last drive ended on. */
+    const val START_LAYOUT_LAST: String = "last"
+
+    /**
+     * The prefix a stored layout *name* carries.
+     *
+     * A tab can be called anything, including "driving", so the two modes and a
+     * name cannot share one flat value space without one of them shadowing the
+     * other. Prefixing the name is the whole of the fix, and it keeps the value
+     * printable -- these end up in a SharedPreferences XML file, where a
+     * reserved control character would be a nonconforming document rather than
+     * a clever sentinel.
+     */
+    const val START_LAYOUT_NAMED: String = "name:"
+
+    fun startLayout(context: Context): String =
+        runCatching { of(context).getString(KEY_START_LAYOUT, null) }.getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: START_LAYOUT_DRIVING
+
+    /** The layout [value] names, or null when it names a mode rather than a tab. */
+    fun startLayoutName(value: String): String? =
+        value.removePrefix(START_LAYOUT_NAMED).takeIf { it != value && it.isNotBlank() }
+
+    fun setStartLayout(context: Context, value: String) {
+        runCatching { of(context).edit().putString(KEY_START_LAYOUT, value).apply() }
+    }
+
     /** Every app's chosen panel scale. */
     fun appUiScales(context: Context): Map<String, Float> =
         CarUiScale.readAll(
@@ -309,6 +367,45 @@ object HeadwaySettings {
             val next = appUiScales(context).toMutableMap()
             if (scale == CarUiScale.DEFAULT) next.remove(packageName) else next[packageName] = scale
             of(context).edit().putString(KEY_APP_UI_SCALE, CarUiScale.writeAll(next)).apply()
+        }
+    }
+
+    /**
+     * Per-app map supersampling, as `CarUiScale` JSON keyed the same way.
+     *
+     * A second number because it corrects a different fault. [KEY_APP_UI_SCALE]
+     * moves the density, which moves everything drawn *from* the density —
+     * Headway's chrome, an app's road labels, its text. Anything an app sizes
+     * in fixed pixels ignores it completely, and a driver found one: HERE
+     * WeGo's location triangle stayed exactly as large while everything around
+     * it shrank. `CarAppSurfaceView` has the derivation; the short version is
+     * that enlarging the *buffer* is the only lever an app cannot ignore,
+     * because the buffer is the memory it draws into.
+     *
+     * Stored in the same `CarUiScale` map format, and read with the same
+     * helpers, because it is the same shape of thing: a package keyed to a
+     * factor, defaults omitted.
+     */
+    const val KEY_APP_MAP_DETAIL: String = "app_map_detail"
+
+    /** Every app's chosen map supersample factor. */
+    fun appMapDetails(context: Context): Map<String, Float> =
+        CarUiScale.readAll(
+            runCatching { of(context).getString(KEY_APP_MAP_DETAIL, null) }.getOrNull(),
+        )
+
+    /** The map supersample factor for [packageName], or 1.0. */
+    fun appMapDetail(context: Context, packageName: String?): Float =
+        packageName?.let { appMapDetails(context)[it] }
+            ?.coerceIn(CarAppSurfaceView.MIN_PIXEL_SCALE, CarAppSurfaceView.MAX_PIXEL_SCALE)
+            ?: CarUiScale.DEFAULT
+
+    fun setAppMapDetail(context: Context, packageName: String, scale: Float) {
+        if (packageName.isBlank()) return
+        runCatching {
+            val next = appMapDetails(context).toMutableMap()
+            if (scale == CarUiScale.DEFAULT) next.remove(packageName) else next[packageName] = scale
+            of(context).edit().putString(KEY_APP_MAP_DETAIL, CarUiScale.writeAll(next)).apply()
         }
     }
 

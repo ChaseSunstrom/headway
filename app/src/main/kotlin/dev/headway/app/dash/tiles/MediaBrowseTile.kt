@@ -84,6 +84,23 @@ class MediaBrowseTile(
     /** The app being browsed, or null while the app list is showing. */
     private var session: CarMediaBrowser? = null
 
+    /**
+     * What is playing, at the foot of the library, the way Android Auto has it.
+     *
+     * A driver asked for exactly this and asked for the separate panel to stop
+     * being the answer: "symfonium doesnt show the now playing UI inside of it,
+     * I dont want to have a seperate now playing panel". It is a real
+     * [NowPlayingTile] in its compact form rather than a reimplementation, so
+     * the artwork, the metadata reads and the transport all behave identically
+     * to the pane — and it follows *this* app's session, so the controls under
+     * a library always belong to the library above them.
+     */
+    private val nowPlaying = NowPlayingTile(
+        context = context,
+        compact = true,
+        preferPackage = { session?.app?.packageName },
+    )
+
     private var apps: List<MediaApp> = emptyList()
 
     /** The last thing the current session said, for [describe]. */
@@ -125,6 +142,12 @@ class MediaBrowseTile(
             },
             LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f),
         )
+        // Below the list and outside the scroller: it must stay put while the
+        // library scrolls, which is the whole point of a now-playing bar.
+        panel.addView(
+            nowPlaying.createView(context),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+        )
 
         header = bar
         headerLabel = label
@@ -142,6 +165,9 @@ class MediaBrowseTile(
     override fun start() {
         if (running) return
         running = true
+        // Started first, so a session that is already playing is on screen
+        // before the library finishes binding.
+        runCatching { nowPlaying.start() }
         // Re-read on every start rather than once: an app installed mid-drive
         // should appear, and the query is one cheap PackageManager call.
         // Allowed, not merely installed: every row here opens an app, and a row
@@ -170,6 +196,9 @@ class MediaBrowseTile(
     override fun stop() {
         if (!running) return
         running = false
+        // The strip holds a MediaController callback and a session listener of
+        // its own; leaving them registered outlives the pane that owns them.
+        runCatching { nowPlaying.stop() }
         // The session goes with the pane. A browser left connected holds a
         // binding into another app's process, and its subscriptions call back
         // into views that are about to be thrown away.
@@ -183,7 +212,7 @@ class MediaBrowseTile(
         val current = session
             ?: return "media browse: ${apps.size} app(s) with a library, none open"
         return "media browse: ${current.app.label}, ${lastState.name.lowercase()}, " +
-            "$lastCount item(s)"
+            "$lastCount item(s); ${nowPlaying.describe()}"
     }
 
     // --- navigation ------------------------------------------------------------
@@ -199,6 +228,10 @@ class MediaBrowseTile(
         session?.close()
         val next = CarMediaBrowser(appContext, app, onStep)
         session = next
+        // The strip prefers this app's session, and the preference has just
+        // changed. Without this it keeps showing whatever it bound at start()
+        // until that session next says something.
+        runCatching { nowPlaying.reconsider() }
         next.connect(listener)
     }
 
@@ -221,6 +254,7 @@ class MediaBrowseTile(
         session = null
         lastState = BrowseState.UNKNOWN
         lastCount = 0
+        runCatching { nowPlaying.reconsider() }
         renderApps()
     }
 

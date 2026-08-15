@@ -41,9 +41,11 @@ import dev.headway.app.dash.DashTile
 import dev.headway.app.media.MediaApps
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
+import dev.headway.app.ui.theme.HeadwayTheme
 import dev.headway.dash.AllowedApps
 import dev.headway.dash.CarUiScale
 import dev.headway.dash.PaneKind
+import dev.headway.dash.ThemeBase
 
 /**
  * A third-party app's own interface, drawn by Headway.
@@ -324,8 +326,29 @@ class CarAppTile(
                     "($scaled dpi against the car's $carDensity)"
             )
         }
-        val next = CarAppSession(appContext, app, densityDpi = scaled, onStep = onStep)
-        val drawing = TemplateRenderer(uiContext, next, onStep) { leave() }
+        val detail = HeadwaySettings.appMapDetail(appContext, app.packageName)
+        if (detail != CarUiScale.DEFAULT) {
+            onStep("car app: ${app.label} map buffer at ${CarUiScale.percentOf(detail)} of the pane")
+        }
+        val next = CarAppSession(
+            context = appContext,
+            app = app,
+            densityDpi = scaled,
+            // The pane, read late. `frame` is this tile's own view and is laid
+            // out by the time the handshake completes; a zero here simply
+            // leaves the app with the phone's shape, which is what it had
+            // before this existed.
+            paneSize = { frame.width to frame.height },
+            night = HeadwayTheme.choice.base != ThemeBase.LIGHT,
+            onStep = onStep,
+        )
+        val drawing = TemplateRenderer(
+            context = uiContext,
+            session = next,
+            onStep = onStep,
+            onLeave = { leave() },
+            mapPixelScale = detail,
+        )
         session = next
         renderer = drawing
         frame.addView(
@@ -364,11 +387,26 @@ class CarAppTile(
                 open(open)
             }
         }
+        val detailNow = HeadwaySettings.appMapDetail(appContext, open.packageName)
+        val detailChips = MAP_DETAILS.map { choice ->
+            CarSheet.Row(
+                title = CarUiScale.percentOf(choice),
+                selected = kotlin.math.abs(detailNow - choice) < 0.001f,
+            ) {
+                HeadwaySettings.setAppMapDetail(appContext, open.packageName, choice)
+                shell.closeSheet()
+                onStep("car app: ${open.label} map detail ${CarUiScale.percentOf(choice)}")
+                open(open)
+            }
+        }
         shell.showSheet(
             title = "${open.label} size",
             detail = "How large this app draws inside its panel — its map, its " +
                 "markers and its text, and Headway's controls over them.",
             chips = chips,
+            chipsTitle = "Everything the app draws",
+            extraChips = detailChips,
+            extraChipsTitle = "Map detail — shrinks markers that ignore the size above",
         )
     }
 
@@ -520,5 +558,19 @@ class CarAppTile(
             },
         )
         return line
+    }
+
+    companion object {
+
+        /**
+         * The map-detail factors the picker offers.
+         *
+         * Starts at 100% — the setting is a correction for a specific fault and
+         * costs memory squared, so "off" has to be one of the choices and has
+         * to be first. Below 100% is not offered: a buffer smaller than the pane
+         * would blur everything the app draws in order to enlarge the few things
+         * it draws in fixed pixels, which is the wrong trade in every case.
+         */
+        val MAP_DETAILS: List<Float> = listOf(1f, 1.25f, 1.5f, 2f, 2.5f, 3f)
     }
 }

@@ -59,12 +59,43 @@ import android.view.TextureView
  * unit negotiated. So the app sizes its own labels and markers for the car
  * rather than for the phone, and that is the difference between a readable map
  * and a screenshot of one.
+ *
+ * ## And when the app ignores the density
+ *
+ * Some do, and there is no way to make them stop. A driver reported that
+ * turning HERE WeGo's size down moved its road labels and Headway's chrome and
+ * left the location triangle exactly as big — which is the signature of a
+ * marker sized from a pixel constant, or from the *phone's*
+ * `Resources.getSystem()` metrics, rather than from anything the host sends.
+ * `SurfaceContainer.getDpi()` is advisory and the `Configuration` at
+ * `onAppCreate` is advisory; the one number an app cannot ignore is the pixel
+ * size of the buffer it is drawing into, because that is the memory.
+ *
+ * So [pixelScale] enlarges the *buffer* and reports a proportionally larger
+ * dpi. Content that honours dpi is drawn N times bigger into a buffer N times
+ * bigger and lands on screen at the size it always was; content sized in fixed
+ * pixels is drawn at its usual size into a bigger buffer and lands on screen N
+ * times *smaller*. One knob, and it moves only the content that ignored the
+ * others. `TextureView` does the downscale in the layer transform, so it costs
+ * no copy — the price is memory (N² of it) and filtering.
  */
 @SuppressLint("ViewConstructor")
 class CarAppSurfaceView(
     context: Context,
     private val session: CarAppSession,
+    /**
+     * How much larger than the pane the app's buffer is, 1.0 for the same size.
+     *
+     * See the class KDoc. Above 1 it shrinks whatever the app draws in fixed
+     * pixels; it is deliberately not a general quality knob, and every gesture
+     * coordinate is multiplied by it because the app's coordinate space is the
+     * buffer's, not the view's.
+     */
+    private val pixelScale: Float = 1f,
 ) : TextureView(context) {
+
+    /** [pixelScale] clamped to what a texture and a driver's patience allow. */
+    private val scale: Float get() = pixelScale.coerceIn(MIN_PIXEL_SCALE, MAX_PIXEL_SCALE)
 
     private var handle: SurfaceHandle? = null
 
@@ -84,7 +115,10 @@ class CarAppSurfaceView(
             override fun onDown(event: MotionEvent): Boolean = true
 
             override fun onSingleTapUp(event: MotionEvent): Boolean {
-                session.click(event.x, event.y)
+                // Into buffer coordinates. The app was told the surface is
+                // `scale` times the view, so a tap reported in view pixels
+                // would land at 1/scale of where the driver touched.
+                session.click(event.x * scale, event.y * scale)
                 return true
             }
 
@@ -94,7 +128,7 @@ class CarAppSurfaceView(
                 distanceX: Float,
                 distanceY: Float,
             ): Boolean {
-                session.scroll(distanceX, distanceY)
+                session.scroll(distanceX * scale, distanceY * scale)
                 return true
             }
 
@@ -104,7 +138,7 @@ class CarAppSurfaceView(
                 velocityX: Float,
                 velocityY: Float,
             ): Boolean {
-                session.fling(velocityX, velocityY)
+                session.fling(velocityX * scale, velocityY * scale)
                 return true
             }
         },
@@ -114,7 +148,9 @@ class CarAppSurfaceView(
         context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
-                session.scale(detector.focusX, detector.focusY, detector.scaleFactor)
+                // The focus is a point and scales; `scaleFactor` is a ratio
+                // and does not.
+                session.scale(detector.focusX * scale, detector.focusY * scale, detector.scaleFactor)
                 return true
             }
         },
@@ -188,15 +224,30 @@ class CarAppSurfaceView(
      */
     private fun offer(texture: SurfaceTexture, width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
+        val factor = scale
+        val bufferWidth = (width * factor).toInt().coerceAtLeast(1)
+        val bufferHeight = (height * factor).toInt().coerceAtLeast(1)
+        // Before the Surface is built and before the app is told, because
+        // `SurfaceTexture.setDefaultBufferSize` documents that a GL producer
+        // must create its EGLSurface *after* the size is set. TextureView
+        // re-applies the view's own size in `onSizeChanged` before dispatching
+        // the callback that lands here, so this has to run on every resize
+        // rather than once.
+        if (factor != 1f) {
+            runCatching { texture.setDefaultBufferSize(bufferWidth, bufferHeight) }
+        }
         val live = surface ?: Surface(texture).also { surface = it }
         val created = SurfaceHandle(
             surface = live,
-            width = width,
-            height = height,
-            dpi = resources.displayMetrics.densityDpi,
+            width = bufferWidth,
+            height = bufferHeight,
+            // Scaled with the buffer, so content that *does* honour dpi comes
+            // out the same size on screen as it did at 1.0 and only fixed-pixel
+            // content moves.
+            dpi = (resources.displayMetrics.densityDpi * factor).toInt().coerceAtLeast(1),
         )
         handle = created
-        val bounds = Rect(0, 0, width, height)
+        val bounds = Rect(0, 0, bufferWidth, bufferHeight)
         session.surfaceReady(created, bounds, bounds)
     }
 
@@ -224,5 +275,22 @@ class CarAppSurfaceView(
         pinch.onTouchEvent(event)
         if (!pinch.isInProgress) gestures.onTouchEvent(event)
         return true
+    }
+
+    companion object {
+
+        /** No supersampling: the buffer is the pane. */
+        const val MIN_PIXEL_SCALE: Float = 1f
+
+        /**
+         * The ceiling, chosen by memory rather than by taste.
+         *
+         * The buffer costs the square of this, and it is a second full-screen
+         * RGBA allocation in a process that already holds an encoder, a
+         * projection and a media browser. 3.0 on an 800x480 pane is a
+         * 2400x1440 buffer — 13 MB — which is as far as this should go without
+         * evidence that anything needs more.
+         */
+        const val MAX_PIXEL_SCALE: Float = 3f
     }
 }
