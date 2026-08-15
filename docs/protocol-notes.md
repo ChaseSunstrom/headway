@@ -48,15 +48,19 @@ defeat the purpose of the document:
 | Section | Status |
 |---|---|
 | 1. Framing | **Implemented, pinned by byte fixtures, and independently re-verified.** 61 of 66 constants confirmed exactly against the cited files; every numeric value checked out. The 5 exceptions are citation-precision problems, not wrong values — see below. |
-| 2. Version handshake and TLS | Extracted and cited; not yet exercised against a live peer. |
+| 2. Version handshake and TLS | Extracted, cited, and **exercised against a real vehicle.** A 2021 Chevrolet Infotainment 3 unit completed the version exchange and the TLS handshake and authenticated the session — see the capture later in this document. |
 | 3. Wireless Bluetooth handshake | Extracted and cited, and **partly confirmed against a real vehicle**: the RFCOMM service UUID, the framing and the `WifiVersionRequest` field layout are all corroborated by a live capture from a 2021 Chevrolet Infotainment 3 unit. The RFCOMM UUID and TCP port were also confirmed by hand in three and two references respectively. |
-| 4. Control channel and service discovery | Extracted and cited; not yet exercised against a live peer. |
-| 5. Video channel | Extracted and cited; not implemented (Phase 2). |
-| 6. Input channel | Extracted and cited; not implemented (Phase 3). |
+| 4. Control channel and service discovery | Extracted, cited, and **exercised against a real vehicle**, which advertised all 13 of its services. |
+| 5. Video channel | Extracted, cited, and **exercised against a real vehicle**: 2754 frames displayed on a 2021 Chevrolet Infotainment 3 unit, 4 dropped, with `VIDEO_FOCUS_PROJECTED` granted. |
+| 6. Input channel | Extracted and cited; implemented, and **not yet exercised** — the first real session received no touch reports at all. |
+| 7. Audio channels and focus | Extracted and cited; implemented. Asserted on the wire against the emulator, not against a vehicle. |
+| 8. AV input (car microphone) | Extracted and cited; implemented. Asserted against the emulator's WAV injection, not against a vehicle. |
 
-Sections 5 and 6 are recorded ahead of the phases that use them so the extraction
-happens once, while the references are to hand, rather than being repeated later.
-The audio and car-microphone channels are not yet documented.
+"Exercised against a real vehicle" means bytes were observed on the wire from a
+2021 Chevrolet Infotainment 3 unit, and the captures are reproduced later in this
+document. "Not yet exercised" means the constants are cited from the references
+and the code round-trips them against the emulator, which shares Headway's own
+reading of the protocol and so cannot catch a misreading that is consistent.
 
 ### Framing constants flagged on re-verification
 

@@ -1,7 +1,23 @@
 # ADR 0006 — The car gets its own screen, and mirroring becomes a mode
 
-Status: **accepted**, 2026-08-14
+Status: **superseded in part**, 2026-08-15.
 Supersedes the default chosen in ADR 0004; does not change its findings.
+
+> **Read this first.** The half of this ADR that decides *how an app's pixels
+> reach the car* — mirroring as a switchable mode, `CarSurfaceMode`,
+> `CarVideoStream.show`, the floating Home button, and the mirror pane resolving
+> to the app grid — was replaced by
+> [ADR 0010](0010-the-car-screen-is-panels-and-one-of-them-is-a-real-app.md).
+> None of it exists in the code: `CarSurfaceMode` and `CarVideoStream.show` are
+> deleted, the floating overlay is gone along with `SYSTEM_ALERT_WINDOW`, and
+> `PaneKind.canonical` maps the legacy `"mirror"` string to `APP`. Whole-screen
+> mirroring survives only as an automatic fallback when the car display cannot
+> be built, with no way to select it.
+>
+> The other half stands and is still the reason the code looks the way it does:
+> the car gets a display composed for *its* geometry rather than a scaled
+> picture of the phone, that display is driven by a `Presentation` rather than
+> an activity, and the encoder is created once for the session.
 
 ## Context
 

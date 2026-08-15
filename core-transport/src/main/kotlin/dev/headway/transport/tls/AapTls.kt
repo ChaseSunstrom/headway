@@ -214,10 +214,12 @@ object AapTls {
      *
      * Sources: `AACS/AAServer/ssl/android_auto.crt`,
      * `AACS/AAClient/ssl/headunit.crt`, and `aasdk/src/Messenger/Cryptor.cpp`
-     * L275 (`Cryptor::cCertificate`). All three keys were converted from PKCS#1
-     * to PKCS#8 when vendored so the JDK can load them without a third-party PEM
-     * parser; the keys themselves are unchanged, and each was checked to match
-     * its certificate on the RSA modulus.
+     * L275 (`Cryptor::cCertificate`). The fetched bytes are stored verbatim; the
+     * PKCS#1 keys among them are wrapped in a PKCS#8 envelope at load time by
+     * [wrapPkcs1AsPkcs8], because the JDK's `KeyFactory` takes only PKCS#8 and a
+     * PEM library for one envelope is a dependency the licence audit would carry
+     * forever. No key material is altered, and each was checked to match its
+     * certificate on the RSA modulus.
      */
     fun bundledPhoneCredentials(): List<PhoneCredential> = listOf(
         PhoneCredential(

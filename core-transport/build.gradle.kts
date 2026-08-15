@@ -80,8 +80,9 @@ val upstreamCertificates = listOf(
         "$aacsRaw/AAClient/ssl/headunit.key",
         "768437bcb5aca284cdb7173dad7d92c8ee27fb1d975f345e732e18c7c2a6876d",
     ),
-    // O=JVC Kenwood, valid to 2045 -- the one a real 2021 Chevrolet
-    // Infotainment 3 unit accepts. aasdk does not ship it as a file: it is two
+    // O=JVC Kenwood, valid to 2045. A third subject to try when a unit objects
+    // to Android-Auto-Internal by name -- the Malibu accepted `internal`, not
+    // this one (B-003). aasdk does not ship it as a file: it is two
     // C++ string literals in Cryptor.cpp, so the whole source file is fetched
     // and the PEMs are cut out of it below.
     UpstreamFile(

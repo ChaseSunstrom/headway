@@ -3,8 +3,9 @@
 Phase status against the plan in `CLAUDE.md`. The point of this table is to be
 accurate, not encouraging.
 
-Each phase carries the **tier of evidence** behind it, defined in
-[`docs/completion-plan.md`](docs/completion-plan.md):
+Each phase carries the **tier of evidence** behind it. This is the only
+definition of those tiers; nothing is reported Done above the tier its evidence
+supports:
 
 - **A — Executed:** real code runs against real bytes and is asserted in CI.
 - **B — Framework-executed:** runs on a real Android device or emulator image.

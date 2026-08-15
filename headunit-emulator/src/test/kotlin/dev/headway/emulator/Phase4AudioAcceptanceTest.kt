@@ -58,7 +58,7 @@ import kotlin.math.sin
  *
  * ## Evidence tier
  *
- * **Tier A for the wire sequence, Tier D for the car** (`docs/completion-plan.md`).
+ * **Tier A for the wire sequence, Tier D for the car** (`PROGRESS.md`).
  *
  * Tier A — executed, on real bytes: the prompt is real audio, a 440 Hz sine
  * generated at whatever sample rate the head unit advertised, streamed as PCM on

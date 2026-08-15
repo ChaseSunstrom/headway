@@ -1,8 +1,24 @@
 # ADR 0008 — Third-party apps render on a simulated secondary display, not by mirroring the phone
 
-**Status:** Accepted, 2026-08-14
+**Status:** Superseded as the default, 2026-08-15. Still the opt-in.
 **Refines [ADR 0004](0004-what-headway-can-put-on-the-car-screen.md) and
-[ADR 0006](0006-the-car-gets-its-own-screen.md). Does not contradict either.**
+[ADR 0006](0006-the-car-gets-its-own-screen.md).**
+
+> **Read this first.** This is no longer how apps reach the car by default.
+> [ADR 0010](0010-the-car-screen-is-panels-and-one-of-them-is-a-real-app.md)
+> made the default *single-app screen sharing*: the driver picks one app in
+> Android's own consent dialog, Android excludes system UI from the capture and
+> reports the app's real size, and the pane gets the app at the app's own aspect
+> ratio with nothing to configure. That removed the two costs this ADR could not
+> — the Developer-options setup, and a preview window that has to sit on the
+> phone for the whole drive.
+>
+> The simulated display remains as an opt-in for a genuinely car-shaped picture:
+> `HeadwaySettings.KEY_NATIVE_APP_DISPLAY` still exists, now defaults to false,
+> and `migrateAppSource` moves existing installs off it. The derivation below —
+> why a display created by *Settings* is trusted and can therefore be launched
+> onto, when one Headway creates cannot — is unchanged and is why the option can
+> exist at all.
 
 ## Context
 

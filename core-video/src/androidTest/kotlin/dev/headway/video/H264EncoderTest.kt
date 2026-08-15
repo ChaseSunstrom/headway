@@ -48,7 +48,7 @@ import org.junit.runner.RunWith
  * shape of the bitstream it emits are verified here in byte-buffer mode with
  * synthetic YUV, which exercises the same codec with the same configuration.
  * What remains unverified on-device is the surface plumbing itself, which is
- * Tier C — see `docs/completion-plan.md`.
+ * Tier C — see `PROGRESS.md`.
  */
 @RunWith(AndroidJUnit4::class)
 class H264EncoderTest {

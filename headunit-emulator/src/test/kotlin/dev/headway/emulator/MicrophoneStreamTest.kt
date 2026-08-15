@@ -78,7 +78,7 @@ import kotlin.math.sin
  * ## Evidence tier
  *
  * **Tier A for sample integrity, Tier D for the microphone itself**
- * (`docs/completion-plan.md`).
+ * (`PROGRESS.md`).
  *
  * Tier A — executed on real bytes: a real WAV file on disk, parsed by the real
  * reader, streamed through the real channel implementation over the real framing

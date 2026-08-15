@@ -65,7 +65,7 @@ import org.junit.jupiter.api.Test
  * `AccessibilityService.dispatchGesture`, is **Tier C**: it compiles against the
  * real Android SDK and cannot be executed here, because there is no device and
  * no accelerated emulator in the build environment (`BLOCKERS.md` B-001, and the
- * tier table in `docs/completion-plan.md`). "Scripted touches operate a real
+ * tier table in `PROGRESS.md`). "Scripted touches operate a real
  * third-party app" therefore remains unproven until someone runs it on hardware.
  * Nothing in this file should be read as evidence for it.
  *
