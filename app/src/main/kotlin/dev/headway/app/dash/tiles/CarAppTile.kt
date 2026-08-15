@@ -135,7 +135,16 @@ class CarAppTile(
                 ?: apps.firstOrNull { it.packageName == text }
         }
         val wanted = chosen ?: pinned
-        if (wanted != null) open(wanted) else renderPicker()
+        // The same gate the picker applies, applied to the pinned path too. A
+        // pane that opens a saved app on start() skips the picker entirely, so
+        // without this a compat install binds an app that cannot accept it every
+        // time the pane appears -- which is the flow a saved layout takes on
+        // every single drive. renderPicker() shows why instead.
+        if (wanted != null && CarHostCapability.available(appContext)) {
+            open(wanted)
+        } else {
+            renderPicker()
+        }
     }
 
     override fun stop() {

@@ -534,6 +534,11 @@ class CarShell(
             // what is installed and allowed, not on what the driver picked.
             PaneKind.MAPS -> mapsTileFor(leaf)
             PaneKind.PHONE -> PhoneTile(context, onStep)
+            // No host guard here on purpose: unlike a Maps pane, a Car app pane
+            // has nothing to degrade *to* -- its whole content is the car app.
+            // CarAppTile itself refuses to bind and says why, which is the
+            // honest answer for a pane the driver explicitly asked to be a car
+            // app. See CarHostCapability.
             PaneKind.CAR_APP -> CarAppTile(context, leaf.argument, onStep)
             PaneKind.MESSAGES -> MessagesTile(context)
             PaneKind.CLOCK -> ClockTile(context)
