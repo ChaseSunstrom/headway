@@ -333,7 +333,7 @@ class CarAppTile(
         val next = CarAppSession(
             context = appContext,
             app = app,
-            densityDpi = scaled,
+            carDensityDpi = scaled,
             // The pane, read late. `frame` is this tile's own view and is laid
             // out by the time the handshake completes; a zero here simply
             // leaves the app with the phone's shape, which is what it had

@@ -155,8 +155,20 @@ class CarAppSession(
      *
      * Zero or less means "use the context's own", which is what a caller with
      * nothing better to say should pass.
+     *
+     * ## Why the name is not `densityDpi`
+     *
+     * Because it was, and that made it dead. The value is applied inside
+     * `Configuration(...).apply { }`, and `Configuration.densityDpi` is a
+     * public field of the receiver — so within that lambda the innermost
+     * implicit receiver wins and a bare `densityDpi` means *the Configuration's*
+     * density, not this one. `this.densityDpi = densityDpi` compiled to
+     * `config.densityDpi = config.densityDpi`: a self-assignment, with no
+     * warning from the compiler, that sent every car app the phone's density
+     * however the driver set the per-app scale. Verified by compiling the shape
+     * on this repository's own Kotlin: the receiver's field wins.
      */
-    private val densityDpi: Int = 0,
+    private val carDensityDpi: Int = 0,
     /**
      * The pane's size in pixels, read when `onAppCreate` is about to be sent.
      *
@@ -395,10 +407,12 @@ class CarAppSession(
         val remote = carApp ?: return
         val launch = Intent(Intent.ACTION_MAIN).setComponent(app.service)
         // Built from the *car* display's configuration, with the driver's scale
-        // applied. See [densityDpi].
+        // applied, and read out here rather than inside the `apply` below. See
+        // [carDensityDpi] for what reading it in there did instead.
+        val wantedDensity = carDensityDpi
         val configuration = Configuration(appContext.resources.configuration).apply {
-            if (densityDpi > 0) {
-                this.densityDpi = densityDpi
+            if (wantedDensity > 0) {
+                densityDpi = wantedDensity
                 // `fontScale` is the phone's accessibility text size, which has
                 // no business deciding how large a car app draws on a panel the
                 // driver is looking at from a metre away. The panel scale is the
@@ -409,7 +423,7 @@ class CarAppSession(
             // why this is not the phone's, and for the library quirk that turns
             // these two dp fields into the pixel size of the app's own display.
             val (widthPx, heightPx) = runCatching { paneSize() }.getOrDefault(0 to 0)
-            val density = (if (densityDpi > 0) densityDpi else this.densityDpi)
+            val density = (if (wantedDensity > 0) wantedDensity else densityDpi)
                 .coerceAtLeast(1)
             if (widthPx > 0 && heightPx > 0) {
                 val widthDp = widthPx * DisplayMetrics.DENSITY_DEFAULT / density
