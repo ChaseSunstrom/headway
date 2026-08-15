@@ -793,9 +793,14 @@ class MainActivity : AppCompatActivity() {
             Phone.body(
                 this,
                 "Headway draws panels at the car's own resolution: what is playing, " +
-                    "the map, messages, the clock, your pinned apps — and one panel " +
-                    "that shows a real app, running. Arrange them on the car screen " +
-                    "itself: the settings button on the rail unlocks the layout.",
+                    "the map, messages, your pinned apps, the car's own sensors — and " +
+                    "one panel that shows a real app, running. Arrange them on the car " +
+                    "screen itself: the settings button on the rail unlocks the layout.\n\n" +
+                    "Android gives an app one screen capture at a time, so exactly one " +
+                    "panel mirrors a real app and the others are places to move it to. " +
+                    "For several different apps on screen at once, use Car app or Widget " +
+                    "panels — those are drawn by the apps themselves and there is no " +
+                    "limit on how many run together.",
             ),
         )
 

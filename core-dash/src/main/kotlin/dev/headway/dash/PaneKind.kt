@@ -157,7 +157,9 @@ object PaneKind {
         LAUNCHER -> "A grid of every app, to open one here"
         SENSORS -> "Speed, revs, fuel and tyres, as the car reports them"
         CLOCK -> "Time, date and link status"
-        APP -> "A shared app, live. One pane at a time shows it"
+        APP -> "A real app, live. Android allows one screen capture at a time, so " +
+            "one pane shows it and the others are places to move it to. For " +
+            "several apps at once use Car app or Widget panes"
         else -> ""
     }
 }

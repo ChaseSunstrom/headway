@@ -303,8 +303,18 @@ object AppPaneHost {
                         // A capture that is the display, to within a pixel of
                         // rounding, is a display capture. Anything smaller is one
                         // app's window.
-                        val single = CarAppDisplay.active == null &&
-                            (display.first - width > 1 || display.second - height > 1)
+                        // Measured against whatever display Headway believes is
+                        // being captured -- `sourceGeometry` already returns the
+                        // simulated display's size when one is in use -- so a
+                        // capture smaller than it is a single app wherever it is.
+                        //
+                        // This used to short-circuit on `CarAppDisplay.active ==
+                        // null`, which made a simulated-display session
+                        // whole-display *by construction*: a driver who picked
+                        // "a single app" in the consent sheet still got no
+                        // origin correction and no blackout, and the pane was
+                        // fitted to a rectangle the capture did not have.
+                        val single = display.first - width > 1 || display.second - height > 1
                         val changed = synchronized(lock) {
                             if (sourceWidth == width && sourceHeight == height) {
                                 false

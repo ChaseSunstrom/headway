@@ -473,7 +473,12 @@ class AppPaneTile(
             live && AppPaneHost.available && !AppPaneHost.contentVisible ->
                 "Covered on the phone — bring it back to the front"
             !AppPaneHost.available -> "Tap here, then allow screen sharing on the phone"
-            AppPaneHost.live -> "Tap to bring the app here"
+            // Names the rule rather than implying the opposite. "Tap to bring
+            // the app here" reads as a per-pane capability -- as though each
+            // pane could hold its own app -- when what it does is *move* the one
+            // picture Android allows. A driver who has asked twice for several
+            // apps at once has been reading this line.
+            AppPaneHost.live -> "One app is shared at a time — tap to move it here"
             app != null -> "Tap to open"
             else -> "Tap to choose an app"
         }
