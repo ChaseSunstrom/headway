@@ -135,11 +135,15 @@ class CarPresenceReceiver : BroadcastReceiver() {
         // a watch, a tracker -- produces this broadcast too, and stopping the
         // session because a pair of earbuds went idle would be its own bug.
         if (expected == null || !expected.equals(device.address, ignoreCase = true)) return
+        // Recorded whether or not it is acted on here, so a session that breaks
+        // *later* knows the car was already gone and can stop instead of
+        // retrying for minutes. See [carBluetoothGone].
+        carBluetoothGone = true
         if (HeadwayService.linkState.value is LinkState.Connected) {
             SessionLog.shared.info(
                 TAG,
                 "the car's Bluetooth disconnected, but the AAP session is up and runs over " +
-                    "Wi-Fi -- leaving it alone",
+                    "Wi-Fi -- leaving it alone. Noted, in case the session breaks next",
             )
             return
         }
@@ -178,6 +182,7 @@ class CarPresenceReceiver : BroadcastReceiver() {
             return
         }
 
+        carBluetoothGone = false
         SessionLog.shared.info(TAG, "the car's Bluetooth connected; starting the session")
         val started = runCatching { HeadwayService.start(context, carAddress = device.address) }
         started.exceptionOrNull()?.let { failure ->
@@ -250,13 +255,37 @@ class CarPresenceReceiver : BroadcastReceiver() {
         runCatching { manager.notify(NOTIFICATION_ID, notification) }
     }
 
-    private companion object {
+    companion object {
         /**
          * Distinct from the service's own id, so the two never replace each
          * other: this one says "press me" and the service's says "connected",
          * and a driver seeing the first replaced by nothing would assume it had
          * worked.
          */
-        const val NOTIFICATION_ID = 2
+        private const val NOTIFICATION_ID = 2
+
+        /**
+         * Whether the car's Bluetooth has gone away since it last appeared.
+         *
+         * This exists because ignoring an ACL disconnect during a live session
+         * -- which is right, since the session runs over Wi-Fi and the two
+         * radios share an antenna -- would otherwise throw away the only signal
+         * that says the car is *gone* rather than merely unreachable.
+         * `SessionSupervisor` says as much: its attempt limit is "the backstop
+         * for when that signal never comes", and without this the signal would
+         * never come for the one case it was written for -- a driver walking
+         * away from a car that was working a second ago.
+         *
+         * So the disconnect is remembered rather than acted on, and the service
+         * consults it when a session actually breaks: a break with the car's
+         * Bluetooth already gone is a walk-away, and worth stopping for now
+         * rather than after several minutes of backoff.
+         *
+         * Cleared when the car's Bluetooth comes back, and when a session
+         * establishes -- a car that just completed a handshake is present
+         * whatever an earlier broadcast said.
+         */
+        @Volatile
+        var carBluetoothGone: Boolean = false
     }
 }

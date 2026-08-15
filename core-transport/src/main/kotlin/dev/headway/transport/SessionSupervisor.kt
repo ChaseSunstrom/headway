@@ -62,11 +62,17 @@ sealed interface LinkState {
  * the spec rules out.
  *
  * That reasoning holds only while something else can say the car has *gone*. On
- * Android that is `ACTION_ACL_DISCONNECTED`, which stops the session outright;
- * see `CarPresenceReceiver`. [maxConsecutiveFailures] is the backstop for when
- * that signal never comes, and it is safe precisely because an ACL connection
- * starts a fresh supervisor with no user action — so giving up costs one
- * automatic restart, not a morning tap.
+ * Android that is `ACTION_ACL_DISCONNECTED`; see `CarPresenceReceiver`. It does
+ * not stop a *live* session, because Bluetooth carries only the handshake and
+ * the two radios share an antenna, so a healthy drive drops and re-establishes
+ * it repeatedly — acting on it there made the link cut out all drive. It is
+ * remembered instead, and spent the first time a session actually breaks after
+ * it, which is what a walk-away looks like.
+ *
+ * [maxConsecutiveFailures] is the backstop for when that signal never comes,
+ * and it is safe precisely because an ACL connection starts a fresh supervisor
+ * with no user action — so giving up costs one automatic restart, not a morning
+ * tap.
  */
 class SessionSupervisor(
     /**

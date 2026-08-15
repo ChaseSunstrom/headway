@@ -40,6 +40,7 @@ import androidx.core.app.ServiceCompat
 import dev.headway.app.BuildConfig
 import dev.headway.app.R
 import dev.headway.app.audio.CarAudioStream
+import dev.headway.app.link.CarPresenceReceiver
 import dev.headway.app.dash.CarShell
 import dev.headway.app.dash.CarSurface
 import dev.headway.app.input.CarInputStream
@@ -1820,6 +1821,24 @@ open class HeadwayService : Service() {
     private fun publish(state: LinkState) {
         val wasConnected = mutableLinkState.value is LinkState.Connected
         mutableLinkState.value = state
+        if (state is LinkState.Connected) {
+            // A completed handshake outranks any earlier broadcast: the car is
+            // demonstrably there.
+            CarPresenceReceiver.carBluetoothGone = false
+        } else if (wasConnected && CarPresenceReceiver.carBluetoothGone) {
+            // The session broke and the car's Bluetooth was already gone. That
+            // is a driver walking away, not a Wi-Fi flap -- and retrying it
+            // twelve times with backoff is the "keeps trying to reconnect even
+            // when not in range" complaint, arriving a few minutes late.
+            //
+            // The ACL broadcast cannot be acted on the moment it lands, because
+            // during a healthy drive Bluetooth drops and returns constantly
+            // while the session runs over Wi-Fi. So it is remembered, and spent
+            // here: the first time the session actually fails after it.
+            step("the car's Bluetooth is gone and the session has ended; stopping rather than retrying")
+            stopSelf()
+            return
+        }
         // Car apps learn they are being projected by querying Headway's
         // CarConnectionProvider, and they cache the answer in a LiveData that
         // only refreshes when told. Announcing on the edge, not on every
