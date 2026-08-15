@@ -537,7 +537,12 @@ class CarShell(
             // CarAppTile itself refuses to bind and says why, which is the
             // honest answer for a pane the driver explicitly asked to be a car
             // app. See CarHostCapability.
-            PaneKind.CAR_APP -> CarAppTile(context, leaf.argument, onStep)
+            PaneKind.CAR_APP -> CarAppTile(context, leaf.argument, onStep) { service ->
+                // The pick has to reach the layout, or it lasts only as long as
+                // this view: render() rebuilds tiles on every divider drag and
+                // tab switch, and the pane would come back a picker each time.
+                rememberPaneArgument(path, PaneKind.CAR_APP, service.flattenToString())
+            }
             PaneKind.MESSAGES -> MessagesTile(context)
             PaneKind.CLOCK -> ClockTile(context)
             PaneKind.LAUNCHER -> LauncherTile(onStep)
@@ -1142,6 +1147,24 @@ class CarShell(
                 .toSet()
         }.getOrNull() ?: return
         runCatching { WidgetTile.releaseOrphans(context, keep, onStep) }
+    }
+
+    /**
+     * Writes a pane's chosen argument into the layout without redrawing it.
+     *
+     * Deliberately not `render()`: this is called *from* a tile that is in the
+     * middle of opening, and rebuilding the tile tree underneath it would
+     * destroy the view that is running. The tree already shows the right thing;
+     * only the saved layout was out of date.
+     */
+    private fun rememberPaneArgument(path: DashPath, kind: String, argument: String) {
+        val leaf = layout.nodeAt(path) as? DashNode.Leaf ?: return
+        if (leaf.argument == argument) return
+        layout = layout.setPane(path, kind, argument)
+        // saveLayout() writes without rebuilding the tile tree, which is exactly
+        // what is needed here: the caller is a tile in the middle of opening.
+        saveLayout()
+        onStep("car screen: remembered $argument for the ${PaneKind.describe(kind)} pane")
     }
 
     /**

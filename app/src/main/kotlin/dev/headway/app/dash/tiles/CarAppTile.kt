@@ -70,6 +70,21 @@ class CarAppTile(
     context: Context,
     private val argument: String? = null,
     private val onStep: (String) -> Unit = {},
+    /**
+     * Records the driver's pick so the next rebuild opens it again.
+     *
+     * Without this the choice lasts exactly as long as the view: `chosen` is a
+     * plain field, `render()` discards the tile whenever anything about the
+     * layout settles, and the pane comes back as a picker. A driver who put a
+     * car app in a pane had to re-pick it after every divider drag, tab switch
+     * and reconnect, and the layout they saved never contained the app they
+     * thought they had saved.
+     *
+     * The default is a no-op, for the Maps pane -- `CarShell.mapsTileFor`
+     * resolves a navigator itself and passes it in, so there is nothing there
+     * for a picker to record.
+     */
+    private val onChosen: (ComponentName) -> Unit = {},
 ) : DashTile {
 
     private val appContext: Context = context.applicationContext
@@ -164,6 +179,10 @@ class CarAppTile(
         closeSession()
         val frame = stack ?: return
         chosen = app
+        // Before the session, not after: opening can fail, and a driver whose
+        // chosen app refuses should still find it selected rather than being
+        // handed the picker again with no memory of what they tried.
+        runCatching { onChosen(app.service) }
         picker?.visibility = View.GONE
 
         val next = CarAppSession(appContext, app, onStep)
