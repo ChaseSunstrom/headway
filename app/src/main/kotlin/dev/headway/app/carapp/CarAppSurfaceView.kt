@@ -20,12 +20,12 @@ package dev.headway.app.carapp
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Rect
+import android.graphics.SurfaceTexture
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
-import android.view.SurfaceHolder
-import android.view.SurfaceView
-import dev.headway.app.ui.theme.Headway
+import android.view.Surface
+import android.view.TextureView
 
 /**
  * The patch of screen a car app draws its own map into.
@@ -64,9 +64,18 @@ import dev.headway.app.ui.theme.Headway
 class CarAppSurfaceView(
     context: Context,
     private val session: CarAppSession,
-) : SurfaceView(context) {
+) : TextureView(context) {
 
     private var handle: SurfaceHandle? = null
+
+    /**
+     * The one `Surface` wrapped around this view's texture, for its whole life.
+     *
+     * Held rather than rebuilt per size change so that a resize can hand the app
+     * a new *handle* without invalidating the surface the old one named. It is
+     * released exactly once, after the app has been told the surface is gone.
+     */
+    private var surface: Surface? = null
 
     private val gestures = GestureDetector(
         context,
@@ -112,37 +121,83 @@ class CarAppSurfaceView(
     )
 
     init {
-        setBackgroundColor(Headway.GROUND)
-        holder.addCallback(object : SurfaceHolder.Callback {
+        // No background. This is the whole of "the map never appeared".
+        //
+        // As a `SurfaceView` this used to call `setBackgroundColor(GROUND)`, and
+        // a below-parent `SurfaceView` is not drawn by the window at all -- it
+        // is a separate layer SurfaceFlinger composites *behind* the window,
+        // visible only through a transparent hole the view punches in the
+        // window's canvas. Giving it a `View` background clears
+        // `PFLAG_SKIP_DRAW`, which moves it off `dispatchDraw` (punch, draw
+        // nothing) and onto `draw()` -- which punches the hole and then calls
+        // `super.draw`, whose first act is painting that opaque background
+        // straight back over it. The app's map composited underneath the whole
+        // time; the pane painted near-black over exactly its rectangle, and the
+        // template chrome drew on top. "A few buttons for routing, no map" is
+        // that, precisely.
+        //
+        // It is a `TextureView` now rather than a background-free `SurfaceView`,
+        // because ADR 0010 has already settled this for the identical display
+        // path: a `SurfaceView` on Headway's *virtual* car display, whose output
+        // is a codec input surface, came back as "a black rectangle with no
+        // error anywhere" on a real drive, and `AppPaneTile` moved to a
+        // `TextureView` for it. That fix postdates this file and was never
+        // brought across. A `TextureView` is drawn by the window like any other
+        // view, so there is no hole to punch and no background to punch it back.
+        isOpaque = false
+        surfaceTextureListener = object : SurfaceTextureListener {
 
-            override fun surfaceCreated(holder: SurfaceHolder) = Unit
-
-            override fun surfaceChanged(
-                holder: SurfaceHolder,
-                format: Int,
+            override fun onSurfaceTextureAvailable(
+                texture: SurfaceTexture,
                 width: Int,
                 height: Int,
             ) {
-                // surfaceChanged and not surfaceCreated: the size is not known
-                // until here, and the app is told a width and a height it will
-                // render to exactly. Handing it a surface with the wrong
-                // geometry produces a map drawn for a different screen.
-                val created = SurfaceHandle(
-                    surface = holder.surface,
-                    width = width,
-                    height = height,
-                    dpi = resources.displayMetrics.densityDpi,
-                )
-                this@CarAppSurfaceView.handle = created
-                val bounds = Rect(0, 0, width, height)
-                session.surfaceReady(created, bounds, bounds)
+                offer(texture, width, height)
             }
 
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
+            override fun onSurfaceTextureSizeChanged(
+                texture: SurfaceTexture,
+                width: Int,
+                height: Int,
+            ) {
+                // The same `Surface`, a new handle. The app is told the geometry
+                // it must render to exactly; handing it the wrong one produces a
+                // map drawn for a different screen.
+                offer(texture, width, height)
+            }
+
+            override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
                 handle = null
                 session.surfaceGone()
+                // After `surfaceGone`, never before: the app is drawing into
+                // this until it has been told to stop, and releasing first is a
+                // use-after-release in somebody else's process.
+                surface?.release()
+                surface = null
+                return true
             }
-        })
+
+            override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+        }
+    }
+
+    /**
+     * Hands the app a surface of [width] x [height], creating one if needed.
+     *
+     * @see surface for why it is not rebuilt on every size change.
+     */
+    private fun offer(texture: SurfaceTexture, width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        val live = surface ?: Surface(texture).also { surface = it }
+        val created = SurfaceHandle(
+            surface = live,
+            width = width,
+            height = height,
+            dpi = resources.displayMetrics.densityDpi,
+        )
+        handle = created
+        val bounds = Rect(0, 0, width, height)
+        session.surfaceReady(created, bounds, bounds)
     }
 
     /** Tells the app the surface is going before the view is thrown away. */
@@ -151,6 +206,8 @@ class CarAppSurfaceView(
             handle = null
             session.surfaceGone()
         }
+        surface?.release()
+        surface = null
         (parent as? android.view.ViewGroup)?.removeView(this)
     }
 

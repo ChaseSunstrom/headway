@@ -434,7 +434,7 @@ internal class TabsCard(
             appendLine()
             appendLine("Phone — the live call, and the last twelve calls from the call log.")
             appendLine()
-            appendLine("Car app — a third-party app's own car interface, drawn by Headway rather than mirrored. Maps, podcast players and messengers that publish one appear in a picker.")
+            appendLine("Car app — a third-party app's own car interface, drawn by Headway rather than mirrored. Maps, messengers and points-of-interest apps that publish one appear in a picker. Music apps do not: a player's car screen is a media browse tree, which the Music and podcasts panel shows instead.")
             appendLine()
             appendLine("Messages — recent conversations, with the app's own inline reply.")
             appendLine()

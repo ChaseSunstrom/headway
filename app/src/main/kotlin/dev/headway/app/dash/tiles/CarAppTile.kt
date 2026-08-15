@@ -30,6 +30,7 @@ import android.widget.ScrollView
 import androidx.car.app.model.Template
 import dev.headway.app.carapp.CarAppSession
 import dev.headway.app.carapp.CarHostCapability
+import dev.headway.app.media.MediaApps
 import dev.headway.app.carapp.HostState
 import dev.headway.app.carapp.TemplateApp
 import dev.headway.app.carapp.TemplateApps
@@ -98,6 +99,12 @@ class CarAppTile(
     private var stack: FrameLayout? = null
     private var picker: LinearLayout? = null
 
+    /** The scroller holding [picker]; hidden with it. See [open]. */
+    private var pickerScroller: ScrollView? = null
+
+    /** How many media apps to name before counting the rest. */
+    private val MEDIA_NAMES_SHOWN: Int get() = 3
+
     private var running = false
     private var apps: List<TemplateApp> = emptyList()
 
@@ -125,15 +132,15 @@ class CarAppTile(
             orientation = LinearLayout.VERTICAL
             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
         }
-        frame.addView(
-            ScrollView(context).apply {
-                isFillViewport = true
-                addView(list, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-                layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-            },
-        )
+        val scroller = ScrollView(context).apply {
+            isFillViewport = true
+            addView(list, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+        }
+        frame.addView(scroller)
         stack = frame
         picker = list
+        pickerScroller = scroller
         return frame
     }
 
@@ -240,6 +247,37 @@ class CarAppTile(
         }
     }
 
+    /**
+     * What to say when no app publishes a car interface.
+     *
+     * Names the *media* apps if there are any, because they are the reason a
+     * driver thinks this is broken. A music or podcast player's "Android Auto
+     * screen" is a `MediaBrowserService` browse tree, not an
+     * `androidx.car.app` template tree — there is no media category in the Car
+     * App Library at all — so it can never resolve here however well it
+     * supports Android Auto. A driver asked exactly that about Symfonium.
+     *
+     * Widening discovery is not the answer: `CarAppSession` binds
+     * `Intent(CarAppService.SERVICE_INTERFACE)`, so a media app listed here
+     * would be a row that can only ever fail to open. Pointing at the pane that
+     * does host it is.
+     */
+    private fun noCarAppsMessage(): String {
+        val media = runCatching { MediaApps.installed(appContext) }.getOrDefault(emptyList())
+            .filterNot { candidate -> apps.any { it.packageName == candidate.packageName } }
+        if (media.isEmpty()) {
+            return "No app on this phone publishes a car interface.\n" +
+                "Maps, messengers and points-of-interest apps that do appear here."
+        }
+        val named = media.take(MEDIA_NAMES_SHOWN).joinToString { it.label }
+        val rest = media.size - MEDIA_NAMES_SHOWN
+        return "No app on this phone publishes a car interface.\n\n" +
+            named + (if (rest > 0) " and $rest more" else "") +
+            " play music through Android Auto, but a music app's car screen is a " +
+            "different thing that Headway shows in a Music and podcasts panel. " +
+            "Add one of those instead."
+    }
+
     private fun open(app: TemplateApp) {
         closeSession()
         val frame = stack ?: return
@@ -248,7 +286,13 @@ class CarAppTile(
         // chosen app refuses should still find it selected rather than being
         // handed the picker again with no memory of what they tried.
         runCatching { onChosen(app.service) }
+        // The scroller as well as the list inside it. Hiding only the inner
+        // LinearLayout left a full-screen VISIBLE ScrollView sitting above the
+        // map surface, and a ScrollView consumes ACTION_DOWN -- so pan, pinch
+        // and tap never reached `CarAppSurfaceView.onTouchEvent` and the map was
+        // an image rather than a map.
         picker?.visibility = View.GONE
+        pickerScroller?.visibility = View.GONE
 
         val next = CarAppSession(appContext, app, onStep)
         val drawing = TemplateRenderer(frame.context, next, onStep) { leave() }
@@ -328,6 +372,10 @@ class CarAppTile(
         // an invisible view and left the pane a black rectangle with no app, no
         // picker and no control of any kind.
         list.visibility = View.VISIBLE
+        // And its scroller, which `open()` hides so its touches stop swallowing
+        // the map's. Showing one without the other leaves the picker built and
+        // unreachable.
+        pickerScroller?.visibility = View.VISIBLE
         list.removeAllViews()
 
         // Said before a single bind is attempted. On a build that cannot hold
@@ -343,14 +391,10 @@ class CarAppTile(
         }
         if (apps.isEmpty()) {
             list.gravity = Gravity.CENTER
-            list.addView(
-                CarStyle.emptyState(
-                    context,
-                    "No allowed app on this phone offers a car interface.\n" +
-                        "Apps that do — maps, podcast players, messengers — appear here " +
-                        "once you allow them in Headway on the phone.",
-                ),
-            )
+            // `emptyState` and not `label`: `CarStyle.label` is one line with an
+            // ellipsis, so the sentence naming the remedy is exactly the part
+            // that would be cut off on an 800-pixel panel.
+            list.addView(CarStyle.emptyState(context, noCarAppsMessage()))
             return
         }
         list.gravity = Gravity.TOP

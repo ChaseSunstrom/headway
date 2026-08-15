@@ -166,8 +166,14 @@ class CarShell(
             visibility = View.GONE
         }
         root.addView(column)
-        root.addView(banners)
+        // Banners last, above the sheets. They used to be added *below*
+        // `overlayHost`, so any message raised while a sheet was open -- which
+        // is exactly when the app picker calls back into `openApp` -- was
+        // painted behind an opaque full-screen sheet and never seen. The layer
+        // is `isClickable = false` with a non-clickable child, so being on top
+        // costs the sheet underneath no touches.
         root.addView(overlayHost)
+        root.addView(banners)
         setContentView(root)
 
         // Dialogs dim what is behind them by default. There is nothing behind
@@ -335,10 +341,27 @@ class CarShell(
                 show(appLayout)
             } else if (appLayout == null) {
                 onStep("no layout has an app pane, so $packageName has nowhere to open")
+                showVoiceMessage("No layout has an App panel to open it in")
                 return
             }
         }
-        OverlayDisplay.launch(context, packageName, CarAppDisplay.displayId, onStep)
+        val opened = OverlayDisplay.launch(context, packageName, CarAppDisplay.displayId, onStep)
+        // Every branch out of here now says something on the *car* screen. It
+        // used to say everything through `onStep`, which is the session log --
+        // so a driver whose tap did nothing visible had no way to find out why,
+        // and after the first tap the layout is already the app layout, so
+        // there is not even a switch to notice. A driver reported it as pinned
+        // apps doing nothing at all.
+        if (!opened) {
+            showVoiceMessage("That app would not open")
+            return
+        }
+        if (!AppPaneHost.available) {
+            // The common case on a default install, and the one that looks most
+            // like a broken button: the app really did launch, on the phone,
+            // and the pane has no screen-sharing grant with which to show it.
+            showVoiceMessage("Opened on the phone — allow screen sharing to see it here")
+        }
         // The pane may only have been created a moment ago by show(); binding
         // happens when its surface arrives, so nothing more is needed here.
         main.post { publishAppPaneRect() }
@@ -366,6 +389,10 @@ class CarShell(
 
     private fun banner(text: String) {
         if (!::banners.isInitialized) return
+        // Above the startup view too, which is added to `root` after the layers
+        // were ordered in `onCreate`. Cheap, and it means a message raised in
+        // the first seconds of a session is not the one nobody sees.
+        banners.bringToFront()
         banners.removeAllViews()
         val card = Headway.title(context, metrics.unit, text).apply {
             gravity = Gravity.CENTER
