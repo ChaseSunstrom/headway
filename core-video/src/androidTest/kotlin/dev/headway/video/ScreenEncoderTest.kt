@@ -17,12 +17,8 @@
 
 package dev.headway.video
 
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
 import android.media.MediaCodecList
 import android.media.MediaFormat
-import android.view.Surface
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -131,8 +127,6 @@ class ScreenEncoderTest {
         assertFalse(encoder.running)
     }
 
-    
-    
     // --- helpers ------------------------------------------------------------
 
     private fun assumeAvcEncoder() {
@@ -145,70 +139,4 @@ class ScreenEncoderTest {
         assumeTrue("no H.264 encoder on this image", encoder != null)
     }
 
-    /**
-     * Draws one frame. Returns false if the surface cannot be drawn into at all.
-     *
-     * Content changes every frame on purpose: an unchanging image lets the
-     * encoder emit skipped frames, which carry no slice and would make the NAL
-     * assertions meaningless.
-     */
-    private fun paint(surface: Surface, index: Int): Boolean {
-        val canvas = lockCanvas(surface) ?: return false
-        return try {
-            canvas.drawColor(if (index % 2 == 0) Color.DKGRAY else Color.BLACK)
-            val paint = Paint().apply { color = Color.WHITE }
-            val left = (index * 17 % (configuration.width - BLOCK)).toFloat()
-            canvas.drawRect(left, 40f, left + BLOCK, 40f + BLOCK, paint)
-            surface.unlockCanvasAndPost(canvas)
-            true
-        } catch (t: Throwable) {
-            false
-        }
-    }
-
-    private fun lockCanvas(surface: Surface): Canvas? {
-        // lockHardwareCanvas first: a codec input surface usually allocates buffers
-        // the CPU may not write, and the GPU path copes with more formats.
-        return try {
-            surface.lockHardwareCanvas()
-        } catch (hardware: Throwable) {
-            try {
-                surface.lockCanvas(null)
-            } catch (software: Throwable) {
-                null
-            }
-        }
-    }
-
-    /**
-     * Annex-B NAL header types, the same way aa-proxy-rs classifies frames
-     * (`aa-proxy-rs/src/media_tap.rs` L884-L905): scan for a 3- or 4-byte start
-     * code and take the low five bits of the byte after it.
-     */
-    private fun nalTypes(annexB: ByteArray): List<Int> {
-        val types = mutableListOf<Int>()
-        var i = 0
-        while (i + 3 < annexB.size) {
-            val zeroPair = annexB[i] == 0.toByte() && annexB[i + 1] == 0.toByte()
-            when {
-                zeroPair && annexB[i + 2] == 1.toByte() -> {
-                    types += annexB[i + 3].toInt() and 0x1f
-                    i += 4
-                }
-
-                zeroPair && annexB[i + 2] == 0.toByte() && annexB[i + 3] == 1.toByte() -> {
-                    if (i + 4 >= annexB.size) return types
-                    types += annexB[i + 4].toInt() and 0x1f
-                    i += 5
-                }
-
-                else -> i++
-            }
-        }
-        return types
-    }
-
-    private companion object {
-        const val BLOCK = 120
-    }
 }

@@ -1981,6 +1981,7 @@ open class HeadwayService : Service() {
                 .getString(KEY_CAR_BSSID, null)
                 ?.takeIf { it.isNotEmpty() }
 
+        /** Bluetooth address of the car; omitted means "find it among the paired devices". */
         const val EXTRA_CAR_ADDRESS: String = "dev.headway.app.extra.CAR_ADDRESS"
 
         /** The `resultCode` from the screen-capture consent activity. */
