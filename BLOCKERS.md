@@ -1148,3 +1148,57 @@ depended on it.
 route to playback capture, and the alternative — leaving media on A2DP — is what
 ADR 0005 reversed after a capture of real Android Auto showed Gearhead tearing
 A2DP down while projecting on this very head unit.
+
+## B-024 — A simulated secondary display can never receive an injected touch
+
+**Status:** Closed as impossible. Not fixable from inside an app at any
+permission level; Headway now says so at the point of use.
+
+**Where:** `CarAppDisplay.resolve`, `OverlayDisplayInfo.takesTouch`,
+`OverlayDisplay`, ADR 0008
+
+**What:** A driver using the simulated-display path reported "I cant tap inside
+of it". They are right, and nothing Headway does causes it.
+
+Headway builds the gesture correctly: `GestureDescription.Builder().setDisplayId(...)`
+with the simulated display's id, which is public API since API 30 and reaches
+the platform intact. The platform then discards it.
+
+`dispatchGesture` does not *target* a display by id. It uses the id as a key
+into a per-display `MotionEventInjector` map, and reports failure when the
+lookup misses:
+
+- `AccessibilityServiceConnection.dispatchGesture` calls
+  `getMotionEventInjectorForDisplayLocked(displayId)`; a null answer skips
+  injection and calls `onPerformGestureResult(sequence, false)`.
+- That map is built by `AccessibilityInputFilter`, one entry per display in
+  `AccessibilityManagerService.getValidDisplayList()`.
+- Which is filtered by `AccessibilityDisplayListener.isValidDisplay`:
+
+```java
+private boolean isValidDisplay(@Nullable Display display) {
+    if (display == null || display.getType() == Display.TYPE_OVERLAY) {
+        return false;
+    }
+```
+
+A Developer-options "Simulate secondary displays" display is exactly
+`Display.TYPE_OVERLAY`. The exclusion is by **type**, unconditional, and has no
+permission behind it — so no grant, no flag, and no amount of
+`canRetrieveWindowContent` changes the answer. The gesture path never consults
+the accessibility window list at all, so turning that flag on would cost Headway
+its "injects but never observes" promise and buy nothing.
+
+**Why it matters more than it looks:** ADR 0008's native-rendering path exists so
+an app can be drawn at a car-shaped geometry instead of as a letterboxed portrait
+strip. That half works. The other half — touching it — cannot, so the path is
+view-only by construction and always has been.
+
+**Workaround, shipped:** it is named rather than hidden. `OverlayDisplayInfo`
+carries `takesTouch`, `CarAppDisplay.resolve` warns on every session that the pane
+is view-only and says the remedy in the same sentence — turn the setting off and
+mirror the phone screen, where injected touch works because display 0 is in the
+valid list.
+
+**How to close it:** not closable. The only routes are a platform change or a
+privileged app, and both are out of scope by CLAUDE.md's second hard constraint.

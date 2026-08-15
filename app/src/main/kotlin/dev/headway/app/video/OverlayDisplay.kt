@@ -20,6 +20,7 @@ import android.content.Intent
 import android.hardware.display.DisplayManager
 import android.provider.Settings
 import android.view.Display
+import android.view.Display.TYPE_OVERLAY
 import dev.headway.app.log.SessionLog
 
 private const val TAG = "HeadwayOverlay"
@@ -36,8 +37,36 @@ data class OverlayDisplayInfo(
     val width: Int,
     val height: Int,
     val densityDpi: Int,
+    /**
+     * Whether a car touch can ever reach an app on this display.
+     *
+     * **False for every Developer-options simulated display, permanently.**
+     * `AccessibilityManagerService.AccessibilityDisplayListener.isValidDisplay`
+     * opens with
+     *
+     * ```java
+     * if (display == null || display.getType() == Display.TYPE_OVERLAY) {
+     *     return false;
+     * }
+     * ```
+     *
+     * so an overlay display never enters `getValidDisplayList()`, which is what
+     * `AccessibilityInputFilter` builds the per-display `MotionEventInjector`
+     * map from. `dispatchGesture` uses the display id purely as a key into that
+     * map and answers `onPerformGestureResult(sequence, false)` when the lookup
+     * misses. Headway builds its gestures correctly --
+     * `GestureDescription.Builder().setDisplayId(...)` with the simulated
+     * display's id -- and the platform discards them.
+     *
+     * It is a hardcoded type exclusion rather than a permission, so no grant,
+     * no flag and no amount of `canRetrieveWindowContent` changes it. A driver
+     * reported it as "I cant tap inside of it"; this is why, and it is not
+     * fixable from inside an app.
+     */
+    val takesTouch: Boolean = true,
 ) {
-    override fun toString(): String = "$name (#$displayId, ${width}x$height @ ${densityDpi}dpi)"
+    override fun toString(): String = "$name (#$displayId, ${width}x$height @ ${densityDpi}dpi)" +
+        if (takesTouch) "" else " [view only -- accessibility cannot inject touch here]"
 }
 
 /**
@@ -127,6 +156,8 @@ object OverlayDisplay {
             // ours, it is named by us, and launching an app onto it would put
             // the app inside the very sink that is recording it.
             if (name.contains(HEADWAY_DISPLAY_MARKER, ignoreCase = true)) return@mapNotNull null
+            // Kept, but marked. See [OverlayDisplayInfo.takesTouch].
+            val overlay = display.type == TYPE_OVERLAY
             val mode = display.mode
             val metrics = runCatching {
                 context.createDisplayContext(display).resources.displayMetrics
@@ -137,6 +168,7 @@ object OverlayDisplay {
                 width = mode?.physicalWidth?.takeIf { it > 0 } ?: metrics?.widthPixels ?: 0,
                 height = mode?.physicalHeight?.takeIf { it > 0 } ?: metrics?.heightPixels ?: 0,
                 densityDpi = metrics?.densityDpi ?: 0,
+                takesTouch = !overlay,
             )
         }.filter { it.width > 0 && it.height > 0 }
     }

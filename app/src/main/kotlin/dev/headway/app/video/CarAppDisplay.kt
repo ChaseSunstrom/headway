@@ -101,6 +101,25 @@ object CarAppDisplay {
                 "car app display: apps will render natively on $found and be captured " +
                     "from there, not from the phone screen",
             )
+            // Said every time, and loudly, because it is the difference between
+            // a feature and a demo. A Developer-options display is
+            // `Display.TYPE_OVERLAY`, and the accessibility service that injects
+            // the car's touches can never reach one -- the platform excludes
+            // that type from the display list it builds injectors for, by type
+            // and not by permission. See `OverlayDisplayInfo.takesTouch`.
+            if (!found.takesTouch) {
+                SessionLog.shared.warn(
+                    TAG,
+                    "$found is a simulated display; Android does not let an accessibility " +
+                        "service inject touch onto one, so this pane is view-only",
+                )
+                onStep(
+                    "car app display: this is a simulated display, so the car can SEE the app " +
+                        "but cannot touch it -- Android refuses injected gestures on this kind " +
+                        "of display, whatever permissions Headway holds. Turn the setting off " +
+                        "to mirror the phone screen instead, where touch works",
+                )
+            }
         }
         return found
     }
