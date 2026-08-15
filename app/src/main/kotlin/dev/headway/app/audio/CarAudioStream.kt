@@ -152,6 +152,14 @@ class CarAudioStream(
     private val projection: MediaProjection? = null,
     /** Used only to ask whether anything is playing; see [pumpMedia]. */
     private val audioManager: AudioManager? = null,
+    /**
+     * Application context, used only to check RECORD_AUDIO before capturing.
+     *
+     * Optional so the tests that build this directly need not supply one; a
+     * null is read as "cannot check", which errs towards trying rather than
+     * towards refusing.
+     */
+    private val appContext: Context? = null,
     /** Channel id to advertised name, so the log stops guessing. */
     private val names: Map<Int, String> = emptyMap(),
     private val onStep: (String) -> Unit = {},
@@ -373,6 +381,20 @@ class CarAudioStream(
         }
     }
 
+    /**
+     * Whether RECORD_AUDIO is granted, which playback capture also needs.
+     *
+     * Null-safe about the context: the stream is constructible in tests without
+     * one, and a missing context should not be reported as a missing permission.
+     */
+    private fun hasRecordPermission(): Boolean {
+        val context = appContext ?: return true
+        return runCatching {
+            context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }.getOrDefault(true)
+    }
+
     /** A pause between capture attempts, overridable by tests. */
     private suspend fun sleepBetweenCaptures() {
         delay(MEDIA_RETRY_MILLIS)
@@ -405,6 +427,21 @@ class CarAudioStream(
         projection: MediaProjection,
         format: PcmFormat,
     ): Boolean {
+        // Checked before the grant is blamed. `AudioPlaybackCapture` records
+        // through `AudioRecord`, so it needs RECORD_AUDIO as well as the
+        // projection -- and without it `AudioRecord` simply refuses, which the
+        // retry above would have reported as the screen-sharing grant being at
+        // fault and told the driver to share their screen again. That remedy
+        // cannot work, and following it three times is how the driver would
+        // find that out.
+        if (!hasRecordPermission()) {
+            onStep(
+                "media: the microphone permission is not granted, and playback capture records " +
+                    "through AudioRecord -- so music cannot be sent. Grant Headway the " +
+                    "microphone permission on the phone; sharing the screen again will not help"
+            )
+            return false
+        }
         onStep(PhoneAudioCapture.describeCapturePolicy())
         val capture = PhoneAudioCapture(projection, format, onStep)
         if (!capture.start()) return false
@@ -427,7 +464,11 @@ class CarAudioStream(
                     // by a spoken prompt is noticed and taken back rather than
                     // assumed. See [mediaFocusHeld].
                     if (!mediaFocusHeld) {
-                        mediaFocusHeld = requestMediaFocus()
+                        // Same lock, same reason: taking focus mid-prompt would
+                        // overwrite the prompt's own request in the single slot.
+                        speaking.withLock {
+                            if (!mediaFocusHeld) mediaFocusHeld = requestMediaFocus()
+                        }
                     }
                 } else if (mediaFocusHeld) {
                     // Not released on the first silent buffer: a track change is
@@ -436,8 +477,16 @@ class CarAudioStream(
                     val now = SystemClock.elapsedRealtime()
                     if (idleSince == 0L) idleSince = now
                     if (now - idleSince >= MEDIA_IDLE_RELEASE_MILLIS) {
-                        releaseMediaFocus()
-                        mediaFocusHeld = false
+                        // Under the same lock a prompt takes. `PhoneAudioFocus`
+                        // keeps one slot, so releasing it here while a spoken
+                        // reply is mid-render would send the car a RELEASE for
+                        // the *prompt's* focus and un-duck the radio underneath
+                        // it. `speaking` is the existing serialiser for exactly
+                        // this resource; the pump had simply never taken it.
+                        speaking.withLock {
+                            releaseMediaFocus()
+                            mediaFocusHeld = false
+                        }
                     }
                 }
 
@@ -844,6 +893,17 @@ class CarAudioStream(
         // Lets the car revoke Headway's phone-side focus too, so other apps are
         // not held quiet for audio the car will not play.
         phoneFocus.onCarFocus(state)
+        // And the media pump's own flag, which is the other half of the fix that
+        // made it shared. A prompt taking focus away was handled; the *car*
+        // taking it away was not -- and that is the more ordinary event, since
+        // a head unit revokes focus whenever its own source wants the speakers.
+        // Left set, the pump goes on streaming PCM into a car playing its radio
+        // and never asks for focus back, because its "do I hold it" test is this
+        // flag.
+        if (state.mustStop && mediaFocusHeld) {
+            mediaFocusHeld = false
+            onStep("media: the car took focus back, so music focus will be re-requested")
+        }
         grants.trySend(state)
         return true
     }
@@ -1107,6 +1167,7 @@ class CarAudioStream(
                 source = CarAudioSource(context, onStep = onStep),
                 projection = projection,
                 audioManager = context.getSystemService(AudioManager::class.java),
+                appContext = context.applicationContext,
                 names = profile.services.associate { it.id to nameOf(it) },
                 onStep = onStep,
             )

@@ -173,16 +173,44 @@ class PhoneAudioFocus(
     )
 
     /**
-     * Takes focus for media Headway itself is streaming over the AAP media
-     * channel — the settings toggle in
-     * [dev.headway.protocol.channel.MediaAudioRoute], not the default A2DP path.
+     * Takes focus for media Headway is relaying over the AAP media channel.
+     *
+     * **On the car only.** This asks the head unit to switch to the Android Auto
+     * source and duck its own radio; it deliberately makes no
+     * `AudioManager.requestAudioFocus` call on the phone.
+     *
+     * ## Why the phone must not be asked
+     *
+     * The stream is somebody else's. Headway plays nothing locally — its samples
+     * go straight onto an AAP channel the phone's mixer never sees — and the
+     * music it sends is *captured* from a third-party player, with Headway's own
+     * uid excluded from the capture (ADR 0005). So a phone-side request buys
+     * nothing and costs everything: this used to ask for `AUDIOFOCUS_GAIN`,
+     * which is permanent, and a permanent gain delivers `AUDIOFOCUS_LOSS` to the
+     * current holder — the very player being captured. Ordinary media apps stop
+     * on `AUDIOFOCUS_LOSS` and are never told when focus becomes free again, so
+     * the driver's music died within a buffer of the pump first firing and
+     * stayed dead. Pressing play again re-armed the same trap.
+     *
+     * `GAIN_TRANSIENT_MAY_DUCK` would not do either: it would make the captured
+     * player duck *itself*, halving its level on the wire.
+     *
+     * The capture of real Android Auto that ADR 0005 quotes shows Gearhead doing
+     * the same thing — *observing* the player's own focus grant and relaying it
+     * to the head unit, never taking media focus away from the player.
+     *
+     * [release] still sends the car's release, because that path keys off
+     * [lastCarRequest] rather than off a phone-side request.
      */
-    suspend fun requestForMedia(): Boolean = acquire(
-        androidGain = AudioManager.AUDIOFOCUS_GAIN,
-        carType = AudioFocusRequestType.AUDIO_FOCUS_GAIN,
-        usage = AudioAttributes.USAGE_MEDIA,
-        contentType = AudioAttributes.CONTENT_TYPE_MUSIC,
-    )
+    suspend fun requestForMedia(): Boolean {
+        lastCarRequest = AudioFocusRequestType.AUDIO_FOCUS_GAIN
+        carFocus.request(AudioFocusRequestType.AUDIO_FOCUS_GAIN)
+        onStep(
+            "asked the car for AUDIO_FOCUS_GAIN for media; the phone's own focus is left " +
+                "alone, because the music being relayed belongs to another app"
+        )
+        return true
+    }
 
     private suspend fun acquire(
         androidGain: Int,

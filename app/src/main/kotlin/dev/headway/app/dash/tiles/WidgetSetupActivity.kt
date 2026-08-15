@@ -93,6 +93,9 @@ class WidgetSetupActivity : AppCompatActivity() {
     /** The [generation] whose configure activity is outstanding, if any. */
     private var configuring: Int = NOT_CONFIGURING
 
+    /** The [generation] whose bind dialog is outstanding, if any. */
+    private var bindingFor: Int = NOT_CONFIGURING
+
     private val binding = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
         ::onBound,
@@ -122,6 +125,7 @@ class WidgetSetupActivity : AppCompatActivity() {
             // configured and never placed, and the car screen would wait on a
             // callback that never came.
             configuring = savedInstanceState.getInt(STATE_CONFIGURING, NOT_CONFIGURING)
+            bindingFor = savedInstanceState.getInt(STATE_BINDING_FOR, NOT_CONFIGURING)
             WidgetSetup.claim(widgetId)
             SessionLog.shared.info(TAG, "restored an add already in flight for widget $widgetId")
             return
@@ -136,6 +140,7 @@ class WidgetSetupActivity : AppCompatActivity() {
         outState.putString(STATE_PROVIDER, provider?.flattenToString())
         outState.putInt(STATE_GENERATION, generation)
         outState.putInt(STATE_CONFIGURING, configuring)
+        outState.putInt(STATE_BINDING_FOR, bindingFor)
     }
 
     /**
@@ -170,6 +175,7 @@ class WidgetSetupActivity : AppCompatActivity() {
         // it. See [onActivityResult].
         generation++
         configuring = NOT_CONFIGURING
+        bindingFor = NOT_CONFIGURING
         begin()
     }
 
@@ -212,13 +218,26 @@ class WidgetSetupActivity : AppCompatActivity() {
         // widget host yet" looks like, and the dialog is the answer to it.
         SessionLog.shared.info(TAG, "asking the driver to allow Headway to add widgets")
         val ask = runCatching { WidgetTile.bindPermissionIntent(widgetId, wanted) }.getOrNull()
+        bindingFor = generation
         if (ask == null || runCatching { binding.launch(ask) }.isFailure) {
+            bindingFor = NOT_CONFIGURING
             SessionLog.shared.warn(TAG, "this phone offers no way to approve a widget host")
             cancel()
         }
     }
 
     private fun onBound(result: ActivityResult) {
+        // The same guard `onActivityResult` carries, on the other result path.
+        // A second add started with CLEAR_TOP finishes the system's bind dialog,
+        // which delivers RESULT_CANCELED on its way out -- and without this that
+        // cancellation runs `cancel()` against the id the *new* add has just
+        // allocated, deleting it. `generation` is bumped by `onNewIntent`, so a
+        // launch that predates the bump is recognisable.
+        if (bindingFor != generation) {
+            SessionLog.shared.info(TAG, "ignoring a bind result from a request that was replaced")
+            return
+        }
+        bindingFor = NOT_CONFIGURING
         if (result.resultCode != Activity.RESULT_OK) {
             SessionLog.shared.info(TAG, "the driver declined to let Headway add widgets")
             cancel()
@@ -366,6 +385,7 @@ class WidgetSetupActivity : AppCompatActivity() {
         private const val STATE_PROVIDER = "provider"
         private const val STATE_GENERATION = "generation"
         private const val STATE_CONFIGURING = "configuring"
+        private const val STATE_BINDING_FOR = "binding_for"
 
         /**
          * The intent that adds [provider] as a widget, from anywhere.
