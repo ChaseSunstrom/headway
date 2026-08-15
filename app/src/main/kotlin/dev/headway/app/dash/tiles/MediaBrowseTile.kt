@@ -297,8 +297,7 @@ class MediaBrowseTile(
             list.addView(
                 CarStyle.emptyState(
                     context,
-                    "This app publishes no queue.
-Its controls still work.",
+                    "This app publishes no queue.\nIts controls still work.",
                 ),
             )
             return

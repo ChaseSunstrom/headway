@@ -14,7 +14,11 @@
 #      ambiguity at every call site, so one duplicate produces a page of errors
 #      that never names the cause.
 #
-#   2. `import` of an android name that is @hide and so absent from the public
+#   2. A `"..."` left open at a newline. Kotlin only lets `"""` span lines, so
+#      this is always an error -- and it reports as a pile of "unresolved
+#      reference" on the lines *after* it, none of which mention the string.
+#
+#   3. `import` of an android name that is @hide and so absent from the public
 #      SDK. Only the ones this project has actually tripped over are listed,
 #      because a real answer needs android.jar and this has to run anywhere.
 #
@@ -81,6 +85,119 @@ def split_top_level(params: str) -> list:
     return parts
 
 
+def unterminated_strings(path: Path) -> list:
+    """Every line where a one-quote string literal is left open at the newline.
+
+    A one-quote Kotlin string may not span lines; only a triple-quoted one may.
+    So an open quote at a newline is always an error -- and one produced by a
+    generated edit, where an escaped newline became a real one on the way in,
+    reports as a cascade of unresolved references on the lines *after* it, none
+    of which mention the string. This names the string.
+
+    A small lexer with a mode stack rather than a regex or a quote count. Three
+    things defeat counting, and this codebase has all three in quantity:
+    comments full of quoted prose, apostrophes in that prose, and `${...}`
+    interpolations that contain string literals of their own -- the first
+    version of this check reported two false positives, both from a nested
+    string inside an interpolation desynchronising everything after it.
+    """
+    text = path.read_text(encoding="utf-8")
+    found = []
+    # Each entry is (kind, brace_depth). "code" is the top of the file and also
+    # the inside of every ${...}; "str" and "raw" are the two string forms.
+    stack = [["code", 0]]
+    index, line = 0, 1
+    while index < len(text):
+        kind, braces = stack[-1]
+        char = text[index]
+        two, three = text[index:index + 2], text[index:index + 3]
+
+        if char == "\n":
+            if kind == "str":
+                found.append(f"{path}:{line}: string literal is not closed on this line")
+                stack.pop()
+            line += 1
+            index += 1
+            continue
+
+        if kind == "line_comment":
+            index += 1
+            continue
+
+        if kind == "block_comment":
+            if two == "/*":
+                stack.append(["block_comment", 0])
+                index += 2
+            elif two == "*/":
+                stack.pop()
+                index += 2
+            else:
+                index += 1
+            continue
+
+        if kind in ("str", "raw"):
+            if kind == "str" and char == "\\":
+                index += 2
+                continue
+            if two == "${":
+                stack.append(["code", 0])
+                index += 2
+                continue
+            if kind == "raw" and three == '\"\"\"':
+                stack.pop()
+                index += 3
+                continue
+            if kind == "str" and char == '"':
+                stack.pop()
+                index += 1
+                continue
+            index += 1
+            continue
+
+        # kind == "code"
+        if two == "//":
+            stack.append(["line_comment", 0])
+            index += 2
+            continue
+        if two == "/*":
+            stack.append(["block_comment", 0])
+            index += 2
+            continue
+        if three == '\"\"\"':
+            stack.append(["raw", 0])
+            index += 3
+            continue
+        if char == '"':
+            stack.append(["str", 0])
+            index += 1
+            continue
+        if char == "'":
+            # A char literal, which also may not span a line. Skipped rather
+            # than reported: a stray apostrophe in code is a syntax error the
+            # compiler will name far better than this can.
+            index += 1
+            while index < len(text) and text[index] not in ("'", "\n"):
+                index += 2 if text[index] == "\\" else 1
+            if index < len(text) and text[index] == "'":
+                index += 1
+            continue
+        if char == "{":
+            stack[-1][1] = braces + 1
+            index += 1
+            continue
+        if char == "}":
+            # The close of an interpolation is the one that takes the depth
+            # below where the ${ started, which is zero for that frame.
+            if braces == 0 and len(stack) > 1:
+                stack.pop()
+            else:
+                stack[-1][1] = braces - 1
+            index += 1
+            continue
+        index += 1
+    return found
+
+
 def conflicts(path: Path) -> list:
     """Every function this file declares twice in one scope."""
     found, seen, stack, depth, pending = [], {}, [], 0, None
@@ -130,6 +247,7 @@ def main() -> int:
     for module in MODULES:
         for path in sorted(Path(module).rglob("*.kt")):
             problems += conflicts(path)
+            problems += unterminated_strings(path)
             text = path.read_text(encoding="utf-8")
             for line in text.split("\n"):
                 if not line.startswith("import "):
