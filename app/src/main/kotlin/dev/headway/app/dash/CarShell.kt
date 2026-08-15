@@ -28,12 +28,14 @@ import android.os.Looper
 import android.view.Display
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import dev.headway.app.carapp.CarHostCapability
 import dev.headway.app.carapp.TemplateApps
 import dev.headway.app.dash.tiles.AppPaneTile
@@ -48,6 +50,7 @@ import dev.headway.app.dash.tiles.PhoneTile
 import dev.headway.app.dash.tiles.SensorsTile
 import dev.headway.app.dash.tiles.WidgetSetup
 import dev.headway.app.dash.tiles.WidgetTile
+import dev.headway.app.input.HeadwayAccessibilityService
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.CarMetrics
 import dev.headway.app.ui.theme.Headway
@@ -61,7 +64,9 @@ import dev.headway.dash.DashPath
 import dev.headway.dash.PaneKind
 import dev.headway.dash.PaneRect
 import dev.headway.dash.Rail
+import dev.headway.dash.RailEdge
 import dev.headway.dash.RailItem
+import dev.headway.dash.RailStyle
 import dev.headway.dash.ThemeAccent
 import dev.headway.dash.ThemeBase
 
@@ -178,8 +183,7 @@ class CarShell(
         tabs = store.list()
         layout = store.active()
         releaseOrphanedWidgets()
-        column.addView(buildRail())
-        column.addView(stage, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        layOutRailAndStage()
         showStartup()
         render()
 
@@ -203,6 +207,13 @@ class CarShell(
         DashLayoutStore.unobserveChanges(layoutsChanged)
         HeadwayTheme.unobserve(themeChanged)
         AppPaneHost.unobserve(appPaneChanged)
+        // Same reason as the tiles below: a minute-tick receiver left registered
+        // outlives the window that used it and keeps firing for the life of the
+        // process, with nothing but battery to show for it.
+        clockTicks?.let { receiver ->
+            clockTicks = null
+            runCatching { context.unregisterReceiver(receiver) }
+        }
         if (shown === this) shown = null
         main.removeCallbacksAndMessages(null)
         // Tiles observe media sessions, notification streams and widget hosts.
@@ -365,13 +376,65 @@ class CarShell(
      * scroll, because six is comfortable on an 800-pixel panel and the driver is
      * allowed a seventh.
      */
+    /**
+     * Where the rail goes, read once when the shell is built.
+     *
+     * Not per-frame: moving the rail rebuilds the car screen anyway, and a value
+     * that could change between `onCreate` and `buildRail` would let the column's
+     * orientation and the rail's own disagree.
+     */
+    private var railStyle: RailStyle = RailStyle.DEFAULT
+
+    /**
+     * Puts the rail and the stage into the column, in the order the edge implies.
+     *
+     * Both the column's orientation and the rail's own follow the same setting,
+     * so they are decided in one place: a side rail makes the column horizontal,
+     * a top or bottom rail makes it vertical, and TOP/LEFT put the rail first.
+     *
+     * Called again when the driver moves the rail. That is a rebuild rather than
+     * a re-render because the edge changes the window's whole layout, but it is
+     * a rebuild of the *content* -- the `Presentation` and the car display are
+     * untouched, so the car never loses its picture for it.
+     */
+    private fun layOutRailAndStage() {
+        railStyle = HeadwaySettings.railStyle(context)
+        val style = railStyle
+        column.removeAllViews()
+        (stage.parent as? ViewGroup)?.removeView(stage)
+        column.orientation = if (style.edge.vertical) {
+            LinearLayout.HORIZONTAL
+        } else {
+            LinearLayout.VERTICAL
+        }
+        val rail = buildRail()
+        val stageParams = if (style.edge.vertical) {
+            LinearLayout.LayoutParams(0, MATCH_PARENT, 1f)
+        } else {
+            LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
+        }
+        if (style.edge == RailEdge.TOP || style.edge == RailEdge.LEFT) {
+            column.addView(rail)
+            column.addView(stage, stageParams)
+        } else {
+            column.addView(stage, stageParams)
+            column.addView(rail)
+        }
+    }
+
     private fun buildRail(): View {
+        val style = railStyle
+        val vertical = style.edge.vertical
         val bar = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            gravity = if (vertical) Gravity.CENTER_HORIZONTAL else Gravity.CENTER_VERTICAL
             val pad = metrics.gutter / 2
-            setPadding(pad, pad, pad, pad / 2)
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            setPadding(pad, pad, pad, if (vertical) pad else pad / 2)
+            layoutParams = if (vertical) {
+                LinearLayout.LayoutParams(style.thicknessPx(metrics.unit), MATCH_PARENT)
+            } else {
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            }
         }
         bar.addView(
             CarGlyphButton(context, metrics, CarGlyph.SETTINGS, "Settings") { showSettings() },
@@ -393,19 +456,83 @@ class CarShell(
         bar.addView(micButton)
 
         railItems = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            gravity = if (vertical) Gravity.CENTER_HORIZONTAL else Gravity.CENTER_VERTICAL
         }
+        // A side rail scrolls down rather than across, or a driver with six pins
+        // on a 480-pixel-tall screen can reach only the first two.
         bar.addView(
-            HorizontalScrollView(context).apply {
-                isHorizontalScrollBarEnabled = false
-                layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
-                addView(railItems)
+            if (vertical) {
+                ScrollView(context).apply {
+                    isVerticalScrollBarEnabled = false
+                    layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
+                    addView(railItems)
+                }
+            } else {
+                HorizontalScrollView(context).apply {
+                    isHorizontalScrollBarEnabled = false
+                    layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+                    addView(railItems)
+                }
             },
         )
+        if (style.showClock) bar.addView(buildRailClock(style))
         fillRail()
         return bar
     }
+
+    /**
+     * The time at the far end of the rail.
+     *
+     * It used to be a whole pane, which on an 800x480 screen meant spending a
+     * fifth of the dashboard on eight characters. The rail already runs the
+     * full length of an edge and already has space after the pins.
+     *
+     * Ticked by a receiver rather than a timer: `ACTION_TIME_TICK` fires on the
+     * minute, which is exactly the resolution a clock without seconds needs, and
+     * costs nothing between ticks. `ACTION_TIME_CHANGED` and
+     * `ACTION_TIMEZONE_CHANGED` are there so crossing a time zone does not leave
+     * the wrong hour on the car screen until the next minute.
+     */
+    private fun buildRailClock(style: RailStyle): View {
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            val pad = metrics.gutter / 2
+            setPadding(pad, 0, pad, 0)
+        }
+        val time = CarStyle.label(context, 20f * style.effectiveScale, CarStyle.TEXT, bold = true)
+        column.addView(time)
+        val date = if (style.clockShowsDate) {
+            CarStyle.label(context, 12f * style.effectiveScale, CarStyle.DIM).also {
+                column.addView(it)
+            }
+        } else {
+            null
+        }
+        fun paint() {
+            val now = java.util.Date()
+            time.text = android.text.format.DateFormat.getTimeFormat(context).format(now)
+            date?.text = android.text.format.DateFormat.getMediumDateFormat(context).format(now)
+        }
+        paint()
+        clockTicks = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) = paint()
+        }
+        runCatching {
+            context.registerReceiver(
+                clockTicks,
+                android.content.IntentFilter(Intent.ACTION_TIME_TICK).apply {
+                    addAction(Intent.ACTION_TIME_CHANGED)
+                    addAction(Intent.ACTION_TIMEZONE_CHANGED)
+                },
+            )
+        }.onFailure { onStep("car screen: the clock could not be ticked: $it") }
+        return column
+    }
+
+    /** Registered while the rail carries a clock; unregistered with the shell. */
+    private var clockTicks: android.content.BroadcastReceiver? = null
 
     private fun fillRail() {
         railItems.removeAllViews()
@@ -761,12 +888,84 @@ class CarShell(
             showAppPicker { openApp(it) }
         }
         rows += CarSheet.Row("Theme", themeSummary()) { showThemes() }
+        rows += CarSheet.Row("The rail", railStyle.describe()) { showRailStyle() }
+        if (HeadwayAccessibilityService.instance.value?.covering == true) {
+            rows += CarSheet.Row(
+                title = "Show the phone screen",
+                detail = "Uncover the phone without ending the drive",
+            ) {
+                closeOverlay()
+                runCatching { HeadwayAccessibilityService.instance.value?.hideBlackout() }
+            }
+        }
         rows += CarSheet.Row("Apps and panels", appSourceSummary()) { showAppSettings() }
         rows += CarSheet.Row("About this session", sessionSummary()) { }
 
         showOverlay(
             sheet().build(title = "Settings", rows = rows, onClose = ::closeOverlay),
         )
+    }
+
+    /**
+     * Where the rail sits, how big it is, and whether it carries the clock.
+     *
+     * Every change rebuilds the car screen, because the rail's edge decides the
+     * orientation of the column that holds it and the stage — the two cannot be
+     * changed independently and there is nothing to gain from trying.
+     */
+    private fun showRailStyle() {
+        val current = railStyle
+        val rows = mutableListOf<CarSheet.Row>()
+        RailEdge.entries.forEach { edge ->
+            rows += CarSheet.Row(
+                title = edge.describe(),
+                detail = if (edge.vertical) "Down the side" else "Across the screen",
+                selected = current.edge == edge,
+            ) { applyRailStyle(current.copy(edge = edge)) }
+        }
+        val chips = RailStyle.SCALE_CHOICES.map { scale ->
+            CarSheet.Row(
+                title = RailStyle.percentOf(scale),
+                selected = kotlin.math.abs(current.effectiveScale - scale) < 0.001f,
+            ) { applyRailStyle(current.copy(scale = scale)) }
+        }
+        rows += CarSheet.Row(
+            title = if (current.showClock) "Hide the clock" else "Show the clock",
+            detail = "The time sits at the end of the rail",
+        ) { applyRailStyle(current.copy(showClock = !current.showClock)) }
+        if (current.showClock) {
+            rows += CarSheet.Row(
+                title = if (current.showDate) "Hide the date" else "Show the date",
+                detail = "Under the time",
+            ) { applyRailStyle(current.copy(showDate = !current.showDate)) }
+        }
+        showOverlay(
+            sheet().build(
+                title = "The rail",
+                rows = rows,
+                chips = chips,
+                onClose = ::closeOverlay,
+            ),
+        )
+    }
+
+    private fun applyRailStyle(style: RailStyle) {
+        HeadwaySettings.setRailStyle(context, style)
+        closeOverlay()
+        // The rail's edge decides the whole window's layout, so this is a rebuild
+        // rather than a re-render. Said out loud because it is the one setting
+        // whose effect is a visible flicker.
+        onStep("car screen: rail style is now ${style.describe()}")
+        // The clock's receiver belongs to the rail that is about to be thrown
+        // away; leaving it registered would tick a view that is no longer in the
+        // tree, once a minute, for the life of the process.
+        clockTicks?.let { receiver ->
+            clockTicks = null
+            runCatching { context.unregisterReceiver(receiver) }
+        }
+        layOutRailAndStage()
+        render()
+        publishAppPaneRect()
     }
 
     /**

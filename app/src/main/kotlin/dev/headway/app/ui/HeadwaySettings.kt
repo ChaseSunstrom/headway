@@ -20,6 +20,7 @@ package dev.headway.app.ui
 import android.content.Context
 import android.content.SharedPreferences
 import dev.headway.dash.AllowedApps
+import dev.headway.dash.RailStyle
 
 /**
  * Persisted user choices, in one place so the two activities cannot disagree.
@@ -125,6 +126,16 @@ object HeadwaySettings {
     const val KEY_RAIL: String = "car_rail"
 
     /**
+     * The rail's edge, size and clock, as `RailStyle` JSON.
+     *
+     * Separate from [KEY_RAIL], which is the driver's pinned *items*. The two
+     * change for different reasons -- pinning an app is a daily act, moving the
+     * rail is a once-ever one -- and keeping them apart means an unreadable
+     * style cannot cost somebody their pins.
+     */
+    const val KEY_RAIL_STYLE: String = "car_rail_style"
+
+    /**
      * Bring a session up on its own when the car's Bluetooth appears.
      *
      * On by default. The whole point of the feature is that the driver gets in
@@ -211,6 +222,14 @@ object HeadwaySettings {
      * with no order. Empty by default, and empty means the car offers nothing.
      */
     const val KEY_ALLOWED_APPS: String = "allowed_apps"
+
+    /** The rail's placement, or the default when nothing has been chosen. */
+    fun railStyle(context: Context): RailStyle =
+        RailStyle.fromJson(of(context).getString(KEY_RAIL_STYLE, null))
+
+    fun setRailStyle(context: Context, style: RailStyle) {
+        of(context).edit().putString(KEY_RAIL_STYLE, style.toJson().toString()).apply()
+    }
 
     fun allowedApps(context: Context): Set<String> =
         runCatching { of(context).getStringSet(KEY_ALLOWED_APPS, null) }.getOrNull()
