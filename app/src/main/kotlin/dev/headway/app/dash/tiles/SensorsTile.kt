@@ -30,7 +30,10 @@ import android.widget.ScrollView
 import android.widget.TextView
 import dev.headway.app.dash.DashTile
 import dev.headway.app.sensor.CarSensorStream
+import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
+import dev.headway.dash.CarUnitConversion
+import dev.headway.dash.CarUnits
 import dev.headway.dash.PaneKind
 import dev.headway.protocol.channel.CarSensors
 import java.util.Locale
@@ -210,7 +213,7 @@ class SensorsTile(context: Context) : DashTile {
     private fun renderSpeed() {
         val value = speedValue ?: return
         val unit = speedUnit ?: return
-        val imperial = usesMilesPerHour()
+        val imperial = usesImperial()
         val speed = if (imperial) showing.speedMph else showing.speedKph
         if (speed == null) {
             // A car that reports fuel but not speed is perfectly ordinary. An
@@ -237,15 +240,36 @@ class SensorsTile(context: Context) : DashTile {
         if (showing.lowFuel == true && showing.fuelLevel == null) {
             addRow(list, "Fuel", "Low", warn = true)
         }
+        val imperial = usesImperial()
         if (showing.tyrePressuresKpa.isNotEmpty()) {
             addRow(
                 list,
                 "Tyres",
-                showing.tyrePressuresKpa.joinToString(" / ") { "%.0f".format(it) } + " kPa",
+                showing.tyrePressuresKpa.joinToString(" / ") {
+                    "%.0f".format(CarUnitConversion.pressure(it, imperial))
+                } + " " + CarUnitConversion.pressureUnit(imperial),
             )
         }
-        showing.outsideTemperatureCelsius?.let { addRow(list, "Outside", "%.1f °C".format(it)) }
-        showing.odometerKm?.let { addRow(list, "Odometer", "%,.0f km".format(it)) }
+        showing.outsideTemperatureCelsius?.let {
+            addRow(
+                list,
+                "Outside",
+                "%.1f %s".format(
+                    CarUnitConversion.temperature(it, imperial),
+                    CarUnitConversion.temperatureUnit(imperial),
+                ),
+            )
+        }
+        showing.odometerKm?.let {
+            addRow(
+                list,
+                "Odometer",
+                "%,.0f %s".format(
+                    CarUnitConversion.distance(it, imperial),
+                    CarUnitConversion.distanceUnit(imperial),
+                ),
+            )
+        }
         showing.cruiseEngaged?.let { addRow(list, "Cruise", if (it) "On" else "Off") }
         showing.parkingBrake?.let {
             // A parking brake reported on while the car reports movement is the
@@ -297,22 +321,29 @@ class SensorsTile(context: Context) : DashTile {
     }
 
     /**
-     * Whether this driver's locale measures road speed in miles per hour.
+     * Whether every reading on this pane is shown in imperial units.
      *
-     * A short explicit list rather than `android.icu.util.LocaleData`'s
-     * measurement system, which distinguishes SI from US and UK but is a heavier
-     * dependency than one comparison deserves, and rather than a
-     * metric/imperial guess from the language, which puts Canada on miles. The
-     * list is the countries that post road speeds in mph; anywhere else, and
-     * anywhere with no country in its locale, gets km/h.
+     * One answer for the whole pane, which is the fix for what a driver
+     * reported: speed followed the phone's region and *nothing else did*, so a
+     * car in the United States showed miles per hour above an odometer in
+     * kilometres, a temperature in Celsius and tyre pressures in kilopascals.
+     * The protocol carries SI throughout, so the conversion belongs here and it
+     * belongs to all of it at once.
+     *
+     * The setting wins when it is set; otherwise the region decides, by road
+     * signs rather than by language — which is what keeps Canada on kilometres.
+     * See `CarUnits`.
      */
-    private fun usesMilesPerHour(): Boolean {
-        val country = runCatching {
-            appContext.resources.configuration.locales.get(0).country
-        }.getOrNull()?.takeIf { it.isNotBlank() }
-            ?: Locale.getDefault().country
-        return country.uppercase(Locale.ROOT) in MPH_COUNTRIES
+    private fun usesImperial(): Boolean = when (HeadwaySettings.carUnits(appContext)) {
+        CarUnits.IMPERIAL -> true
+        CarUnits.METRIC -> false
+        CarUnits.AUTOMATIC -> CarUnits.imperialFor(country())
     }
+
+    private fun country(): String? =
+        runCatching { appContext.resources.configuration.locales.get(0).country }
+            .getOrNull()?.takeIf { it.isNotBlank() }
+            ?: Locale.getDefault().country
 
     private companion object {
 
@@ -323,18 +354,5 @@ class SensorsTile(context: Context) : DashTile {
         /** Above walking pace: below this, "moving" is sensor noise. */
         private const val MOVING_METERS_PER_SECOND = 2.0
 
-        /**
-         * ISO 3166-1 alpha-2 codes for the places that sign roads in mph.
-         *
-         * The United Kingdom and the United States, plus Liberia and Myanmar and
-         * the Caribbean and Pacific territories that follow the US convention.
-         * Deliberately short and deliberately explicit — anything not on it gets
-         * km/h, which is the right answer for the overwhelming majority.
-         */
-        private val MPH_COUNTRIES: Set<String> = setOf(
-            "US", "GB", "LR", "MM",
-            "AS", "BS", "BZ", "DM", "FM", "GD", "GU", "KN", "KY", "LC", "MH", "MP",
-            "MS", "PR", "PW", "SH", "VC", "VG", "VI", "WS",
-        )
     }
 }

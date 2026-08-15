@@ -1050,7 +1050,15 @@ internal fun startOnUserDisplay(
 ): Boolean {
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     val options = ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY)
-    val started = runCatching { context.startActivity(intent, options.toBundle()) }
+    // Belt as well as braces. The explicit launch display id above says display
+    // 0, but the caller is usually the car screen, which holds a display context
+    // for the car's virtual display -- and since Android 10 an activity started
+    // from one inherits that display. Rather than rely on which of the two wins,
+    // start from a context that has no display of its own. `OverlayDisplay.launch`
+    // reached the same conclusion from the other direction.
+    val started = runCatching {
+        context.applicationContext.startActivity(intent, options.toBundle())
+    }
     started.exceptionOrNull()?.let { error ->
         val what = intent.component?.flattenToShortString() ?: intent.action ?: "an activity"
         onStep("could not start $what on the phone screen: $error")

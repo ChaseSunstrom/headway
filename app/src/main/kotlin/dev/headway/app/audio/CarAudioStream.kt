@@ -43,6 +43,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -135,7 +137,17 @@ class CarAudioStream(
     private val focus: AudioFocus,
     private val phoneFocus: PhoneAudioFocus,
     private val source: CarAudioSource,
-    /** The screen-capture grant, reused to tap playback. Null disables media. */
+    /**
+     * The screen-capture grant, reused to tap playback.
+     *
+     * The *initial* one. A session very often starts without a grant -- the
+     * driver has not answered the consent sheet yet, or Android 15 tore the last
+     * one down at the lock screen -- and this used to be the end of the story:
+     * [pumpMedia] returned on a null and nothing restarted it, so music never
+     * reached the car for the rest of the drive however many times the driver
+     * re-shared. A driver reported it as "audio won't play through my car unless
+     * I am screen sharing". See [adoptProjection].
+     */
     private val projection: MediaProjection? = null,
     /** Used only to ask whether anything is playing; see [pumpMedia]. */
     private val audioManager: AudioManager? = null,
@@ -211,6 +223,33 @@ class CarAudioStream(
     @Volatile
     private var mediaCapture: PhoneAudioCapture? = null
 
+    /**
+     * The grant media capture is using, which can arrive and vanish mid-session.
+     *
+     * A flow rather than a field so [pumpMedia] can wait on it instead of
+     * polling or giving up. `AudioPlaybackCaptureConfiguration` is built from a
+     * `MediaProjection` and there is no unprivileged substitute, so no grant
+     * genuinely means no music over AAP -- but "not yet" and "never" are
+     * different answers and only one of them was being given.
+     */
+    private val liveProjection = MutableStateFlow(projection)
+
+    /**
+     * Points media capture at a new grant, or clears it when one is lost.
+     *
+     * Called by the service on both edges: `adoptProjectionGrant` when the
+     * driver shares, `AppPaneHost.onGrantLost` when the platform takes it away.
+     */
+    fun adoptProjection(projection: MediaProjection?) {
+        val had = liveProjection.value != null
+        liveProjection.value = projection
+        if (projection != null && !had) {
+            onStep("media: a screen-sharing grant arrived; music can now reach the car")
+        } else if (projection == null && had) {
+            onStep("media: the screen-sharing grant went away, so music stops reaching the car")
+        }
+    }
+
     /** True once a guidance channel is started and a prompt can actually be spoken. */
     val canSpeak: Boolean
         get() = channelFor(AudioStreamType.AUDIO_STREAM_GUIDANCE) != null
@@ -236,6 +275,7 @@ class CarAudioStream(
         // "nothing here launches anything" -- the session owns the coroutine that
         // drains them, and without it a phone call would never be relayed to the
         // car.
+        live.set(this)
         jobs += scope.launch { phoneFocus.relayPhoneFocusChanges() }
         jobs += scope.launch {
             bringUp(sessionId)
@@ -274,12 +314,48 @@ class CarAudioStream(
      */
     private suspend fun pumpMedia() {
         val channel = channelFor(AudioStreamType.AUDIO_STREAM_MEDIA) ?: return
-        val projection = projection ?: return
         val format = channel.format ?: run {
             onStep("media: the channel started without a negotiated format; not sending music")
             return
         }
+        // Outer loop: one pass per grant. A capture ends when the driver's grant
+        // does -- Android 15 and later stop projection at every lock screen --
+        // and the old code treated that as the end of media for the session.
+        while (currentCoroutineContext().isActive) {
+            val projection = awaitProjection() ?: return
+            pumpMediaWith(channel, projection, format)
+            // Only wait again if this grant is genuinely gone. A capture that
+            // stopped for any other reason should not spin.
+            if (liveProjection.value === projection) liveProjection.value = null
+        }
+    }
 
+    /**
+     * Waits for a screen-sharing grant, saying once why nothing is playing.
+     *
+     * The message is the point. Without a grant Headway cannot tap the phone's
+     * audio at all -- `AudioPlaybackCaptureConfiguration` takes a
+     * `MediaProjection` and there is no unprivileged alternative -- and the car
+     * has already switched its source to Android Auto, so Bluetooth A2DP is not
+     * being listened to either. Silence with no explanation is what the driver
+     * actually experienced.
+     */
+    private suspend fun awaitProjection(): MediaProjection? {
+        liveProjection.value?.let { return it }
+        onStep(
+            "media: no screen-sharing grant, so there is nothing to tap. Music reaches the car " +
+                "over the AAP media channel, which is captured from the phone's own playback, " +
+                "and Android only allows that capture through a screen-sharing grant -- so " +
+                "share your screen from Headway's notification to hear music in the car"
+        )
+        return runCatching { liveProjection.first { it != null } }.getOrNull()
+    }
+
+    private suspend fun pumpMediaWith(
+        channel: AudioChannel,
+        projection: MediaProjection,
+        format: PcmFormat,
+    ) {
         onStep(PhoneAudioCapture.describeCapturePolicy())
         val capture = PhoneAudioCapture(projection, format, onStep)
         if (!capture.start()) return
@@ -371,6 +447,10 @@ class CarAudioStream(
         // returns, and a live tap holds a microphone-class resource.
         runCatching { mediaCapture?.close() }
         mediaCapture = null
+        // Compare-and-set, for the same reason `CarVideoStream` does it: a new
+        // session may already have published itself before this one's teardown
+        // arrives, and unpublishing it would leave a live stream unreachable.
+        live.compareAndSet(this, null)
     }
 
     /**
@@ -717,6 +797,19 @@ class CarAudioStream(
     }
 
     companion object {
+
+        /**
+         * The live stream, so a screen-sharing grant can find it mid-session.
+         *
+         * Null between sessions. Media capture needs a `MediaProjection` and the
+         * grant usually arrives *after* the session is up -- a link that comes
+         * up on its own has no grant to travel with it -- so the service needs
+         * somewhere to deliver one. See [adoptProjection].
+         */
+        private val live = java.util.concurrent.atomic.AtomicReference<CarAudioStream?>(null)
+
+        /** The live stream, or null between sessions. */
+        val current: CarAudioStream? get() = live.get()
         /**
          * Any non-zero value works; the head unit echoes it back in every
          * acknowledgement so the two sides can tell streams apart. The same id on

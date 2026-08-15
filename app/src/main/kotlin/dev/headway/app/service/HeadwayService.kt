@@ -1344,6 +1344,10 @@ open class HeadwayService : Service() {
             // ever offers screen sharing again. See `AppPaneHost.onGrantLost`.
             AppPaneHost.onGrantLost = {
                 projection = null
+                // Media capture is built on the same grant, so it stops too --
+                // and the stream goes back to waiting rather than ending, so
+                // re-sharing brings music back without a reconnect.
+                runCatching { CarAudioStream.current?.adoptProjection(null) }
                 step(
                     "screen sharing ended -- on Android 15 and later the platform stops it " +
                         "whenever the phone locks, and no app can opt out. Tap the " +
@@ -1632,6 +1636,15 @@ open class HeadwayService : Service() {
         val granted = projection ?: return
         step("screen capture granted; video will start with the session")
 
+        // Music too, and it is not obvious: media audio reaches the car over the
+        // AAP media channel captured from the phone's own playback (ADR 0005),
+        // and `AudioPlaybackCaptureConfiguration` is built from a
+        // `MediaProjection`. So the screen-sharing grant is what makes the car
+        // play music at all, and a session that came up without one was silent
+        // until it was restarted. It is no longer: the audio stream waits for a
+        // grant rather than giving up at start-up.
+        runCatching { CarAudioStream.current?.adoptProjection(granted) }
+
         // If a session is already up -- which is now the normal case, because a
         // link that comes up on its own has no grant to travel with it -- the
         // app panes are sitting there saying screen sharing is off. Attach the
@@ -1672,8 +1685,20 @@ open class HeadwayService : Service() {
         )
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("Show apps on the car screen")
-            .setContentText("Tap to allow screen sharing")
+            .setContentTitle("Show apps and play music on the car")
+            // Music is the surprising half and the half a driver notices first.
+            // Media audio goes over the AAP media channel captured from the
+            // phone's own playback, and Android only allows that capture through
+            // a screen-sharing grant -- so without this tap the car is silent,
+            // which is nothing like what "screen sharing" sounds like it means.
+            .setContentText("Tap to allow screen sharing — music needs it too")
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "Headway sends your music to the car by capturing what the phone is " +
+                        "playing, and Android only allows that with a screen-sharing grant. " +
+                        "Tap to allow it, for music and for showing apps on the car screen.",
+                ),
+            )
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
             .setContentIntent(tap)

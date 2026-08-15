@@ -20,6 +20,7 @@ package dev.headway.app.ui
 import android.content.Context
 import android.content.SharedPreferences
 import dev.headway.dash.AllowedApps
+import dev.headway.dash.CarUnits
 import dev.headway.dash.RailStyle
 
 /**
@@ -251,6 +252,23 @@ object HeadwaySettings {
 
     fun appPaneFill(context: Context): Boolean =
         of(context).getBoolean(KEY_APP_PANE_FILL, false)
+
+    /**
+     * Which units the car pane shows, as a `CarUnits` name.
+     *
+     * Unset means [CarUnits.AUTOMATIC] — follow the phone's region. Stored
+     * rather than always derived because the region is a guess about a person,
+     * and a driver reading a number at speed should not have to work out which
+     * unit it is in.
+     */
+    const val KEY_CAR_UNITS: String = "car_units"
+
+    fun carUnits(context: Context): CarUnits =
+        CarUnits.of(runCatching { of(context).getString(KEY_CAR_UNITS, null) }.getOrNull())
+
+    fun setCarUnits(context: Context, units: CarUnits) {
+        runCatching { of(context).edit().putString(KEY_CAR_UNITS, units.name).apply() }
+    }
 
     fun carAddress(context: Context): String? =
         runCatching { of(context).getString(KEY_CAR_ADDRESS, null) }.getOrNull()

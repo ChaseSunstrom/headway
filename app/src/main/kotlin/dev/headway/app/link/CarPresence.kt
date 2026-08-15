@@ -30,6 +30,7 @@ import dev.headway.app.log.SessionLog
 import dev.headway.app.service.HeadwayService
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.MainActivity
+import dev.headway.transport.LinkState
 
 private const val TAG = "HeadwayPresence"
 
@@ -109,6 +110,23 @@ class CarPresenceReceiver : BroadcastReceiver() {
      * with no user action, which is the same path that started this one. So the
      * cost of stopping too eagerly is one automatic restart, and the cost of not
      * stopping is a night of retries.
+     *
+     * ## Except while a session is actually up
+     *
+     * Bluetooth carries the *handshake*, not the session. Once the phone is on
+     * the car's Wi-Fi the AAP link runs over TCP and needs no ACL at all, and
+     * the two radios share an antenna on most phones -- so the BT link to a car
+     * that is sitting right there drops and re-establishes on its own,
+     * repeatedly, during a perfectly healthy drive.
+     *
+     * The first version of this did not check, and killed the session every
+     * time that happened. A driver reported it as the connection being "kind of
+     * flakey and cuts out all the time", which is exactly what it looks like
+     * from the passenger seat: video stops, the car falls back to its own
+     * screen, Headway starts again a few seconds later.
+     *
+     * So a live session is its own proof that the car is there, and outranks
+     * the broadcast. This only stops the *searching*.
      */
     private fun onDeviceDisconnected(context: Context, intent: Intent) {
         val device = deviceOf(intent) ?: return
@@ -117,7 +135,15 @@ class CarPresenceReceiver : BroadcastReceiver() {
         // a watch, a tracker -- produces this broadcast too, and stopping the
         // session because a pair of earbuds went idle would be its own bug.
         if (expected == null || !expected.equals(device.address, ignoreCase = true)) return
-        SessionLog.shared.info(TAG, "the car's Bluetooth disconnected; stopping the session")
+        if (HeadwayService.linkState.value is LinkState.Connected) {
+            SessionLog.shared.info(
+                TAG,
+                "the car's Bluetooth disconnected, but the AAP session is up and runs over " +
+                    "Wi-Fi -- leaving it alone",
+            )
+            return
+        }
+        SessionLog.shared.info(TAG, "the car's Bluetooth disconnected; stopping the search")
         runCatching { HeadwayService.stop(context) }
             .onFailure { SessionLog.shared.warn(TAG, "could not stop the session: $it") }
     }

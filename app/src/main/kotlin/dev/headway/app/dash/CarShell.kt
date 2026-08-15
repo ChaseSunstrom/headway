@@ -59,6 +59,7 @@ import dev.headway.app.ui.theme.HeadwayTheme
 import dev.headway.app.video.AppPaneHost
 import dev.headway.app.video.CarAppDisplay
 import dev.headway.app.video.OverlayDisplay
+import dev.headway.dash.CarUnits
 import dev.headway.dash.DashLayout
 import dev.headway.dash.DashNode
 import dev.headway.dash.DashPath
@@ -1026,6 +1027,7 @@ class CarShell(
         rows += CarSheet.Row("Theme", themeSummary()) { showThemes() }
         rows += CarSheet.Row("The rail", railStyle.describe()) { showRailStyle() }
         rows += CarSheet.Row("Pinned", "What sits on the rail, and in what order") { showRailEditor() }
+        rows += CarSheet.Row("Units", unitsSummary()) { showUnits() }
 
         rows += CarSheet.section("This drive")
         if (HeadwayAccessibilityService.instance.value?.covering == true) {
@@ -1097,6 +1099,54 @@ class CarShell(
                 chipsTitle = "Size",
                 onClose = ::closeOverlay,
             ),
+        )
+    }
+
+    private fun unitsSummary(): String {
+        val chosen = HeadwaySettings.carUnits(context)
+        return if (chosen == CarUnits.AUTOMATIC) {
+            "Automatic — ${effectiveUnits().detail()}"
+        } else {
+            chosen.detail()
+        }
+    }
+
+    /** What AUTOMATIC currently resolves to, so the summary can say it. */
+    private fun effectiveUnits(): CarUnits {
+        val country = runCatching { context.resources.configuration.locales.get(0).country }
+            .getOrNull()?.takeIf { it.isNotBlank() }
+        return if (CarUnits.imperialFor(country)) CarUnits.IMPERIAL else CarUnits.METRIC
+    }
+
+    /**
+     * Which units the car pane reads in.
+     *
+     * On the car screen rather than only on the phone because it is a
+     * *reading* preference: the moment a driver notices it is wrong is the
+     * moment they are looking at the number, and that number is on the car.
+     */
+    private fun showUnits() {
+        val current = HeadwaySettings.carUnits(context)
+        val rows = CarUnits.entries.map { choice ->
+            CarSheet.Row(
+                title = choice.describe(),
+                detail = if (choice == CarUnits.AUTOMATIC) {
+                    "${choice.detail()} — currently ${effectiveUnits().detail()}"
+                } else {
+                    choice.detail()
+                },
+                selected = choice == current,
+            ) {
+                HeadwaySettings.setCarUnits(context, choice)
+                closeOverlay()
+                onStep("car screen: units are now ${choice.describe().lowercase()}")
+                // Every reading is formatted at render time, so re-rendering the
+                // stage is the whole of applying this.
+                render()
+            }
+        }
+        showOverlay(
+            sheet().build(title = "Units", rows = rows, onClose = ::closeOverlay),
         )
     }
 

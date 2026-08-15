@@ -388,10 +388,24 @@ object WidgetSetup {
         onDone: (Int, ComponentName?) -> Unit,
     ) {
         synchronized(lock) { pending = onDone }
-        val started = runCatching {
-            context.startActivity(WidgetSetupActivity.intentFor(context, provider))
-            true
-        }.getOrDefault(false)
+        // The application context on purpose, and this is the whole of the
+        // "widget was not added" bug. The caller is the car screen, which holds
+        // a *display context* for the car's virtual display, and since Android
+        // 10 an activity started from one launches on that display. Headway's
+        // car display is not a trusted display, so `ActivityTaskSupervisor`
+        // refuses the launch outright -- `startActivity` throws, this catch
+        // turns it into a cancelled add, and the driver is told on the car
+        // screen to finish on the phone while nothing ever appears there.
+        //
+        // `OverlayDisplay.launch` already had to learn this; the same sentence
+        // is in its KDoc. Starting from a context with no display of its own
+        // sends this to the phone, where the system's approval dialog and the
+        // provider's setup screen belong.
+        val launcher = context.applicationContext
+        val started = startOnUserDisplay(
+            launcher,
+            WidgetSetupActivity.intentFor(launcher, provider),
+        ) { SessionLog.shared.warn(TAG, it) }
         if (!started) {
             SessionLog.shared.warn(TAG, "could not open the widget setup screen")
             deliver(AppWidgetManager.INVALID_APPWIDGET_ID, provider)

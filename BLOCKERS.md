@@ -1106,3 +1106,45 @@ shows two bare numbers.
 `sensors: ... fuel level N, range M` from a car whose gauge and trip computer the
 driver can read at the same moment resolves both fields at once. When it does,
 name them for the quantity and delete this entry.
+
+## B-023 — Music needs the screen-sharing grant, and nothing else can provide it
+
+**Status:** Open, and not closable from inside the app.
+
+**Where:** `CarAudioStream.pumpMedia`, `PhoneAudioCapture`, `HeadwayService.offerScreenSharing`
+
+**What:** Third-party media audio reaches the car over the AAP media channel,
+captured from the phone's own playback (ADR 0005). The only unprivileged way to
+capture playback is `AudioPlaybackCaptureConfiguration`, whose `Builder` takes a
+`MediaProjection` — the screen-sharing grant. So no grant means no music, and
+that is an Android API constraint rather than a Headway decision.
+
+It compounds: while an AAP session is up the head unit has switched its source
+to Android Auto, so Bluetooth A2DP is not being listened to either. The driver
+gets silence from both routes at once. One reported exactly that — *"why won't
+audio play through my car unless I am screen sharing"* — and the honest answer
+is that it cannot.
+
+**Why the driver could not work it out:** nothing said so. The consent
+notification was titled "Show apps on the car screen" and its body said "Tap to
+allow screen sharing", which describes video and not music. A driver who does
+not want app mirroring had no reason to grant it and no way to learn that music
+depended on it.
+
+**Workaround, shipped, in two parts:**
+
+- **The wait replaces the give-up.** `pumpMedia` used to read the grant once at
+  session start and `return` on a null, so a session that came up without one —
+  which is the normal case, since a link that starts on its own has no grant
+  travelling with it — was silent for its whole life however many times the
+  driver shared afterwards. It now waits on the grant and starts capture when
+  one arrives, and goes back to waiting when Android 15 takes it away at a lock
+  screen rather than ending. `CarAudioStream.current` is how the service
+  delivers one, on both edges.
+- **The notification says what it is for.** Title and body now name music
+  first, because it is the surprising half and the half a driver notices.
+
+**How to close it:** not closable. `MediaProjection` is the only unprivileged
+route to playback capture, and the alternative — leaving media on A2DP — is what
+ADR 0005 reversed after a capture of real Android Auto showed Gearhead tearing
+A2DP down while projecting on this very head unit.

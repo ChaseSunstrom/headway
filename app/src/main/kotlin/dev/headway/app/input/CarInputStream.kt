@@ -26,6 +26,7 @@ import android.view.WindowManager
 import dev.headway.app.dash.CarShell
 import dev.headway.app.video.AppPaneHost
 import dev.headway.app.video.CarAppDisplay
+import dev.headway.app.voice.PhoneMediaControl
 import dev.headway.dash.PaneRect
 import dev.headway.input.CarGesture
 import dev.headway.input.GestureBuilder
@@ -38,6 +39,7 @@ import dev.headway.protocol.channel.InputKeyCodes
 import dev.headway.protocol.channel.TouchSurface
 import dev.headway.protocol.channel.CarRect
 import dev.headway.protocol.channel.TouchTransform
+import dev.headway.voice.MediaAction
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.MessageChannel
 import dev.headway.protocol.session.HeadUnitProfile
@@ -145,6 +147,11 @@ import kotlinx.coroutines.launch
  * a stroke the platform never saw.
  */
 class CarInputStream(
+    /**
+     * Application-lifetime context, for the media-key route. Never retained
+     * for UI: the only thing taken from it is the `AudioManager`.
+     */
+    private val appContext: Context,
     private val channel: InputChannel,
     /**
      * The demultiplexer's view of the same channel. Held separately from
@@ -647,9 +654,43 @@ class CarInputStream(
                 onVoiceKey()
             }
 
+            // The steering-wheel transport buttons. These arrive as ordinary
+            // key events on the input channel and used to fall through to
+            // `else -> Unit`: the log recorded them by name -- which is how a
+            // driver could report "the skip buttons on my car don't skip" while
+            // the log cheerfully said MEDIA_NEXT -- and nothing acted on them.
+            //
+            // `AudioManager.dispatchMediaKeyEvent` is the unprivileged route to
+            // whichever app holds the media session, needs no permission, and is
+            // already what the voice commands use. Nothing reports back, so this
+            // says sent rather than done.
+            InputKeyCodes.MEDIA_NEXT -> media(MediaAction.NEXT)
+            InputKeyCodes.MEDIA_PREVIOUS -> media(MediaAction.PREVIOUS)
+            InputKeyCodes.MEDIA_PLAY_PAUSE -> media(MediaAction.PLAY_PAUSE)
+            InputKeyCodes.MEDIA_PLAY -> media(MediaAction.PLAY)
+            InputKeyCodes.MEDIA_PAUSE -> media(MediaAction.PAUSE)
+
             else -> Unit
         }
     }
+
+    /**
+     * Sends one transport action to whichever app holds the media session.
+     *
+     * Built lazily and kept, because `PhoneMediaControl` only wraps
+     * `AudioManager` and a car with transport buttons sends these often enough
+     * that rebuilding it per press is waste.
+     */
+    private fun media(action: MediaAction) {
+        val control = mediaControl ?: PhoneMediaControl(appContext, onStep).also {
+            mediaControl = it
+        }
+        if (!control.perform(action)) {
+            onStep("input: ${action.name} could not be sent to the media session")
+        }
+    }
+
+    private var mediaControl: PhoneMediaControl? = null
 
     private fun onRelative(event: CarInputEvent.Relative) {
         knobEvents++
@@ -790,6 +831,7 @@ class CarInputStream(
 
             val view = connectionFor(service.id)
             return CarInputStream(
+                appContext = context.applicationContext,
                 channel = InputChannel(view, service.id, onStep),
                 view = view,
                 transform = transform,
