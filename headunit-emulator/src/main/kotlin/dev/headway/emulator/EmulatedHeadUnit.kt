@@ -29,6 +29,9 @@ import aap_protobuf.service.media.sink.message.AudioStreamTypeOuterClass.AudioSt
 import aap_protobuf.service.media.sink.message.VideoCodecResolutionTypeOuterClass.VideoCodecResolutionType
 import aap_protobuf.service.media.sink.message.VideoConfigurationOuterClass.VideoConfiguration
 import aap_protobuf.service.media.sink.message.VideoFrameRateTypeOuterClass.VideoFrameRateType
+import aap_protobuf.service.sensorsource.SensorSourceServiceOuterClass.SensorSourceService
+import aap_protobuf.service.sensorsource.message.SensorOuterClass.Sensor
+import aap_protobuf.service.sensorsource.message.SensorTypeOuterClass.SensorType
 import aap_protobuf.shared.MessageStatusOuterClass.MessageStatus
 import dev.headway.protocol.control.ControlMessageType
 import dev.headway.protocol.control.VersionHandshake
@@ -64,9 +67,23 @@ data class HeadUnitConfig(
     val mediaAudioSampleRate: Int = 48_000,
     val speechAudioSampleRate: Int = 16_000,
     val microphoneSampleRate: Int = 16_000,
+    /**
+     * Sensor types this unit offers, or empty for a unit with no sensor service.
+     *
+     * Empty by default, and deliberately: adding a service changes how many
+     * channels every other test has to open, and the sensor channel is the one
+     * service a phone can ignore entirely without losing anything else. A test
+     * about sensors passes [EmulatedHeadUnit.ADVERTISED_SENSORS] or its own list.
+     *
+     * A real 2021 Chevrolet Infotainment 3 unit advertises SENSOR *first* of its
+     * thirteen services (`docs/protocol-notes.md` §7.1), which is why the channel
+     * goes at the head of [advertisedChannels] rather than the tail.
+     */
+    val sensors: List<SensorType> = emptyList(),
 ) {
     /** Channels this unit advertises, in advertisement order. */
-    val advertisedChannels: List<ChannelId> = listOf(
+    val advertisedChannels: List<ChannelId> = listOfNotNull(
+        ChannelId.SENSOR.takeIf { sensors.isNotEmpty() },
         ChannelId.MEDIA_SINK_VIDEO,
         ChannelId.MEDIA_SINK_MEDIA_AUDIO,
         ChannelId.MEDIA_SINK_SYSTEM_AUDIO,
@@ -285,6 +302,12 @@ class EmulatedHeadUnit(
                         .addAllKeycodesSupported(SUPPORTED_KEYCODES)
                 )
 
+                ChannelId.SENSOR -> service.setSensorSourceService(
+                    SensorSourceService.newBuilder().addAllSensors(
+                        config.sensors.map { Sensor.newBuilder().setSensorType(it).build() }
+                    )
+                )
+
                 ChannelId.MEDIA_SOURCE_MICROPHONE -> service.setMediaSourceService(
                     aap_protobuf.service.media.source.MediaSourceServiceOuterClass.MediaSourceService
                         .newBuilder()
@@ -430,6 +453,31 @@ class EmulatedHeadUnit(
             88,  // MEDIA_PREVIOUS
             126, // MEDIA_PLAY
             127, // MEDIA_PAUSE
+        )
+
+        /**
+         * A plausible set of sensors for a petrol car with a trip computer.
+         *
+         * Not a transcription of `SensorType.proto`'s 22 values, and not
+         * openauto's three either. openauto advertises DRIVING_STATUS, LOCATION
+         * and NIGHT_MODE and nothing else
+         * (`openauto/src/autoapp/Service/Sensor/SensorService.cpp` L89-L103),
+         * because it is a Raspberry Pi with a GPS dongle rather than a car. This
+         * list is the subset [dev.headway.protocol.channel.CarSensors] models, so
+         * that a test can drive every reading the dashboard draws; which of them
+         * a real 2021 Chevrolet Infotainment 3 unit actually offers is unknown
+         * until a drive's log says so (BLOCKERS.md B-001).
+         */
+        val ADVERTISED_SENSORS: List<SensorType> = listOf(
+            SensorType.SENSOR_DRIVING_STATUS_DATA,
+            SensorType.SENSOR_NIGHT_MODE,
+            SensorType.SENSOR_SPEED,
+            SensorType.SENSOR_RPM,
+            SensorType.SENSOR_FUEL,
+            SensorType.SENSOR_ODOMETER,
+            SensorType.SENSOR_TIRE_PRESSURE_DATA,
+            SensorType.SENSOR_ENVIRONMENT_DATA,
+            SensorType.SENSOR_PARKING_BRAKE,
         )
     }
 }

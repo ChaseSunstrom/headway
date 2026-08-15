@@ -51,6 +51,7 @@ import dev.headway.app.log.SessionLog
 import dev.headway.app.quirks.HeadUnitIdentity
 import dev.headway.app.quirks.HeadUnitQuirks
 import dev.headway.app.quirks.QuirkStore
+import dev.headway.app.sensor.CarSensorStream
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.video.AppPaneHost
 import dev.headway.app.video.CarAppDisplay
@@ -1193,6 +1194,20 @@ open class HeadwayService : Service() {
         if (input == null) {
             step("the head unit advertised no touchscreen, so car touches will not be injected")
         }
+        // Registered here, with the others, and for the same reason: every view
+        // must exist before `demux.pump()` starts or the first messages for a
+        // channel are counted unroutable. That is how sensor traffic was being
+        // discarded -- the SENSOR channel is opened on every real-car session
+        // because `AapSession.connect` opens everything advertised, and nothing
+        // had ever subscribed to it.
+        val sensors = CarSensorStream.of(
+            profile = profile,
+            connectionFor = connectionFor,
+            onStep = ::step,
+        )
+        if (sensors == null) {
+            step("the head unit advertised no sensor service, so the car reports nothing about itself")
+        }
         val voice = CarVoiceStream.of(
             profile = profile,
             connectionFor = connectionFor,
@@ -1301,6 +1316,10 @@ open class HeadwayService : Service() {
             startSubsystem("audio") { audio?.start(this) }
             startSubsystem("input") { input?.start(this) }
             startSubsystem("voice") { voice?.start(this) }
+            // Last, and isolated like the rest. Sensors are the one subsystem
+            // whose complete absence costs the driver nothing but a pane that
+            // says the car is quiet.
+            startSubsystem("sensors") { sensors?.start(this) }
 
             pump.join()
         } catch (t: Throwable) {
@@ -1320,6 +1339,7 @@ open class HeadwayService : Service() {
             audio?.let { runCatching { step(it.describe()) } }
             input?.let { runCatching { step(it.describe()) } }
             voice?.let { runCatching { step(it.describe()) } }
+            sensors?.let { runCatching { step(it.describe()) } }
             runCatching { CarShell.onVoiceRequested = null }
             runCatching { AppPaneHost.onSharingKnown = null }
             runCatching { AppPaneHost.onGrantLost = null }
@@ -1329,6 +1349,7 @@ open class HeadwayService : Service() {
             runCatching { audio?.stop() }
             runCatching { input?.stop() }
             runCatching { voice?.stop() }
+            runCatching { sensors?.stop() }
             demux.closeAll(sessionFailure)
             sessionFailure = null
         }

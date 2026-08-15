@@ -51,10 +51,38 @@ data class CarSensors(
     val cruiseEngaged: Boolean? = null,
     /** Engine speed in revolutions per minute. */
     val rpm: Double? = null,
-    /** Fuel remaining as a percentage, 0..100. */
-    val fuelPercent: Int? = null,
-    /** Estimated range on the fuel remaining, in metres. */
-    val rangeMeters: Int? = null,
+    /**
+     * `FuelData.fuel_level`, verbatim. **The unit is not stated anywhere.**
+     *
+     * Named for the schema field rather than for a quantity, because there is
+     * nothing to cite for the quantity. The field is a bare
+     * `optional int32 fuel_level = 1` with no comment
+     * (`.../sensorsource/message/FuelData.proto` L6, identical in
+     * `aasdk/docs/protos.proto` L394-L398 and `aa-proxy-rs/src/protos/protos.proto`
+     * L419-L423), and unlike every other quantity on this channel it carries no
+     * `_eN` suffix to say what it is scaled by.
+     *
+     * The one reading in any reference treats it as a **percentage**:
+     * aa-proxy-rs takes `msg.fuel_data[0].fuel_level()` from a real head unit's
+     * batch and passes it straight into `battery_level_percentage`
+     * (`aa-proxy-rs/src/mitm.rs` L2408-L2432), a field its own API validates as
+     * 0.0-100.0 (`src/web.rs` L640-L646). That is an inference drawn for
+     * electric vehicles, not documentation, so this field is reported as the
+     * number the car sent and no unit is asserted on it. A single drive's log
+     * settles it; see BLOCKERS.md B-022.
+     */
+    val fuelLevel: Int? = null,
+    /**
+     * `FuelData.range`, verbatim. **The unit is not stated anywhere, and no
+     * reference reads this field at all.**
+     *
+     * Same shape as [fuelLevel] and less evidence: `optional int32 range = 2`
+     * with no comment and no `_eN` suffix, and a grep of aasdk, openauto,
+     * aa-proxy-rs and AACS finds no producer and no consumer. Metres, kilometres
+     * and tenths of a kilometre are all plausible and none is citable, so the
+     * raw number is what is carried and what the dashboard shows.
+     */
+    val range: Int? = null,
     /** True when the car is warning about fuel level. */
     val lowFuel: Boolean? = null,
     /** Tyre pressures in kilopascals, in the car's own wheel order. */
@@ -73,8 +101,8 @@ data class CarSensors(
 
     /** True when the car has told us anything at all. */
     val any: Boolean
-        get() = speedMetersPerSecond != null || rpm != null || fuelPercent != null ||
-            rangeMeters != null || tyrePressuresKpa.isNotEmpty() ||
+        get() = speedMetersPerSecond != null || rpm != null || fuelLevel != null ||
+            range != null || tyrePressuresKpa.isNotEmpty() ||
             outsideTemperatureCelsius != null || odometerKm != null ||
             parkingBrake != null || nightMode != null || drivingStatus != null ||
             cruiseEngaged != null || lowFuel != null
@@ -101,8 +129,8 @@ data class CarSensors(
         speedMetersPerSecond = update.speedMetersPerSecond ?: speedMetersPerSecond,
         cruiseEngaged = update.cruiseEngaged ?: cruiseEngaged,
         rpm = update.rpm ?: rpm,
-        fuelPercent = update.fuelPercent ?: fuelPercent,
-        rangeMeters = update.rangeMeters ?: rangeMeters,
+        fuelLevel = update.fuelLevel ?: fuelLevel,
+        range = update.range ?: range,
         lowFuel = update.lowFuel ?: lowFuel,
         tyrePressuresKpa = update.tyrePressuresKpa.ifEmpty { tyrePressuresKpa },
         outsideTemperatureCelsius =
@@ -119,8 +147,12 @@ data class CarSensors(
         val parts = mutableListOf<String>()
         speedKph?.let { parts += "speed %.1f km/h".format(it) }
         rpm?.let { parts += "%.0f rpm".format(it) }
-        fuelPercent?.let { parts += "fuel $it%" }
-        rangeMeters?.let { parts += "range ${it / 1000} km" }
+        // No unit on either: see the fields' own KDoc. Printing "45%" or
+        // "380 km" here would put a guess into every log from every drive, which
+        // is the one place the guess would be hardest to notice and hardest to
+        // undo.
+        fuelLevel?.let { parts += "fuel level $it" }
+        range?.let { parts += "range $it" }
         if (tyrePressuresKpa.isNotEmpty()) {
             parts += "tyres " + tyrePressuresKpa.joinToString("/") { "%.0f".format(it) } + " kPa"
         }

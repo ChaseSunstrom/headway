@@ -84,6 +84,19 @@ object PaneKind {
     const val CLOCK = "clock"
 
     /**
+     * What the car itself reports: speed, revs, fuel, tyres, outside
+     * temperature, the odometer.
+     *
+     * The odd one out among the model kinds, and worth saying why. Every other
+     * pane draws something the *phone* knows — a media session, a notification,
+     * a widget — and keeps working with the car unplugged. This one draws the
+     * AAP sensor channel, so it has content only while a session is up and shows
+     * a car that reports nothing as exactly that. "Not reported" is the normal
+     * state of most of these fields on most head units, not a fault.
+     */
+    const val SENSORS = "sensors"
+
+    /**
      * A real app, rendered into this pane.
      *
      * The argument is the package name to open here, or null for "whatever the
@@ -102,7 +115,7 @@ object PaneKind {
 
     /** Everything, in the order a picker should offer them. */
     val ALL: List<String> = listOf(
-        APP, MAPS, NOW_PLAYING, BROWSE, PHONE, MESSAGES, CAR_APP, WIDGET, LAUNCHER, CLOCK,
+        APP, MAPS, NOW_PLAYING, BROWSE, PHONE, MESSAGES, CAR_APP, WIDGET, LAUNCHER, SENSORS, CLOCK,
     )
 
     /**
@@ -126,6 +139,7 @@ object PaneKind {
         MESSAGES -> "Messages"
         WIDGET -> "Widget"
         LAUNCHER -> "All apps"
+        SENSORS -> "Car"
         CLOCK -> "Clock"
         APP -> "App"
         else -> kind
@@ -141,6 +155,7 @@ object PaneKind {
         MESSAGES -> "Incoming messages, with replies"
         WIDGET -> "An app's own widget — several of these can run at once"
         LAUNCHER -> "A grid of every app, to open one here"
+        SENSORS -> "Speed, revs, fuel and tyres, as the car reports them"
         CLOCK -> "Time, date and link status"
         APP -> "A shared app, live. One pane at a time shows it"
         else -> ""

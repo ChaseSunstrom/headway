@@ -1031,3 +1031,44 @@ wrong amount. The symptom is touches landing consistently off in one direction,
 and `input: touches inside the app pane map ... at X,Y` in the session log says
 which numbers were used. A drive that shows it should be fixed by widening the
 inference, not by taking the flag.
+
+---
+
+## B-022 — Nothing states the unit of `FuelData.fuel_level` or `FuelData.range`
+
+**Where:** `CarSensors.fuelLevel`, `CarSensors.range`, `SensorsTile`
+
+**What:** The AAP sensor channel reports fuel as
+`FuelData { optional int32 fuel_level = 1; optional int32 range = 2; ... }`, and
+neither field says what it is a count of. Every other quantity on the channel
+carries its scale in its name — `speed_e3`, `rpm_e3`, `kms_e1`,
+`tire_pressures_e2`, `temperature_e3` — and these two carry nothing. There is no
+comment on either field in `aasdk/protobuf/.../sensorsource/message/FuelData.proto`,
+nor in `aasdk/docs/protos.proto`, nor in `aa-proxy-rs/src/protos/protos.proto`.
+
+**Why it cannot be settled from the references:** because they do not use the
+fields. `range` has no producer and no consumer anywhere in aasdk, openauto,
+aa-proxy-rs or AACS. `fuel_level` has exactly one reader: aa-proxy-rs takes
+`msg.fuel_data[0].fuel_level()` off a real head unit and passes it straight into
+`battery_level_percentage` (`src/mitm.rs`, the EV block), a field its own web API
+validates as 0.0–100.0 (`src/web.rs`). That is one implementation's inference
+about electric vehicles, drawn to feed a battery model — not a statement about
+what the protocol means — and it says nothing at all about `range`.
+
+**Workaround, shipped:** the fields are named for the schema rather than for a
+quantity, and the numbers are carried and displayed exactly as the car sent them.
+`CarSensors.describe()` prints `fuel level 45` and `range 380`; the Car pane
+shows the same, with no `%`, `km` or `mi` anywhere. `CarSensorsTest` asserts that
+no unit is attached, so a future edit that adds one has to delete a test that
+says why it must not. `docs/protocol-notes.md` §7.2 and §7.4 record the same.
+
+**What would go wrong:** nothing silently. A percentage rendered as a distance,
+or a range in kilometres labelled miles, would be a wrong number in 34-point type
+on a car screen, which is the worst place to put a guess — that is precisely what
+this entry exists to prevent. The cost of the workaround is a dashboard that
+shows two bare numbers.
+
+**What settles it:** one drive. The session log line
+`sensors: ... fuel level N, range M` from a car whose gauge and trip computer the
+driver can read at the same moment resolves both fields at once. When it does,
+name them for the quantity and delete this entry.

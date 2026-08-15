@@ -125,7 +125,7 @@ panel, drag a divider, choose what each one shows, or take one away. Layouts are
 **locked by default**, so a thumb steadying itself on the dashboard cannot
 rearrange your car; the same row reads *Save and lock* while you are editing.
 
-Ten kinds of panel, in the order the picker offers them:
+Eleven kinds of panel, in the order the picker offers them:
 
 | Panel | What it is |
 |---|---|
@@ -138,9 +138,19 @@ Ten kinds of panel, in the order the picker offers them:
 | **Car app** | A third-party app's *own* car interface, drawn by Headway — **several of these can run at once** |
 | **Widget** | An app's own home-screen widget — **several of these can run at once, all different apps** |
 | **All apps** | A grid to open an app from. Every launchable app, or just the ones you pinned |
+| **Car** | Speed, revs, fuel, tyre pressures, outside temperature and the odometer — whatever your car actually reports over the AAP sensor channel, and a plain "not reported yet" when it reports nothing |
 | **Clock** | Time, date and link status |
 
-Every panel except **App** is a **model** the app already publishes:
+**Car** is the one panel whose content comes from the car rather than from the
+phone, so it is empty until a session is up and says so. Which readings appear is
+entirely the head unit's choice: it advertises the sensor types it supports,
+Headway subscribes to every one of them, and a car that offers only night mode
+and driving status shows only those. Two of the numbers — fuel level and range —
+are shown without a unit, because the protocol never states one and no reference
+implementation does either (`BLOCKERS.md` B-022); guessing in 34-point type on a
+car screen is not an improvement.
+
+Every panel except **App** and **Car** is a **model** the app already publishes:
 `MediaSessionManager` and `MediaBrowserService` for music,
 `NotificationListenerService` for messages and the navigation feed,
 `AppWidgetHost` for widgets, `androidx.car.app` templates for a car interface.

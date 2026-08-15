@@ -86,17 +86,17 @@ class CarSensorsTest {
     fun `an update keeps values it does not carry`() {
         // A batch carries only the sensors that changed, so a speed-only update
         // must not erase the fuel level the car sent a minute ago.
-        val known = CarSensors(fuelPercent = 60, tyrePressuresKpa = listOf(220.0, 221.0))
+        val known = CarSensors(fuelLevel = 60, tyrePressuresKpa = listOf(220.0, 221.0))
         val merged = known.mergedWith(CarSensors(speedMetersPerSecond = 10.0))
-        assertEquals(60, merged.fuelPercent)
+        assertEquals(60, merged.fuelLevel)
         assertEquals(listOf(220.0, 221.0), merged.tyrePressuresKpa)
         assertEquals(10.0, merged.speedMetersPerSecond!!, 0.0001)
     }
 
     @Test
     fun `an update overwrites what it does carry`() {
-        val known = CarSensors(fuelPercent = 60)
-        assertEquals(55, known.mergedWith(CarSensors(fuelPercent = 55)).fuelPercent)
+        val known = CarSensors(fuelLevel = 60)
+        assertEquals(55, known.mergedWith(CarSensors(fuelLevel = 55)).fuelLevel)
     }
 
     @Test
@@ -119,17 +119,37 @@ class CarSensorsTest {
         val full = CarSensors(
             speedMetersPerSecond = 27.778,
             rpm = 2100.0,
-            fuelPercent = 45,
-            rangeMeters = 380_000,
+            fuelLevel = 45,
+            range = 380,
             tyrePressuresKpa = listOf(221.0, 220.0, 219.0, 223.0),
             outsideTemperatureCelsius = 18.5,
             parkingBrake = false,
             nightMode = true,
         )
         val line = full.describe()
-        listOf("100.0 km/h", "2100 rpm", "fuel 45%", "range 380 km", "221/220/219/223 kPa",
+        listOf("100.0 km/h", "2100 rpm", "fuel level 45", "range 380", "221/220/219/223 kPa",
             "18.5 C", "parking brake off", "night").forEach {
             assertTrue(line.contains(it), "describe() lost \"$it\": $line")
         }
+    }
+
+    /**
+     * The two fields whose unit nothing in any reference states.
+     *
+     * `FuelData.fuel_level` and `FuelData.range` are bare `int32`s with no
+     * comment and no `_eN` suffix, and the only reference that reads either
+     * infers a percentage for electric vehicles rather than documenting one
+     * (see the fields' KDoc, and BLOCKERS.md B-022). This pins the consequence:
+     * the numbers travel and are shown exactly as the car sent them, and no
+     * `%`, `km` or `mi` is attached to a guess. Change it when a real drive's
+     * log says what the unit is, not before.
+     */
+    @Test
+    fun `fuel level and range carry no invented unit`() {
+        val line = CarSensors(fuelLevel = 45, range = 380).describe()
+        assertTrue(line.contains("fuel level 45"), line)
+        assertTrue(line.contains("range 380"), line)
+        assertFalse(line.contains("45%"), "no reference states fuel_level is a percentage: $line")
+        assertFalse(line.contains("380 km"), "no reference states range is in kilometres: $line")
     }
 }

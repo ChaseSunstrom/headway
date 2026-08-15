@@ -3746,3 +3746,209 @@ AACS/proto/InputChannel.proto L10-L14 defines only `repeated ButtonCode.Enum ava
 **ChannelId::INPUT_SOURCE has no literal value in the source**
 
 aasdk/include/aasdk/Messenger/ChannelId.hpp L30-L51 declares `enum class ChannelId` with no explicit initializers except `NONE = 255`. INPUT_SOURCE is the 9th entry, so its value is 8 by C++ ordinal rules, but that number is nowhere written in the file. Furthermore this is aasdk's INTERNAL channel numbering; the actual AAP channel number for the input service is whatever `Service.id` the head unit assigns in ServiceDiscoveryResponse (see openauto InputSourceService.cpp L67 `service->set_id(static_cast<uint32_t>(channel_->getId()))` - openauto happens to reuse the aasdk enum ordinal as the wire service id). A clean-room phone must read the id from service discovery, never hard-code 8.
+
+## 7. Sensor channel
+
+What the car knows about itself -- speed, revs, fuel, tyres, the odometer, night mode, driving status -- which the phone RECEIVES from the head unit. Implemented by `core-protocol`'s `SensorChannel` and the app's `CarSensorStream`.
+
+### 7.1 Sequence
+
+```text
+SENSOR CHANNEL LIFECYCLE (the head unit is the SOURCE; the phone SUBSCRIBES).
+
+STEP 0 - Direction, because it is the opposite of what the name suggests.
+`sensor_source_service` is field 2 of Service (aasdk/protobuf/aap_protobuf/service/Service.proto L24), and Service entries travel inside the ServiceDiscoveryResponse that the HEAD UNIT sends (see section 4). So the CAR is the sensor source and the PHONE is the consumer. SensorRequest.min_update_period is therefore a rate cap a consumer imposes on a producer, not a poll interval a poller uses.
+Head-unit-side producer: openauto/src/autoapp/Service/Sensor/SensorService.cpp - the whole file. aasdk's channel is likewise the head-unit half: aasdk/src/Channel/SensorSource/SensorSourceService.cpp.
+
+STEP 1 - Head unit advertises the sensor channel in ServiceDiscoveryResponse.
+The HU adds a Service entry whose field 2 (sensor_source_service) is a SensorSourceService descriptor: `repeated Sensor sensors = 1` (each Sensor is `{ required SensorType sensor_type = 1 }`), `optional uint32 location_characterization = 2`, `repeated FuelType supported_fuel_types = 3`, `repeated EvConnectorType supported_ev_connector_types = 4`.
+Cite: aasdk/protobuf/aap_protobuf/service/sensorsource/SensorSourceService.proto L9-L15; aasdk/protobuf/aap_protobuf/service/sensorsource/message/Sensor.proto L7-L9.
+Concrete producer: openauto/src/autoapp/Service/Sensor/SensorService.cpp L89-L103 - `service->set_id(channel_->getId())`, `auto *sensorChannel = service->mutable_sensor_source_service()`, then exactly three `sensorChannel->add_sensors()->set_sensor_type(...)` calls: SENSOR_DRIVING_STATUS_DATA, SENSOR_LOCATION, SENSOR_NIGHT_MODE. It advertises nothing else, because it is a Raspberry Pi with a GPS dongle rather than a car.
+CONFIRMED on real hardware: a 2021 Chevrolet Infotainment 3 unit advertises SENSOR as the FIRST of its thirteen services (real-vehicle capture 2026-08-13 15:04:23, recorded under "Evidence from a real head unit" above). The capture does not enumerate the `sensors` inside that descriptor, so WHICH sensor types that car offers is still unknown -- BLOCKERS.md B-001.
+
+STEP 2 - Phone opens the channel.
+Ordinary ChannelOpenRequest / ChannelOpenResponse on the sensor channel's own id, ENCRYPTED + CONTROL, exactly as for every other service (section 4, and the CHANNEL_OPEN_REQUEST framing row under "Evidence from a real head unit"). aasdk's sensor channel is one of the eight that handle CHANNEL_OPEN_REQUEST inside the per-service channel rather than on channel 0: aasdk/src/Channel/SensorSource/SensorSourceService.cpp L42-L53 and L115-L124.
+Headway needs no special bring-up here: `AapSession.connect` opens every advertised channel by default.
+
+STEP 3 - Phone sends ONE SensorRequest PER SENSOR TYPE (message id 32769 / 0x8001).
+Payload: SensorRequest { required SensorType type = 1; required int64 min_update_period = 2 }. `type` is a SINGLE value, not a list, so a phone that wants five sensors sends five requests.
+Cite: aasdk/protobuf/aap_protobuf/service/sensorsource/message/SensorRequest.proto L8-L11.
+Head-unit handler: aasdk/src/Channel/SensorSource/SensorSourceService.cpp L63-L74 routes SENSOR_MESSAGE_REQUEST to `handleSensorStartRequest`, which parses a SensorRequest and hands it to `onSensorStartRequest`. openauto implements that handler at SensorService.cpp L122-L145: it branches on `request.type()` and arms exactly the stream that was asked for.
+Observed against real Gearhead: aa-proxy-rs sees the phone request individual types on this channel and rewrites one of them in flight (aa-proxy-rs/src/mitm.rs L2206-L2276, the SENSOR_VEHICLE_ENERGY_MODEL_DATA -> SENSOR_FUEL redirect).
+
+STEP 4 - Head unit answers each request (message id 32770 / 0x8002).
+Payload: `{ required MessageStatus status = 1 }`. TWO schema names carry that identical body -- SensorResponse.proto and SensorStartResponseMessage.proto -- and both are sent on this same id, so the distinction is invisible on the wire. openauto builds a SensorStartResponseMessage with STATUS_SUCCESS (SensorService.cpp L127-L143) and passes it to `sendSensorStartResponse`, which stamps SENSOR_MESSAGE_RESPONSE (aasdk SensorSourceService.cpp L90-L102). aa-proxy-rs synthesises a SensorResponse on the same id (mitm.rs L2235-L2240).
+THE RESPONSE CARRIES NO CORRELATION FIELD. Its entire body is the status. The only way to know which request an answer belongs to is the order the requests were sent in; openauto answers inside its request handler before returning to the receive loop, so the order is preserved.
+
+STEP 5 - Head unit streams SensorBatch messages (message id 32771 / 0x8003) for the rest of the session.
+Wire form: 2-byte big-endian message id 0x8003 followed by the serialized SensorBatch; flags ENCRYPTED | FRAME_TYPE_FIRST | FRAME_TYPE_LAST (aa-proxy-rs/src/mitm.rs L3746-L3752), or in aasdk terms EncryptionType::ENCRYPTED + MessageType::SPECIFIC (aasdk/src/Channel/SensorSource/SensorSourceService.cpp L77-L88, `sendSensorEventIndication`).
+openauto sends the first batch as the CONTINUATION of the response promise, i.e. the response goes out first and the batch immediately after (SensorService.cpp L130-L141 chains `sendDrivingStatusUnrestricted` / `sendNightData` onto the promise; L147-L179 are those senders).
+
+STEP 5a - A BATCH IS A DELTA, NOT A SNAPSHOT.
+Every one of SensorBatch's 22 fields is `repeated`, and a producer fills only the ones that changed: openauto's night-mode batch contains one NightModeData and nothing else (SensorService.cpp L159-L179), its driving-status batch one DrivingStatusData (L147-L157), and aa-proxy-rs's injectors build a batch per sensor -- one OdometerData, or one TirePressureData, or one TollCardData (mitm.rs, `send_odometer_data` / `send_tire_pressure_data` / `send_toll_card`). A consumer that treats each batch as the whole picture blanks every gauge the car did not mention in the latest update.
+
+STEP 5b - EVERY QUANTITY IS A SCALED INTEGER.
+The protocol never sends a float. A field named `_eN` is the value times 10^N. The scale is in the field NAME and nowhere else -- there are no comments in any of these .proto files. See 7.2 for the full table.
+
+STEP 6 - SENSOR_MESSAGE_ERROR (message id 32772 / 0x8004).
+Per the schema this carries SensorError { required SensorType sensor_type = 1; required SensorErrorType sensor_error_type = 2 } with SensorErrorType in {SENSOR_OK=1, SENSOR_ERROR_TRANSIENT=2, SENSOR_ERROR_PERMANENT=3}. NO REFERENCE SENDS OR HANDLES IT. aasdk's dispatcher has cases for SENSOR_MESSAGE_REQUEST and MESSAGE_CHANNEL_OPEN_REQUEST only (SensorSourceService.cpp L63-L74); openauto likewise; aa-proxy-rs's pretty-printer decodes the other three ids into their messages and prints this one as `SENSOR_MESSAGE_ERROR raw_len={}` without parsing it (aa-proxy-rs/src/mitm_prettyprint.rs L861-L868). So both the direction and the payload type are inferred from the schema alone.
+
+CHANNEL DISPATCH ON THE RECEIVER SIDE.
+A phone implementing this channel switches on the 2-byte big-endian message id and routes: 32770 -> SensorResponse, 32771 -> SensorBatch, 32772 -> SensorError, plus the control ids MESSAGE_CHANNEL_OPEN_REQUEST/RESPONSE which also arrive on this channel. 32769 is the phone's own send and should never arrive.
+```
+
+### 7.2 Constants
+
+| Constant | Value | Meaning | Source |
+|---|---|---|---|
+| `SENSOR_MESSAGE_REQUEST` | 32769 (0x8001) | Phone -> HU. Payload is SensorRequest { type, min_update_period }. One per sensor type. | `aasdk/protobuf/aap_protobuf/service/sensorsource/SensorMessageId.proto` L5-L11; identical in `aa-proxy-rs/src/protos/protos.proto` L1539-L1544 |
+| `SENSOR_MESSAGE_RESPONSE` | 32770 (0x8002) | HU -> phone. Payload is `{ required MessageStatus status = 1 }`, i.e. either SensorResponse or the byte-identical SensorStartResponseMessage. | same file, L5-L11; sender at `aasdk/src/Channel/SensorSource/SensorSourceService.cpp` L90-L102 |
+| `SENSOR_MESSAGE_BATCH` | 32771 (0x8003) | HU -> phone. Payload is a SensorBatch: the readings that changed. aasdk calls the send `sendSensorEventIndication`. | same file, L5-L11; sender at `aasdk/src/Channel/SensorSource/SensorSourceService.cpp` L77-L88 |
+| `SENSOR_MESSAGE_ERROR` | 32772 (0x8004) | Payload presumed to be SensorError. **Never sent or handled by any reference** -- see 7.4. | same file, L5-L11 |
+| `sensor channel framing` | ENCRYPTED + SPECIFIC | Both the batch and the start response are built with `EncryptionType::ENCRYPTED, MessageType::SPECIFIC`. Only ChannelOpenRequest/Response on this channel set CONTROL. | `aasdk/src/Channel/SensorSource/SensorSourceService.cpp` L81-L82 and L95-L96 (contrast L45-L46, the ChannelOpenResponse, which is CONTROL); `aa-proxy-rs/src/mitm.rs` L3746-L3752 (`ENCRYPTED \| FRAME_TYPE_FIRST \| FRAME_TYPE_LAST`) |
+| `SensorType` enum | SENSOR_LOCATION=1, SENSOR_COMPASS=2, SENSOR_SPEED=3, SENSOR_RPM=4, SENSOR_ODOMETER=5, SENSOR_FUEL=6, SENSOR_PARKING_BRAKE=7, SENSOR_GEAR=8, SENSOR_OBDII_DIAGNOSTIC_CODE=9, SENSOR_NIGHT_MODE=10, SENSOR_ENVIRONMENT_DATA=11, SENSOR_HVAC_DATA=12, SENSOR_DRIVING_STATUS_DATA=13, SENSOR_DEAD_RECKONING_DATA=14, SENSOR_PASSENGER_DATA=15, SENSOR_DOOR_DATA=16, SENSOR_LIGHT_DATA=17, SENSOR_TIRE_PRESSURE_DATA=18, SENSOR_ACCELEROMETER_DATA=19, SENSOR_GYROSCOPE_DATA=20, SENSOR_GPS_SATELLITE_DATA=21, SENSOR_TOLL_CARD=22 | The 22 types a head unit may advertise. Values 1..22 line up one-for-one with SensorBatch's field numbers 1..22, which is how a batch field is matched to the type that produced it. | `aasdk/protobuf/aap_protobuf/service/sensorsource/message/SensorType.proto` L5-L28 |
+| `SensorType` values 23-24 | SENSOR_VEHICLE_ENERGY_MODEL_DATA=23, SENSOR_TRAILER_DATA=24 | **Not in the aasdk schema.** Present only in aa-proxy-rs's flat proto, which was extended from observed modern Gearhead traffic; aa-proxy-rs handles a real phone requesting type 23. A phone must therefore not assume the enum stops at 22, and a head unit may answer STATUS_INVALID_SENSOR for either. | `aa-proxy-rs/src/protos/protos.proto` L1318-L1343; handler at `aa-proxy-rs/src/mitm.rs` L2206-L2276 |
+| `SensorErrorType` enum | SENSOR_OK=1, SENSOR_ERROR_TRANSIENT=2, SENSOR_ERROR_PERMANENT=3 | Carried by SensorError. Note SENSOR_OK is 1, not 0 -- the enum has no zero value, so proto2's default for a `SensorErrorType` field is SENSOR_OK. | `aasdk/protobuf/aap_protobuf/service/sensorsource/message/SensorErrorType.proto` L5-L9 |
+| `MessageStatus.STATUS_INVALID_SENSOR` | -9 | The refusal a head unit can give a SensorRequest for a type it does not have. No reference ever sends it -- openauto answers STATUS_SUCCESS to any type and then simply never streams it. | `aasdk/protobuf/aap_protobuf/shared/MessageStatus.proto` L16; openauto's behaviour at `openauto/src/autoapp/Service/Sensor/SensorService.cpp` L127-L143 |
+| `SpeedData.speed_e3` | m/s x 1000 | Road speed. aa-proxy-rs's own comment on the field it rewrites: "SpeedData.speed_e3 is speed in m/s * 1000. Zero = stopped." | `aasdk/protobuf/.../message/SpeedData.proto` L6; `aa-proxy-rs/src/mitm.rs` L2302-L2305 |
+| `RpmData.rpm_e3` | rpm x 1000 | Engine speed. aa-proxy-rs writes 700_000 with the comment "~700 RPM idle is realistic for a parked car". | `aasdk/protobuf/.../message/RpmData.proto` L6; `aa-proxy-rs/src/mitm.rs` L2356-L2360 |
+| `OdometerData.kms_e1` | **kilometres** x 10 | NOT metres. aa-proxy-rs's producer comment: "kms_e1 stores kilometers in tenths (0.1 km resolution), so multiply by 10", and it does `(data.odometer_km * 10.0).round()`. Reading it as metres puts a 200 000 km car at 20 km, which looks like a plausible trip meter rather than an obvious unit error. `trip_kms_e1` (field 2) is the same scale. | `aasdk/protobuf/.../message/OdometerData.proto` L6-L7; `aa-proxy-rs/src/mitm.rs`, `send_odometer_data` |
+| `TirePressureData.tire_pressures_e2` | kPa x 100 | A repeated int32, one per wheel, in the car's own wheel order -- the schema states no order and no reference states one. aa-proxy-rs's producer comment: "tire_pressures_e2 stores kPa in hundredths (0.01 kPa resolution), so multiply by 100". | `aasdk/protobuf/.../message/TirePressureData.proto` L6; `aa-proxy-rs/src/mitm.rs`, `send_tire_pressure_data` |
+| `EnvironmentData.temperature_e3` | degrees Celsius x 1000 | Outside temperature; signed, so below freezing is negative. `pressure_e3` (field 2) and `rain` (field 3) are the other two fields and no reference reads either. | `aasdk/protobuf/.../message/EnvironmentData.proto` L6-L8 |
+| `FuelData.fuel_level` | **unit unknown** | A bare `optional int32` with no comment and no `_eN` suffix. The only reference that reads it treats it as a percentage: aa-proxy-rs takes `msg.fuel_data[0].fuel_level()` off a real head unit and passes it as `battery_level_percentage`, a field its own API validates as 0.0-100.0. That is an EV inference, not documentation. Headway carries the raw number and asserts no unit. BLOCKERS.md B-022. | `aasdk/protobuf/.../message/FuelData.proto` L6; `aa-proxy-rs/src/mitm.rs` L2408-L2432; `aa-proxy-rs/src/web.rs` L640-L646 |
+| `FuelData.range` | **unit unknown** | Same shape as `fuel_level` and less evidence: no producer and no consumer anywhere in aasdk, openauto, aa-proxy-rs or AACS. Metres, kilometres and tenths of a kilometre are all plausible. Headway carries the raw number. BLOCKERS.md B-022. | `aasdk/protobuf/.../message/FuelData.proto` L7 |
+| `SensorRequest.min_update_period` | **unit unknown; no observed value** | A `required int64` with no comment. aasdk hands the whole request to an event handler without reading it; openauto branches on `type` alone; aa-proxy-rs only ever rewrites `type`. Headway sends 0, because 0 is the one value whose meaning does not depend on the unit -- "no minimum period". | `aasdk/protobuf/.../message/SensorRequest.proto` L10; non-readers at `aasdk/src/Channel/SensorSource/SensorSourceService.cpp` L104-L113 and `openauto/.../SensorService.cpp` L122-L145 |
+| `DrivingStatus` enum | DRIVE_STATUS_UNRESTRICTED=0, DRIVE_STATUS_NO_VIDEO=1, DRIVE_STATUS_NO_KEYBOARD_INPUT=2, DRIVE_STATUS_NO_VOICE_INPUT=4, DRIVE_STATUS_NO_CONFIG=8, DRIVE_STATUS_LIMIT_MESSAGE_LEN=16 | A BITMASK, despite being declared as an enum: the values are powers of two above zero and `DrivingStatusData.status` is a plain `required int32`, not the enum type. aa-proxy-rs's comment confirms the reading: "Value is a bitmask: 0 = unrestricted, 1 = no video, 2 = no keyboard, etc." Anything non-zero means at least one restriction applies. | `aasdk/protobuf/.../message/DrivingStatus.proto` L5-L12; `aasdk/protobuf/.../message/DrivingStatusData.proto` L7; `aa-proxy-rs/src/mitm.rs` L2281-L2285 |
+| `Gear` enum | GEAR_NEUTRAL=0, GEAR_1..GEAR_10=1..10, GEAR_DRIVE=100, GEAR_PARK=101, GEAR_REVERSE=102 | Note NEUTRAL is 0 and is therefore proto2's default for the field. | `aasdk/protobuf/.../message/Gear.proto` L5-L20 |
+| `LocationData` scales | latitude_e7, longitude_e7 = degrees x 1e7; accuracy_e3 = metres x 1000; altitude_e2 = metres x 100; speed_e3; bearing_e6 = degrees x 1e6 | openauto's GPS producer sets each of these from gpsd with exactly those multipliers, and its own comments name the units ("degrees", "meters", "meters above ellipsoid"). Field 1 (`timestamp`) is deprecated in the schema and openauto still sets it, under a `-Wdeprecated-declarations` pragma. | `aasdk/protobuf/.../message/LocationData.proto` L6-L12; `openauto/src/autoapp/Service/Sensor/SensorService.cpp` L181-L216 |
+| `SensorBatch` field numbers | location=1, compass=2, speed=3, rpm=4, odometer=5, fuel=6, parking_brake=7, gear=8, diagnostics=9, night_mode=10, environment=11, hvac=12, driving_status=13, dead_reckoning=14, passenger=15, door=16, light=17, tire_pressure=18, accelerometer=19, gyroscope=20, gps_satellite=21, toll_card=22 | All `repeated`. The numbering matches SensorType 1..22 exactly. | `aasdk/protobuf/aap_protobuf/service/sensorsource/message/SensorBatch.proto` L27-L50 |
+
+### 7.3 Message definitions
+
+```proto
+// aasdk/protobuf/aap_protobuf/service/sensorsource/SensorMessageId.proto
+enum SensorMessageId
+{
+    SENSOR_MESSAGE_REQUEST = 32769;
+    SENSOR_MESSAGE_RESPONSE = 32770;
+    SENSOR_MESSAGE_BATCH = 32771;
+    SENSOR_MESSAGE_ERROR = 32772;
+}
+
+// aasdk/protobuf/aap_protobuf/service/sensorsource/SensorSourceService.proto
+// -- the descriptor the HEAD UNIT puts in field 2 of its Service entry.
+message SensorSourceService
+{
+    repeated message.Sensor sensors = 1;
+    optional uint32 location_characterization = 2;
+    repeated message.FuelType supported_fuel_types = 3;
+    repeated message.EvConnectorType supported_ev_connector_types = 4;
+}
+
+// aasdk/protobuf/aap_protobuf/service/sensorsource/message/Sensor.proto
+message Sensor {
+    required SensorType sensor_type = 1;
+}
+
+// aasdk/protobuf/aap_protobuf/service/sensorsource/message/SensorRequest.proto
+// -- the only message the PHONE sends on this channel. One per sensor type.
+message SensorRequest
+{
+    required SensorType type = 1;
+    required int64 min_update_period = 2;   // unit unstated; Headway sends 0
+}
+
+// aasdk/protobuf/aap_protobuf/service/sensorsource/message/SensorResponse.proto
+message SensorResponse {
+  required shared.MessageStatus status = 1;
+}
+
+// aasdk/protobuf/aap_protobuf/service/sensorsource/message/SensorStartResponseMessage.proto
+// -- byte-identical to SensorResponse, sent on the same id. See 7.4.
+message SensorStartResponseMessage
+{
+    required shared.MessageStatus status = 1;
+}
+
+// aasdk/protobuf/aap_protobuf/service/sensorsource/message/SensorError.proto
+message SensorError {
+  required SensorType sensor_type = 1;
+  required SensorErrorType sensor_error_type = 2;
+}
+
+// aasdk/protobuf/aap_protobuf/service/sensorsource/message/SensorBatch.proto
+// -- every field repeated; a batch carries only what changed.
+message SensorBatch {
+    repeated LocationData location_data = 1;
+    repeated CompassData compass_data = 2;
+    repeated SpeedData speed_data = 3;
+    repeated RpmData rpm_data = 4;
+    repeated OdometerData odometer_data = 5;
+    repeated FuelData fuel_data = 6;
+    repeated ParkingBrakeData parking_brake_data = 7;
+    repeated GearData gear_data = 8;
+    repeated DiagnosticsData diagnostics_data = 9;
+    repeated NightModeData night_mode_data = 10;
+    repeated EnvironmentData environment_data = 11;
+    repeated HvacData hvac_data = 12;
+    repeated DrivingStatusData driving_status_data = 13;
+    repeated DeadReckoningData dead_reckoning_data = 14;
+    repeated PassengerData passenger_data = 15;
+    repeated DoorData door_data = 16;
+    repeated LightData light_data = 17;
+    repeated TirePressureData tire_pressure_data = 18;
+    repeated AccelerometerData accelerometer_data = 19;
+    repeated GyroscopeData gyroscope_data = 20;
+    repeated GpsSatelliteData gps_satellite_data = 21;
+    repeated TollCardData toll_card_data = 22;
+}
+
+// The readings Headway decodes, from aasdk/protobuf/.../sensorsource/message/.
+message SpeedData {
+    required int32 speed_e3 = 1;            // m/s x 1000
+    optional bool cruise_engaged = 2;
+    optional int32 cruise_set_speed = 4;    // note: field 3 is absent
+}
+message RpmData          { required int32 rpm_e3 = 1; }              // rpm x 1000
+message OdometerData     { required int32 kms_e1 = 1;                // KILOMETRES x 10
+                           optional int32 trip_kms_e1 = 2; }
+message FuelData         { optional int32 fuel_level = 1;            // unit unknown
+                           optional int32 range = 2;                 // unit unknown
+                           optional bool low_fuel_warning = 3; }
+message TirePressureData { repeated int32 tire_pressures_e2 = 1; }   // kPa x 100
+message EnvironmentData  { optional int32 temperature_e3 = 1;        // Celsius x 1000
+                           optional int32 pressure_e3 = 2;
+                           optional int32 rain = 3; }
+message ParkingBrakeData { required bool parking_brake = 1; }
+message NightModeData    { optional bool night_mode = 1; }
+message DrivingStatusData{ required int32 status = 1; }              // bitmask, see 7.2
+message GearData         { required Gear gear = 1; }
+```
+
+### 7.4 Where the references disagree
+
+**`SensorResponse` and `SensorStartResponseMessage` are the same wire message under two names**
+
+aasdk ships both `SensorResponse.proto` and `SensorStartResponseMessage.proto` and their bodies are byte-identical: `{ required shared.MessageStatus status = 1 }`. Both are sent on `SENSOR_MESSAGE_RESPONSE` (32770). aasdk's own channel takes the `SensorStartResponseMessage` flavour (`aasdk/include/aasdk/Channel/SensorSource/ISensorSourceService.hpp` L48-L50, implementation at `src/Channel/SensorSource/SensorSourceService.cpp` L90-L102) and openauto builds that one (`openauto/src/autoapp/Service/Sensor/SensorService.cpp` L127-L129); aa-proxy-rs's flat schema has only `SensorResponse` and it synthesises that on the same id (`aa-proxy-rs/src/mitm.rs` L2235-L2240) and decodes 32770 as one in its pretty-printer (`src/mitm_prettyprint.rs` L864). Nothing on the wire distinguishes them. Headway parses `SensorResponse` and the choice is arbitrary.
+
+**`SENSOR_MESSAGE_ERROR`'s payload and direction are inferred from the schema alone**
+
+No reference sends it and no reference parses it. aasdk's dispatcher handles two ids and logs everything else as "Message Id not Handled" (`aasdk/src/Channel/SensorSource/SensorSourceService.cpp` L63-L74). aa-proxy-rs's pretty-printer, which decodes SensorRequest, SensorResponse and SensorBatch for the other three ids, prints this one as `SENSOR_MESSAGE_ERROR raw_len={}` and does not attempt a parse (`aa-proxy-rs/src/mitm_prettyprint.rs L861-L868`). So `SensorError` is what the schema implies but not what anything has been seen to send. Headway attempts a `SensorError`, reports the raw byte count when that fails, and does not fail the channel either way.
+
+**aa-proxy-rs's `SensorType` enum has two values aasdk's does not**
+
+`SENSOR_VEHICLE_ENERGY_MODEL_DATA = 23` and `SENSOR_TRAILER_DATA = 24` (`aa-proxy-rs/src/protos/protos.proto` L1341-L1342) are absent from `aasdk/protobuf/.../SensorType.proto`, which stops at 22. These are not speculative: aa-proxy-rs's mitm handles a real phone sending a `SensorRequest` for type 23 and redirects it to `SENSOR_FUEL` (`src/mitm.rs` L2206-L2276), so modern Gearhead does request it. A phone built from aasdk's schema will file 23 and 24 into unknown fields and see `has_sensor_type()` come back false for a head unit that advertises them; Headway drops such entries rather than echoing a number it cannot name.
+
+**No reference states the unit of `FuelData.fuel_level`, `FuelData.range`, or `SensorRequest.min_update_period`**
+
+Three fields on this channel carry a bare `int32`/`int64` with no comment and no `_eN` suffix, and every other quantity here has one or the other. For `fuel_level` there is one indirect reading -- aa-proxy-rs treats a real head unit's value as a 0-100 percentage state-of-charge (`src/mitm.rs` L2408-L2432, validated 0.0-100.0 at `src/web.rs` L640-L646) -- but that is an inference drawn for electric vehicles, not a statement about the protocol. For `range` and `min_update_period` there is nothing at all: no producer, no consumer, no comment, in any of aasdk, openauto, aa-proxy-rs or AACS.
+
+Headway therefore carries `fuel_level` and `range` as the raw numbers the car sent, names the fields for the schema rather than for a quantity (`CarSensors.fuelLevel`, `CarSensors.range`), and prints them without a unit in both the log and the dashboard. `min_update_period` is sent as 0, which is the one value whose meaning does not depend on the unit. A single drive's log resolves all three; BLOCKERS.md B-022.
+
+**AACS defines the sensor descriptor and nothing else**
+
+`AACS/proto/Sensor.proto` declares a `SensorType.Enum` with the same numbering as aasdk's for values 1..21 under different names (`CarSpeed`, `FuelLevel`, `NightData`, `DeadReconing`, `Tire`, `Accel`, `Gyro`, `GPS`) and stops at 21 -- it has no `SENSOR_TOLL_CARD`. `AACS/proto/SensorChannel.proto` is `{ repeated Sensor sensors = 1 }`, a strict subset of aasdk's `SensorSourceService`. AACS's phone side never opens or reads the sensor channel, so it contributes nothing about the messages. Prefer the aasdk definitions; the AACS names are the same numbers.
+
+**openauto advertises three sensors; a car advertises whatever it has**
+
+openauto offers SENSOR_DRIVING_STATUS_DATA, SENSOR_LOCATION and SENSOR_NIGHT_MODE (`openauto/src/autoapp/Service/Sensor/SensorService.cpp` L89-L103) and streams only the first two -- its `onSensorStartRequest` has branches for driving status and night mode and an empty `else` for everything else (L132-L141). That is not a protocol constraint, it is what a Raspberry Pi knows. It does mean the only reference behaviour available for a request outside that set is "answer STATUS_SUCCESS and then send nothing", which is indistinguishable from a working subscription to a sensor the car never updates. A phone must not wait on a first batch as proof that a subscription took.

@@ -45,6 +45,7 @@ import dev.headway.app.dash.tiles.MediaBrowseTile
 import dev.headway.app.dash.tiles.MessagesTile
 import dev.headway.app.dash.tiles.NowPlayingTile
 import dev.headway.app.dash.tiles.PhoneTile
+import dev.headway.app.dash.tiles.SensorsTile
 import dev.headway.app.dash.tiles.WidgetSetup
 import dev.headway.app.dash.tiles.WidgetTile
 import dev.headway.app.ui.HeadwaySettings
@@ -544,6 +545,10 @@ class CarShell(
                 rememberPaneArgument(path, PaneKind.CAR_APP, service.flattenToString())
             }
             PaneKind.MESSAGES -> MessagesTile(context)
+            // The one pane whose content comes from the car rather than from the
+            // phone: it draws whatever the AAP sensor channel reports, and says
+            // so plainly when that is nothing.
+            PaneKind.SENSORS -> SensorsTile(context)
             PaneKind.CLOCK -> ClockTile(context)
             PaneKind.LAUNCHER -> LauncherTile(onStep)
             PaneKind.WIDGET -> WidgetTile.of(leaf, onStep)

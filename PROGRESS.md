@@ -94,7 +94,7 @@ defects the first time it ran.
 
 ## What is genuinely verified
 
-**248 JVM tests green** on a bare JDK, plus **69 instrumentation tests green on a
+**380 JVM tests green** on a bare JDK, plus **69 instrumentation tests green on a
 real Android 15 (API 35) AOSP device** — app 29, core-audio 13, core-input 12,
 core-video 15.
 
@@ -124,6 +124,14 @@ failed on it.
 - **Audio** — the three sinks with their advertised formats, and the focus
   exchange asserted as an ordered message sequence on the wire.
 - **Microphone** — car-mic PCM decoded off the AV-input channel.
+- **Sensor channel** — the car's own readings: one `SensorRequest` per
+  advertised sensor type, each answer attributed to the request it belongs to,
+  and `SensorBatch` decoded from its scaled integers into speed, revs, fuel,
+  tyre pressures, temperature and the odometer. Asserted end to end against an
+  emulated head unit that advertises a sensor service, including the two states
+  that are not errors — a car that reports nothing, and a subscription the unit
+  refuses. Until this shipped the SENSOR channel was opened on every real-car
+  session and every frame on it was discarded as unroutable.
 - **Reconnection** — the backoff and state machine, driven by induced failures.
 - **Android, on the device** — the debug APK builds, installs and runs its tests
   on an API 35 AOSP image with zero Play Services packages present. The frame
