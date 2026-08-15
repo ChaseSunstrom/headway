@@ -62,7 +62,6 @@ internal object CarStyle {
     // is first touched and then never again, which would freeze whichever
     // palette happened to be in force at class-load time -- so a theme change
     // would repaint the shell and leave every tile in the old colours.
-    val BACKGROUND: Int get() = Headway.GROUND
     val SURFACE: Int get() = Headway.SURFACE_RAISED
     val TEXT: Int get() = Headway.TEXT
     val DIM: Int get() = Headway.TEXT_MUTED

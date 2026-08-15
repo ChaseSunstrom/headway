@@ -145,10 +145,4 @@ object PaneKind {
         APP -> "A shared app, live. One pane at a time shows it"
         else -> ""
     }
-
-    /** Whether choosing this kind should immediately ask "which one?". */
-    fun needsArgument(kind: String): Boolean = when (canonical(kind)) {
-        APP, CAR_APP, WIDGET -> true
-        else -> false
-    }
 }

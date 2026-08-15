@@ -123,12 +123,15 @@ instance takes the re-point branch instead, which is what
 `release()` rather than `stop()`, because at that point the projection really is
 going away.
 
-**Why `VideoPump.resetForNewStream` is called on every switch.** The pump sends
-the codec configuration once per stream. A new encoder produces new SPS/PPS, and
-without the reset the pump would consider the config already sent and hand the
-head unit's decoder access units it has no parameter sets for. A mid-stream
-parameter set plus an IDR is ordinary H.264 and every decoder handles it; a
-missing one is a green screen.
+**Why the codec configuration is sent once per stream, and only once.** The pump
+sends SPS/PPS ahead of the first frame and remembers that it did. While mirroring
+was a switchable mode that flag had to be cleared on every switch, because a new
+encoder produces new parameter sets; with switching gone (ADR 0010) each session
+constructs its own `VideoPump` in `CarVideoStream.start`, the flag starts clear,
+and the reset it needed no longer exists. The reason it mattered is unchanged:
+handing the head unit's decoder access units it has no parameter sets for is a
+green screen, while a mid-stream parameter set plus an IDR is ordinary H.264 and
+every decoder handles it.
 
 ## Alternatives rejected
 

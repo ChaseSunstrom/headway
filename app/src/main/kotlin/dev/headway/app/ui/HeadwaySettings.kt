@@ -130,16 +130,6 @@ object HeadwaySettings {
     const val KEY_AUTO_CONNECT: String = "auto_connect"
 
     /**
-     * Hold the screen-capture grant across drives instead of asking again.
-     *
-     * On by default, and only meaningful once the driver has granted it once.
-     * Android 14 requires consent per projection *session*, not per connection,
-     * so a grant that is never stopped survives the car going away and coming
-     * back — which is the difference between one tap a day and one tap a drive.
-     */
-    const val KEY_HOLD_PROJECTION: String = "hold_projection"
-
-    /**
      * The Bluetooth address of the car, once a session has reached its
      * handshake.
      *
@@ -171,9 +161,6 @@ object HeadwaySettings {
 
     fun autoConnect(context: Context): Boolean =
         of(context).getBoolean(KEY_AUTO_CONNECT, true)
-
-    fun holdProjection(context: Context): Boolean =
-        of(context).getBoolean(KEY_HOLD_PROJECTION, true)
 
     /** Set once the one-time move off the simulated display has been applied. */
     const val KEY_APP_SOURCE_MIGRATED: String = "app_source_migrated"

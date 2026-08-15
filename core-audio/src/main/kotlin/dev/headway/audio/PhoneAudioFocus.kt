@@ -141,11 +141,6 @@ class PhoneAudioFocus(
     /** The head unit's latest word, as [AudioFocus] parsed it. */
     val carFocusState: AudioFocusState? get() = carFocus.state
 
-    /** True when both arbiters currently allow Headway to put audio on the car. */
-    val clearToPlay: Boolean
-        get() = (phoneFocus == PhoneFocus.HELD || phoneFocus == PhoneFocus.DUCKED) &&
-            (carFocusState?.holdsFocus ?: false)
-
     // --- acquiring ------------------------------------------------------------
 
     /**
@@ -343,17 +338,6 @@ class PhoneAudioFocus(
             }
 
             else -> onStep("car focus: ${state.state.name}")
-        }
-    }
-
-    /**
-     * Reads focus notifications off [carFocus] and applies each, until
-     * cancelled. Only usable when this owns the control channel's view; a
-     * session with a router should call [onCarFocus] instead.
-     */
-    suspend fun relayCarNotifications() {
-        while (true) {
-            onCarFocus(carFocus.awaitNotification())
         }
     }
 

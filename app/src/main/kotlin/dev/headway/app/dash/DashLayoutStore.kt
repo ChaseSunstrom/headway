@@ -217,10 +217,6 @@ class DashLayoutStore(private val storage: Storage) {
         storage.write(mapOf(KEY_RAIL to Rail.encodeAll(items)))
     }
 
-    /** Whether the driver has arranged a rail of their own. */
-    fun hasRail(): Boolean =
-        Rail.decodeAll(runCatching { storage.read(KEY_RAIL) }.getOrNull()).isNotEmpty()
-
     /** The name recorded by [setActive], or null if there is none or it is unreadable. */
     private fun activeName(): String? = runCatching { storage.read(KEY_ACTIVE_LAYOUT) }.getOrNull()
 

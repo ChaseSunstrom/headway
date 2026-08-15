@@ -122,37 +122,6 @@ object AppPaneHost {
         private set
 
     /**
-     * Where the captured region's top-left corner sits on the phone's screen.
-     *
-     * ## Why a capture is not always at (0, 0)
-     *
-     * App screen sharing. The frames hold one app's window and nothing else --
-     * Android excludes "the status bar, navigation bar, notifications, and other
-     * system UI elements" -- so capture pixel (0, 0) is the *window's* corner,
-     * one status bar down from the top of the screen.
-     *
-     * Touches go the other way. A `GestureDescription` path is absolute on the
-     * display, so mapping a car touch into window space and dispatching it as
-     * though it were screen space puts every finger high by that same status
-     * bar. On a Pixel that is about 48 dp: enough to hit the row above the one
-     * the driver aimed at, every time, with nothing in any log to say why. It is
-     * most of what "I cannot do anything on it" is.
-     *
-     * ## Where the number comes from
-     *
-     * The system-bar insets of display 0, and the measured capture size. If the
-     * capture is shorter than the display by at least the status bar, the window
-     * starts below the status bar and this is that height; if it is the full
-     * height -- a whole-display capture, or an edge-to-edge app -- it is zero.
-     * Horizontally the window is centred, which for every phone layout means
-     * zero, and the halved difference covers the ones where it does not.
-     *
-     * Insets rather than the accessibility service on purpose. The service
-     * declares `canRetrieveWindowContent="false"`, which is a promise on the
-     * grant screen that Headway injects and never observes, and knowing where a
-     * window is would mean breaking it. This costs nothing and reads nothing.
-     */
-    /**
      * True once the capture is known to be **one app** rather than the whole
      * display.
      *
@@ -184,6 +153,37 @@ object AppPaneHost {
     @Volatile
     var onSharingKnown: ((Boolean) -> Unit)? = null
 
+    /**
+     * Where the captured region's top-left corner sits on the phone's screen.
+     *
+     * ## Why a capture is not always at (0, 0)
+     *
+     * App screen sharing. The frames hold one app's window and nothing else --
+     * Android excludes "the status bar, navigation bar, notifications, and other
+     * system UI elements" -- so capture pixel (0, 0) is the *window's* corner,
+     * one status bar down from the top of the screen.
+     *
+     * Touches go the other way. A `GestureDescription` path is absolute on the
+     * display, so mapping a car touch into window space and dispatching it as
+     * though it were screen space puts every finger high by that same status
+     * bar. On a Pixel that is about 48 dp: enough to hit the row above the one
+     * the driver aimed at, every time, with nothing in any log to say why. It is
+     * most of what "I cannot do anything on it" is.
+     *
+     * ## Where the number comes from
+     *
+     * The system-bar insets of display 0, and the measured capture size. If the
+     * capture is shorter than the display by at least the status bar, the window
+     * starts below the status bar and this is that height; if it is the full
+     * height -- a whole-display capture, or an edge-to-edge app -- it is zero.
+     * Horizontally the window is centred, which for every phone layout means
+     * zero, and the halved difference covers the ones where it does not.
+     *
+     * Insets rather than the accessibility service on purpose. The service
+     * declares `canRetrieveWindowContent="false"`, which is a promise on the
+     * grant screen that Headway injects and never observes, and knowing where a
+     * window is would mean breaking it. This costs nothing and reads nothing.
+     */
     @Volatile
     var sourceOriginX: Int = 0
         private set
@@ -230,9 +230,9 @@ object AppPaneHost {
      * Takes charge of [projection] for the session.
      *
      * The projection is *not* stopped by [detach] — it belongs to the service,
-     * which may be holding it across reconnects deliberately (see
-     * `HeadwaySettings.KEY_HOLD_PROJECTION`). What this owns is the virtual
-     * display, and that it does release.
+     * which holds it across reconnects so that a car that drops and comes back
+     * does not cost the driver a second consent dialog. What this owns is the
+     * virtual display, and that it does release.
      *
      * @param projection null when the driver has granted no capture, in which
      *   case every app pane says so instead of showing a black rectangle.

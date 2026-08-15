@@ -30,7 +30,6 @@ import dev.headway.protocol.control.VersionHandshake
 import dev.headway.protocol.framing.AapMessage
 import dev.headway.protocol.framing.ChannelId
 import dev.headway.protocol.io.Cryptor
-import dev.headway.protocol.io.FramedConnection
 import dev.headway.protocol.io.MessageChannel
 
 /**
@@ -198,22 +197,6 @@ class AapSession(
     // --- step 2: TLS --------------------------------------------------------
 
     /**
-     * Drives the TLS handshake and the authentication that follows it.
-     *
-     * Dispatches on whatever the head unit sends rather than demanding a fixed
-     * order, which is how AACS's phone side is written
-     * (`AACS/AAServer/src/AaCommunicator.cpp` `handleMessageContent`, L219-L248:
-     * a type switch, not a sequence). The difference is not stylistic. A real
-     * 2021 Chevrolet Infotainment 3 unit answers the version response with
-     * `AUTH_COMPLETE` and no TLS flight at all, and a sequential reader that
-     * insists on `ENCAPSULATED_SSL` next fails the session on a head unit that
-     * is telling it the session is already good to go.
-     *
-     * The phone is the TLS server — AACS uses `SSL_set_accept_state` and
-     * `SSLv23_server_method` (L293-L305), and Headway matches — so it never
-     * speaks first: every flight it sends answers one the head unit sent.
-     */
-    /**
      * What an authentication rejection usually means, for the three codes a
      * phone can actually provoke.
      *
@@ -238,6 +221,22 @@ class AapSession(
         else -> ""
     }
 
+    /**
+     * Drives the TLS handshake and the authentication that follows it.
+     *
+     * Dispatches on whatever the head unit sends rather than demanding a fixed
+     * order, which is how AACS's phone side is written
+     * (`AACS/AAServer/src/AaCommunicator.cpp` `handleMessageContent`, L219-L248:
+     * a type switch, not a sequence). The difference is not stylistic. A real
+     * 2021 Chevrolet Infotainment 3 unit answers the version response with
+     * `AUTH_COMPLETE` and no TLS flight at all, and a sequential reader that
+     * insists on `ENCAPSULATED_SSL` next fails the session on a head unit that
+     * is telling it the session is already good to go.
+     *
+     * The phone is the TLS server — AACS uses `SSL_set_accept_state` and
+     * `SSLv23_server_method` (L293-L305), and Headway matches — so it never
+     * speaks first: every flight it sends answers one the head unit sent.
+     */
     private suspend fun secureAndAuthenticate() {
         var flights = 0
         while (true) {

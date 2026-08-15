@@ -18,7 +18,6 @@
 package dev.headway.app.dash.tiles
 
 import android.content.Context
-import android.graphics.Rect
 import android.view.Gravity
 import android.graphics.SurfaceTexture
 import android.view.Surface

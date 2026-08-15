@@ -34,7 +34,6 @@ import dev.headway.app.nav.NavigationFeed
 import dev.headway.app.nav.NavigationStep
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
-import dev.headway.app.video.CarVideoStream
 import dev.headway.dash.PaneKind
 
 /**

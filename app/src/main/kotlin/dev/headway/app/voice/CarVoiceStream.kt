@@ -405,9 +405,6 @@ class CarVoiceStream(
         }
     }
 
-    /** Whether a listening session is in flight. */
-    val isListening: Boolean get() = listening.get()
-
     /** Model state and command count, for the log. */
     fun describe(): String {
         val model = recognizerDescription ?: "no on-device speech model"
@@ -438,14 +435,6 @@ class CarVoiceStream(
 
     // --- the audio path ------------------------------------------------------
 
-    /**
-     * Feeds the recogniser until the endpointer says the driver has finished.
-     *
-     * `firstOrNull` is the collection shape rather than a bare `collect` because
-     * it stops the flow at the chunk that ends the utterance, which is what
-     * releases the channel for the close request. A hard timeout sits outside it
-     * so that a head unit which streams silence forever cannot pin the coroutine.
-     */
     /**
      * One utterance from the phone's microphone.
      *
@@ -506,6 +495,14 @@ class CarVoiceStream(
         return command
     }
 
+    /**
+     * Feeds the recogniser until the endpointer says the driver has finished.
+     *
+     * `firstOrNull` is the collection shape rather than a bare `collect` because
+     * it stops the flow at the chunk that ends the utterance, which is what
+     * releases the channel for the close request. A hard timeout sits outside it
+     * so that a head unit which streams silence forever cannot pin the coroutine.
+     */
     private suspend fun collectUtterance(
         recognizer: SpeechRecognizer?,
         endpointer: Endpointer,

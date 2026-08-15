@@ -309,13 +309,6 @@ class HeadwayAccessibilityService : AccessibilityService() {
         }
 
         /**
-         * The Settings screen where the user grants it.
-         *
-         * There is no API to grant this — that is the point of the opt-in — so
-         * the best the app can do is take the user to the right page and explain
-         * what to look for.
-         */
-        /**
          * The component the Settings deep link addresses, and the same string
          * the platform stores in `enabled_accessibility_services`.
          */

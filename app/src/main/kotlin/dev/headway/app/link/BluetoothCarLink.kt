@@ -106,9 +106,6 @@ class BluetoothCarLink(
     @Volatile
     private var handshake: WirelessHandshake? = null
 
-    /** The device this link talks to; surfaced for the notification and logs. */
-    val deviceAddress: String get() = device.address
-
     /**
      * Connects and runs the credentials exchange.
      *
@@ -397,19 +394,6 @@ class BluetoothCarLink(
             runCatching { adapter.bondedDevices?.toList().orEmpty() }.getOrDefault(emptyList())
 
         /**
-         * Every paired device with the services it advertises, for the log.
-         *
-         * This exists because the two failures that look identical from the app
-         * -- "connected to the wrong device" and "the right device is not
-         * accepting" -- are trivially told apart by looking at what each paired
-         * device actually offers. Without it, diagnosing a car that will not
-         * connect means guessing.
-         *
-         * A head unit may present more than one Bluetooth address, with the
-         * audio profiles on one and the projection service on another, so the
-         * device carrying A2DP is not necessarily the one to dial.
-         */
-        /**
          * Whether the car's classic Bluetooth profiles are connected, in words.
          *
          * Worth logging on every attempt because both dongle references treat
@@ -465,6 +449,19 @@ class BluetoothCarLink(
                 disconnected(android.bluetooth.BluetoothProfile.A2DP)
         }
 
+        /**
+         * Every paired device with the services it advertises, for the log.
+         *
+         * This exists because the two failures that look identical from the app
+         * -- "connected to the wrong device" and "the right device is not
+         * accepting" -- are trivially told apart by looking at what each paired
+         * device actually offers. Without it, diagnosing a car that will not
+         * connect means guessing.
+         *
+         * A head unit may present more than one Bluetooth address, with the
+         * audio profiles on one and the projection service on another, so the
+         * device carrying A2DP is not necessarily the one to dial.
+         */
         @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
         fun describeBondedDevices(adapter: BluetoothAdapter): String {
             val devices = bondedDevices(adapter)

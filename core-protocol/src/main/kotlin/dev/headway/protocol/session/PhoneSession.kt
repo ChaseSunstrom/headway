@@ -21,7 +21,6 @@ import dev.headway.protocol.control.ControlMessageType
 import dev.headway.protocol.control.VersionHandshake
 import dev.headway.protocol.framing.AapMessage
 import dev.headway.protocol.framing.ChannelId
-import dev.headway.protocol.io.FramedConnection
 import dev.headway.protocol.io.MessageChannel
 
 /** Raised when the peer violates the session's expected message sequence. */

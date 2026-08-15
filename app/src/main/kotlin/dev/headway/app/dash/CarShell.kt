@@ -54,7 +54,6 @@ import dev.headway.app.ui.theme.HeadwayTheme
 import dev.headway.app.video.AppPaneHost
 import dev.headway.app.video.CarAppDisplay
 import dev.headway.app.video.OverlayDisplay
-import dev.headway.dash.CarTheme
 import dev.headway.dash.DashLayout
 import dev.headway.dash.DashNode
 import dev.headway.dash.DashPath
@@ -64,7 +63,6 @@ import dev.headway.dash.Rail
 import dev.headway.dash.RailItem
 import dev.headway.dash.ThemeAccent
 import dev.headway.dash.ThemeBase
-import dev.headway.dash.ThemeChoice
 
 /**
  * The car screen: a rail, a stage, and whatever the driver put on it.

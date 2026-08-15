@@ -38,12 +38,6 @@ enum class FrameType(val bits: Int) {
     BULK(3),
     ;
 
-    /** True when this frame completes a message — i.e. [LAST] or [BULK]. */
-    val completesMessage: Boolean get() = this == LAST || this == BULK
-
-    /** True when this frame starts a message — i.e. [FIRST] or [BULK]. */
-    val startsMessage: Boolean get() = this == FIRST || this == BULK
-
     companion object {
         /** Bits 0-1 of the flags byte. */
         const val MASK: Int = 0x03

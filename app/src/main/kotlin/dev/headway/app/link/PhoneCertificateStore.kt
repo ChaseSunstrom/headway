@@ -66,10 +66,6 @@ class PhoneCertificateStore(private val directory: File) {
     /** True when the user has supplied both halves. */
     val hasUserMaterial: Boolean get() = certFile.isFile && keyFile.isFile
 
-    /** Where the files belong, for the UI to display. */
-    val certPath: String get() = certFile.absolutePath
-    val keyPath: String get() = keyFile.absolutePath
-
     /**
      * The material to present, preferring the user's.
      *

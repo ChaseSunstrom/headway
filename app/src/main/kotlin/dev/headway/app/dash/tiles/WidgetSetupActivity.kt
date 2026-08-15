@@ -72,11 +72,6 @@ class WidgetSetupActivity : AppCompatActivity() {
         ::onBound,
     )
 
-    private val configuring = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-        ::onConfigured,
-    )
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val wanted = intent?.getStringExtra(EXTRA_PROVIDER)

@@ -22,13 +22,10 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.media.MediaCodecList
 import android.media.MediaFormat
-import android.os.SystemClock
 import android.view.Surface
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -148,13 +145,6 @@ class ScreenEncoderTest {
         assumeTrue("no H.264 encoder on this image", encoder != null)
     }
 
-    private fun assumeDrawable(surface: Surface) {
-        assumeTrue(
-            "this image's encoder input surface accepts neither lockHardwareCanvas nor lockCanvas",
-            paint(surface, 0),
-        )
-    }
-
     /**
      * Draws one frame. Returns false if the surface cannot be drawn into at all.
      *
@@ -190,17 +180,6 @@ class ScreenEncoderTest {
         }
     }
 
-    private fun drainUntil(encoder: ScreenEncoder, done: () -> Boolean) {
-        val deadline = SystemClock.elapsedRealtime() + FLUSH_TIMEOUT_MS
-        while (!done() && SystemClock.elapsedRealtime() < deadline) {
-            encoder.drain(50_000L)
-        }
-    }
-
-    private fun startsWithStartCode(bytes: ByteArray): Boolean =
-        bytes.size > 4 && bytes[0] == 0.toByte() && bytes[1] == 0.toByte() &&
-            (bytes[2] == 1.toByte() || (bytes[2] == 0.toByte() && bytes[3] == 1.toByte()))
-
     /**
      * Annex-B NAL header types, the same way aa-proxy-rs classifies frames
      * (`aa-proxy-rs/src/media_tap.rs` L884-L905): scan for a 3- or 4-byte start
@@ -230,13 +209,6 @@ class ScreenEncoderTest {
     }
 
     private companion object {
-        const val FRAMES = 10
-        const val FRAME_INTERVAL_MS = 40L
-        const val FLUSH_TIMEOUT_MS = 2_000L
         const val BLOCK = 120
-
-        const val NAL_IDR = 5
-        const val NAL_SPS = 7
-        const val NAL_PPS = 8
     }
 }

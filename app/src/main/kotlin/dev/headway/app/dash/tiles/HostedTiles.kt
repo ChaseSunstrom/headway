@@ -29,9 +29,6 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
-import android.graphics.Color
-import android.graphics.Rect
-import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.TextUtils
 import android.util.SizeF
@@ -52,7 +49,6 @@ import dev.headway.app.dash.DashTile
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.video.CarAppDisplay
-import dev.headway.app.video.CarVideoStream
 import dev.headway.dash.DashNode
 import dev.headway.dash.PaneKind
 import kotlin.math.max
@@ -404,10 +400,6 @@ class WidgetTile(
          */
         fun argumentFor(widgetId: Int, provider: ComponentName): String =
             "$widgetId$ARGUMENT_SEPARATOR${provider.flattenToString()}"
-
-        /** The leaf a picker should add to the layout once it has bound a widget. */
-        fun leafFor(widgetId: Int, provider: ComponentName): DashNode.Leaf =
-            DashNode.Leaf(PaneKind.WIDGET, argumentFor(widgetId, provider))
 
         /**
          * The id in a saved argument, or [AppWidgetManager.INVALID_APPWIDGET_ID].
@@ -939,7 +931,6 @@ class LauncherTile(
     }
 }
 
-private val TILE_BACKGROUND: Int get() = Headway.GROUND
 private val TILE_TEXT: Int get() = Headway.TEXT
 private val TILE_DIM: Int get() = Headway.TEXT_MUTED
 private const val MESSAGE_SP = 16f
@@ -966,6 +957,29 @@ private fun messageView(context: Context, message: String): TextView {
         setLineSpacing(0f, 1.25f)
         setPadding(padding, padding, padding, padding)
     }
+}
+
+/**
+ * Starts something the *user* has to interact with, on the screen in their hand.
+ *
+ * Separate from [startOnPhoneDisplay] because the two have opposite audiences.
+ * App content goes wherever the car is looking; a system consent dialog, a
+ * Settings page or a permission sheet goes to display 0, because that is the
+ * only display the person holding the phone can actually touch.
+ */
+internal fun startOnUserDisplay(
+    context: Context,
+    intent: Intent,
+    onStep: (String) -> Unit,
+): Boolean {
+    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val options = ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY)
+    val started = runCatching { context.startActivity(intent, options.toBundle()) }
+    started.exceptionOrNull()?.let { error ->
+        val what = intent.component?.flattenToShortString() ?: intent.action ?: "an activity"
+        onStep("could not start $what on the phone screen: $error")
+    }
+    return started.isSuccess
 }
 
 /**
@@ -1000,29 +1014,6 @@ private fun messageView(context: Context, message: String): TextView {
  * @return false when the system refused the start, which is logged rather than
  *   thrown: one app that will not open must not take the dashboard with it.
  */
-/**
- * Starts something the *user* has to interact with, on the screen in their hand.
- *
- * Separate from [startOnPhoneDisplay] because the two have opposite audiences.
- * App content goes wherever the car is looking; a system consent dialog, a
- * Settings page or a permission sheet goes to display 0, because that is the
- * only display the person holding the phone can actually touch.
- */
-internal fun startOnUserDisplay(
-    context: Context,
-    intent: Intent,
-    onStep: (String) -> Unit,
-): Boolean {
-    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    val options = ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY)
-    val started = runCatching { context.startActivity(intent, options.toBundle()) }
-    started.exceptionOrNull()?.let { error ->
-        val what = intent.component?.flattenToShortString() ?: intent.action ?: "an activity"
-        onStep("could not start $what on the phone screen: $error")
-    }
-    return started.isSuccess
-}
-
 internal fun startOnPhoneDisplay(
     context: Context,
     intent: Intent,

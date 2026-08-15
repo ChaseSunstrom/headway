@@ -8,14 +8,9 @@ junit = "5.11.3"
 vosk = "0.3.45"
 androidxCore = "1.15.0"
 androidxAppcompat = "1.7.0"
-androidxLifecycle = "2.8.7"
 androidxCarApp = "1.7.0"
-composeBom = "2024.11.00"
-composeCompiler = "1.5.15"
-activityCompose = "1.9.3"
 
 [libraries]
-kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
 coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
@@ -39,13 +34,9 @@ json = { module = "org.json:json", version = "20240303" }
 androidx-test-runner = { module = "androidx.test:runner", version = "1.6.2" }
 androidx-test-core = { module = "androidx.test:core", version = "1.6.1" }
 androidx-test-ext-junit = { module = "androidx.test.ext:junit", version = "1.2.1" }
-androidx-test-uiautomator = { module = "androidx.test.uiautomator:uiautomator", version = "2.3.0" }
 
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
 androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "androidxAppcompat" }
-androidx-lifecycle-service = { module = "androidx.lifecycle:lifecycle-service", version.ref = "androidxLifecycle" }
-androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "androidxLifecycle" }
-androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
 
 # The Android for Cars App Library. Headway is the *host* side of it, which is
 # the side Google never published a host for -- but the AAR ships every piece a
@@ -55,16 +46,10 @@ androidx-activity-compose = { module = "androidx.activity:activity-compose", ver
 # dependency and not a fork. Apache-2.0, one-way compatible with GPLv3, and
 # free of Play Services -- `checkNoGms` covers it like everything else.
 androidx-car-app = { module = "androidx.car.app:app", version.ref = "androidxCarApp" }
-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
-compose-ui = { module = "androidx.compose.ui:ui" }
-compose-material3 = { module = "androidx.compose.material3:material3" }
-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
-compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
-kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 protobuf = { id = "com.google.protobuf", version.ref = "protobufPlugin" }

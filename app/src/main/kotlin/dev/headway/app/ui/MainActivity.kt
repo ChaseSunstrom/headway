@@ -21,9 +21,7 @@ import android.Manifest
 import android.companion.CompanionDeviceManager
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.net.Uri
@@ -755,16 +753,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * What the car shows, which is the choice this build exists to offer.
-     *
-     * Mirroring was the default until a real drive proved how badly it fits: a
-     * 1080x2404 phone inside an 800x480 panel uses 216 of 800 columns and
-     * leaves the rest black. The dashboard is drawn at the car's own size
-     * instead. The switch is here because the mirror is still the only way to
-     * put a third-party app's own pixels on the screen, and that is a trade
-     * only the driver can make.
-     */
-    /**
      * The one control for the phone-screen cover, wherever it is shown.
      *
      * On by default. That is only safe because the cover is self-gating: it goes
@@ -789,6 +777,16 @@ class MainActivity : AppCompatActivity() {
         layoutParams = Phone.spaced(this@MainActivity, 12f)
     }
 
+    /**
+     * What the car shows, which is the choice this build exists to offer.
+     *
+     * Mirroring was the default until a real drive proved how badly it fits: a
+     * 1080x2404 phone inside an 800x480 panel uses 216 of 800 columns and
+     * leaves the rest black. The dashboard is drawn at the car's own size
+     * instead. The switch is here because the mirror is still the only way to
+     * put a third-party app's own pixels on the screen, and that is a trade
+     * only the driver can make.
+     */
     private fun buildCarScreenCard(): View {
         val card = Phone.card(this, "The car screen")
         card.addView(
@@ -878,15 +876,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Which apps may appear on the car screen at all.
-     *
-     * Nothing is allowed until it is allowed here. See `AllowedApps` for why
-     * that is the default rather than "everything you have installed": the car
-     * screen is shared over a capture grant, visible to passengers, and touched
-     * by a coordinate stream from hardware Headway does not control. That is a
-     * decision worth making once per app, parked, on a screen big enough to read.
-     */
-    /**
      * Shown only when a VPN is up, because otherwise it is noise.
      *
      * A VPN is the one thing that breaks the link with no symptom that names it:
@@ -928,6 +917,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Which apps may appear on the car screen at all.
+     *
+     * Nothing is allowed until it is allowed here. See `AllowedApps` for why
+     * that is the default rather than "everything you have installed": the car
+     * screen is shared over a capture grant, visible to passengers, and touched
+     * by a coordinate stream from hardware Headway does not control. That is a
+     * decision worth making once per app, parked, on a screen big enough to read.
+     */
     private fun buildAllowedAppsCard(): View {
         val card = Phone.card(this, "Apps allowed on the car screen")
         card.addView(
@@ -1566,13 +1564,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * The runtime permissions, as one line.
-     *
-     * A list of four rows saying "granted" was four rows of nothing on a phone
-     * where they are all granted, which is the usual case after the first run.
-     * The row names what is missing instead, and says nothing when nothing is.
-     */
-    /**
      * Opens the companion chooser so the driver can pair with the car's Wi-Fi.
      *
      * One tap, once, and every later join is silent — including the automatic
@@ -1675,6 +1666,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * The runtime permissions, as one line.
+     *
+     * A list of four rows saying "granted" was four rows of nothing on a phone
+     * where they are all granted, which is the usual case after the first run.
+     * The row names what is missing instead, and says nothing when nothing is.
+     */
     private fun refreshPermissions() {
         val missing = requiredPermissions().filterNot { isGranted(it.permission) }
         permissionStatus.set(

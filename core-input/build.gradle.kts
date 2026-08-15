@@ -39,7 +39,6 @@ android {
 
 dependencies {
     api(project(":core-protocol"))
-    implementation(libs.androidx.core.ktx)
     implementation(libs.coroutines.android)
 
     androidTestImplementation(libs.androidx.test.runner)

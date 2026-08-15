@@ -382,10 +382,6 @@ class TouchTransformTest {
 }
 
 /**
- * The pane case: an app's picture is a rectangle inside the car frame that the
- * driver's layout chose, not the whole screen. See ADR 0010.
- */
-/**
  * The offset a single-app capture needs, which is the difference between where
  * the frames start and where a gesture lands.
  *
@@ -468,6 +464,10 @@ class TouchTransformCaptureOriginTest {
     }
 }
 
+/**
+ * The pane case: an app's picture is a rectangle inside the car frame that the
+ * driver's layout chose, not the whole screen. See ADR 0010.
+ */
 class TouchTransformPaneTest {
 
     /** An 800x480 car panel; the app pane occupies the right two-thirds. */

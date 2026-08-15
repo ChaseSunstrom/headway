@@ -22,7 +22,6 @@ import java.io.InputStream
 /** 16-bit PCM audio with its sample rate. */
 class PcmAudio(val sampleRateHz: Int, val channels: Int, val samples: ByteArray) {
     val frameCount: Int get() = samples.size / (2 * channels)
-    val durationSeconds: Double get() = frameCount.toDouble() / sampleRateHz
 }
 
 /**

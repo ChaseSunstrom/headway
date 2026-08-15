@@ -413,11 +413,6 @@ class InputChannel(
         onStep("requested ${keycodes.size} keycode binding(s)")
     }
 
-    /** Emits an `InputFeedback`. Direction is unverified — see [InputMessageId.INPUT_FEEDBACK]. */
-    suspend fun sendFeedback(event: FeedbackEvent) {
-        connection.send(feedback(channelId, event))
-    }
-
     /**
      * Decodes one message addressed to this channel.
      *

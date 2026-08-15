@@ -29,7 +29,6 @@ import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import dev.headway.app.carapp.TemplateApps
 import dev.headway.app.dash.DashLayoutStore
-import dev.headway.app.dash.DashTile
 import dev.headway.app.dash.tiles.MapsTile
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.ui.theme.Phone

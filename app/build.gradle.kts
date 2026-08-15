@@ -354,7 +354,6 @@ dependencies {
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
-    implementation(libs.androidx.lifecycle.service)
     implementation(libs.coroutines.android)
 
     // The car-app template host. Headway uses the library's own AIDL stubs and
@@ -391,5 +390,4 @@ dependencies {
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.core)
-    androidTestImplementation(libs.androidx.test.uiautomator)
 }

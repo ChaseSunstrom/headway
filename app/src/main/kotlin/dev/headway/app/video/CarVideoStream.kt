@@ -415,9 +415,6 @@ class CarVideoStream(
         /** The live stream, or null between sessions. */
         val current: CarVideoStream? get() = switcher.get()
 
-        /** The geometry the head unit chose, or null when no session is up. */
-        val currentGeometry: EncoderConfiguration? get() = switcher.get()?.negotiated
-
         /**
          * Any non-zero value works; the head unit echoes it back on every
          * acknowledgement so the two sides can tell streams apart.

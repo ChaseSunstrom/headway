@@ -255,9 +255,6 @@ class AudioFocus(
         onStep("audio focus requested: ${type.name}")
     }
 
-    /** Focus for as long as Headway keeps it — media playback over the AAP media channel. */
-    suspend fun requestGain() = request(AudioFocusRequestType.AUDIO_FOCUS_GAIN)
-
     /**
      * Focus for the length of one prompt.
      *

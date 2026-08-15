@@ -212,10 +212,4 @@ class CarGestureDispatcher(
     override fun close() {
         queue.close()
     }
-
-    /** [close], then wait for the queue to drain. */
-    suspend fun closeAndJoin() {
-        close()
-        worker.join()
-    }
 }

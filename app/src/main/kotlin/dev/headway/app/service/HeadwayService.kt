@@ -461,23 +461,6 @@ open class HeadwayService : Service() {
     private fun certificateKey(address: String): String = "$KEY_ACCEPTED_CERT.$address"
 
     /**
-     * Keeps the car's Wi-Fi credentials for the settings screen to offer.
-     *
-     * The one-tap "Set up this car's Wi-Fi" button
-     * ([dev.headway.app.link.CarWifiProvisioning.addNetworksIntent]) needs an
-     * SSID and a passphrase, and both arrive over Bluetooth in the middle of a
-     * connection attempt — by the time the user is reading the settings screen,
-     * the service may not be running and the car may not be in range. Without
-     * this the button could only work during a live attempt, which is exactly
-     * when the user is not looking at it.
-     *
-     * On storing a passphrase: it goes in the app's private `SharedPreferences`,
-     * the same protection domain as the imported certificate key, and the point
-     * of the button is to hand it straight to Android's own Wi-Fi database
-     * where it will live anyway. `SessionLog` still scrubs it, so it cannot
-     * reach an exported log. It is cleared with [forgetCarWifi].
-     */
-    /**
      * Registers the car as a Wi-Fi suggestion, when the quirk file asks.
      *
      * The only public API that carries a MAC randomization preference, and
@@ -531,6 +514,24 @@ open class HeadwayService : Service() {
             "no longer asks for it")
     }
 
+    /**
+     * Keeps the car's Wi-Fi credentials for the settings screen to offer.
+     *
+     * The one-tap "Set up this car's Wi-Fi" button
+     * ([dev.headway.app.link.CarWifiProvisioning.addNetworksIntent]) needs an
+     * SSID and a passphrase, and both arrive over Bluetooth in the middle of a
+     * connection attempt — by the time the user is reading the settings screen,
+     * the service may not be running and the car may not be in range. Without
+     * this the button could only work during a live attempt, which is exactly
+     * when the user is not looking at it.
+     *
+     * On storing a passphrase: it goes in the app's private `SharedPreferences`,
+     * the same protection domain as the imported certificate key, and the point
+     * of the button is to hand it straight to Android's own Wi-Fi database
+     * where it will live anyway. `SessionLog` still scrubs it, so it cannot
+     * reach an exported log. The next handshake overwrites it; nothing else
+     * removes it short of clearing the app's data.
+     */
     private fun rememberCarWifi(
         ssid: String,
         passphrase: String,
@@ -1311,13 +1312,6 @@ open class HeadwayService : Service() {
     }
 
     /**
-     * Starts one optional subsystem, and lets it fail alone.
-     *
-     * Returns whether it started. The failure is narrated rather than thrown:
-     * the session is worth more than any one of these, and a driver whose
-     * microphone will not open should still have a car screen.
-     */
-    /**
      * Covers the phone screen for the drive, if the driver asked for it.
      *
      * Answers "can I hide the preview window Developer options puts up?" — yes,
@@ -1367,6 +1361,13 @@ open class HeadwayService : Service() {
         service.showBlackout()
     }
 
+    /**
+     * Starts one optional subsystem, and lets it fail alone.
+     *
+     * Returns whether it started. The failure is narrated rather than thrown:
+     * the session is worth more than any one of these, and a driver whose
+     * microphone will not open should still have a car screen.
+     */
     private inline fun startSubsystem(name: String, start: () -> Unit): Boolean =
         runCatching { start() }.fold(
             onSuccess = { true },
@@ -1651,24 +1652,6 @@ open class HeadwayService : Service() {
     }
 
     /**
-     * Puts every AAP frame in the exportable log, in hex.
-     *
-     * The Bluetooth handshake has had this since the beginning and it is what
-     * made every RFCOMM bug findable from a log alone. The TCP side had the hook
-     * and nothing wired to it, so a head unit that closed the session over one
-     * wrong flag bit produced an export in which the closure was visible and the
-     * cause was not.
-     *
-     * ## Why it is filtered rather than complete
-     *
-     * Video runs at 30 fps in fragments of up to `maxFragmentSize` (16 KB by
-     * default). Logging those would push everything else out of a 4000-line
-     * export within a couple of seconds and make the file useless for exactly
-     * the failures it exists to diagnose. So the media channels get a one-line
-     * summary and everything else gets bytes — bring-up is where the unknowns
-     * are, and bring-up is all low-rate control traffic.
-     */
-    /**
      * Channel names taken from what this head unit advertised, not from
      * [ChannelId].
      *
@@ -1756,6 +1739,24 @@ open class HeadwayService : Service() {
             .joinToString { "${it.key}=${it.value}" })
     }
 
+    /**
+     * Puts every AAP frame in the exportable log, in hex.
+     *
+     * The Bluetooth handshake has had this since the beginning and it is what
+     * made every RFCOMM bug findable from a log alone. The TCP side had the hook
+     * and nothing wired to it, so a head unit that closed the session over one
+     * wrong flag bit produced an export in which the closure was visible and the
+     * cause was not.
+     *
+     * ## Why it is filtered rather than complete
+     *
+     * Video runs at 30 fps in fragments of up to `maxFragmentSize` (16 KB by
+     * default). Logging those would push everything else out of a 4000-line
+     * export within a couple of seconds and make the file useless for exactly
+     * the failures it exists to diagnose. So the media channels get a one-line
+     * summary and everything else gets bytes — bring-up is where the unknowns
+     * are, and bring-up is all low-rate control traffic.
+     */
     private fun logFrame(
         direction: FramedConnection.Direction,
         header: dev.headway.protocol.framing.FrameHeader,
@@ -1905,8 +1906,7 @@ open class HeadwayService : Service() {
 
         const val ACTION_STOP: String = "dev.headway.app.action.STOP"
 
-        /** Bluetooth address of the car; omitted means "find it among the paired devices". */
-        /** Where the learned head-unit port lives. */
+        /** Where the learned head-unit port and the saved car link live. */
         private const val PREFS: String = "headway_link"
         private const val KEY_LEARNED_PORT: String = "learned_aap_port"
         private const val KEY_ACCEPTED_CERT: String = "accepted_certificate"
@@ -1916,13 +1916,6 @@ open class HeadwayService : Service() {
         private const val KEY_CAR_BSSID: String = "car_wifi_bssid"
         private const val KEY_SUGGESTED: String = "car_wifi_suggested"
 
-        /**
-         * Channels whose frames are summarised rather than dumped.
-         *
-         * Video at 30 fps and audio at 48 kHz would fill the export in seconds.
-         * Everything involved in bring-up -- and therefore everything currently
-         * unknown -- is control traffic on other channels.
-         */
         /**
          * The fallback filter, used until service discovery says otherwise.
          *
@@ -1987,15 +1980,6 @@ open class HeadwayService : Service() {
             context.getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getString(KEY_CAR_BSSID, null)
                 ?.takeIf { it.isNotEmpty() }
-
-        /** Drops the stored car credentials. */
-        fun forgetCarWifi(context: android.content.Context) {
-            context.getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .remove(KEY_CAR_SSID)
-                .remove(KEY_CAR_PASSPHRASE)
-                .remove(KEY_CAR_HIDDEN)
-                .apply()
-        }
 
         const val EXTRA_CAR_ADDRESS: String = "dev.headway.app.extra.CAR_ADDRESS"
 

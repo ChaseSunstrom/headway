@@ -100,12 +100,6 @@ data class TemplateApp(
 object TemplateApps {
 
     /**
-     * Every car app on the phone, by label.
-     *
-     * `MATCH_ALL` is deliberately not passed: a disabled component should not be
-     * offered, and the default match already excludes it.
-     */
-    /**
      * The car apps that say they are navigators, best first.
      *
      * This is what makes a Maps pane an actual map. A navigation car app is
@@ -125,6 +119,12 @@ object TemplateApps {
     fun navigators(context: Context): List<TemplateApp> =
         installed(context).filter { CarAppService.CATEGORY_NAVIGATION_APP in it.categories }
 
+    /**
+     * Every car app on the phone, by label.
+     *
+     * `MATCH_ALL` is deliberately not passed: a disabled component should not be
+     * offered, and the default match already excludes it.
+     */
     fun installed(context: Context): List<TemplateApp> {
         val packages = context.packageManager
         // The same gate as the app picker and the widget picker: an app reaches

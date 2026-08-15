@@ -170,11 +170,6 @@ class VideoPump(
         onStep("sent ${config.size} bytes of codec config to the head unit")
     }
 
-    /** Lets a reconnect start a fresh stream on the same pump. */
-    fun resetForNewStream() {
-        codecConfigSent = false
-    }
-
     fun close() {
         wakeup.close()
         synchronized(lock) { queue.clear() }

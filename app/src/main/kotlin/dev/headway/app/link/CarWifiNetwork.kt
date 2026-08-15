@@ -983,14 +983,6 @@ class CarWifiNetwork(
     }
 
     /**
-     * Opens a TCP socket bound to the car's network.
-     *
-     * Name resolution goes through [Network.getByName] rather than the default
-     * resolver for the same reason the socket is bound: the car's DNS (if any)
-     * is only reachable on that network. Head units advertise a literal address,
-     * so this normally resolves without a query at all.
-     */
-    /**
      * Points every socket this process opens at the car, until [close].
      *
      * ## Why this is not redundant with binding each socket
@@ -1070,6 +1062,14 @@ class CarWifiNetwork(
         }
     }
 
+    /**
+     * Opens a TCP socket bound to the car's network.
+     *
+     * Name resolution goes through [Network.getByName] rather than the default
+     * resolver for the same reason the socket is bound: the car's DNS (if any)
+     * is only reachable on that network. Head units advertise a literal address,
+     * so this normally resolves without a query at all.
+     */
     suspend fun openSocket(host: String, port: Int, connectTimeoutMillis: Int = 10_000): Socket {
         val joined = network ?: throw CarWifiException("not joined to the car's network")
         return withContext(Dispatchers.IO) {
@@ -1506,28 +1506,6 @@ class CarWifiNetwork(
                 .build()
 
         /**
-         * The request for the car's AP.
-         *
-         * `NET_CAPABILITY_INTERNET` is removed to document intent rather than
-         * because the builder adds it: `NetworkCapabilities.DEFAULT_CAPABILITIES`
-         * is `NOT_RESTRICTED | TRUSTED | NOT_VPN` (plus `NOT_BANDWIDTH_CONSTRAINED`
-         * on V+) and does not include it (`NetworkCapabilities.java` L798-L809),
-         * so the call is a no-op today. Keeping it is still right: a request
-         * that *did* carry `INTERNET` alongside a Wi-Fi specifier is rejected
-         * outright by `WifiNetworkFactory.acceptRequest`
-         * (`WifiNetworkFactory.java` L727-L733) — an immediate `onUnavailable`,
-         * not the validation timeout an earlier version of this comment
-         * described.
-         *
-         * Nothing else should be removed. The local-only agent keeps `TRUSTED`
-         * and `NOT_RESTRICTED` (`ClientModeImpl.getCapabilities` L5225-L5231),
-         * `NOT_VCN_MANAGED` is deduced onto the request automatically
-         * (`NetworkRequest.Builder.deduceNotVcnManagedCapability` L622-L628),
-         * and `NET_CAPABILITY_LOCAL_NETWORK` means "this device advertises
-         * addresses rather than obtaining them" — the car DHCPs the phone, so it
-         * does not apply.
-         */
-        /**
          * A line about the VPN, when one is up, or null.
          *
          * Static so the setup screen can say it *before* a drive rather than
@@ -1603,6 +1581,28 @@ class CarWifiNetwork(
             }.getOrDefault(emptyList())
         }
 
+        /**
+         * The request for the car's AP.
+         *
+         * `NET_CAPABILITY_INTERNET` is removed to document intent rather than
+         * because the builder adds it: `NetworkCapabilities.DEFAULT_CAPABILITIES`
+         * is `NOT_RESTRICTED | TRUSTED | NOT_VPN` (plus `NOT_BANDWIDTH_CONSTRAINED`
+         * on V+) and does not include it (`NetworkCapabilities.java` L798-L809),
+         * so the call is a no-op today. Keeping it is still right: a request
+         * that *did* carry `INTERNET` alongside a Wi-Fi specifier is rejected
+         * outright by `WifiNetworkFactory.acceptRequest`
+         * (`WifiNetworkFactory.java` L727-L733) — an immediate `onUnavailable`,
+         * not the validation timeout an earlier version of this comment
+         * described.
+         *
+         * Nothing else should be removed. The local-only agent keeps `TRUSTED`
+         * and `NOT_RESTRICTED` (`ClientModeImpl.getCapabilities` L5225-L5231),
+         * `NOT_VCN_MANAGED` is deduced onto the request automatically
+         * (`NetworkRequest.Builder.deduceNotVcnManagedCapability` L622-L628),
+         * and `NET_CAPABILITY_LOCAL_NETWORK` means "this device advertises
+         * addresses rather than obtaining them" — the car DHCPs the phone, so it
+         * does not apply.
+         */
         fun buildRequest(spec: Spec, maxPreferredChannels: Int = 0): NetworkRequest =
             NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
