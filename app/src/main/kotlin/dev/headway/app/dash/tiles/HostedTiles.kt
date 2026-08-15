@@ -88,11 +88,12 @@ import kotlin.math.max
  * a per-widget one.
  *
  * The dialog's result is not observed here, because a tile is not an `Activity`
- * and cannot call `startActivityForResult`. Instead the binding is retried at
- * the next [start], and the prompt is fired at most once per tile instance so a
- * driver who dismisses it is not shown it again every time the pane is
- * re-attached. A caller that *does* have an `Activity` — the widget picker —
- * should set [onBindPermissionNeeded] and drive the dialog properly.
+ * and cannot call `startActivityForResult`. It hands the whole job to
+ * `WidgetSetupActivity`, which can — and must, because the system's bind dialog
+ * refuses to draw for a caller it cannot identify, which is any caller that did
+ * not start it for a result. The binding is retried at the next [start], and the
+ * prompt is fired at most once per tile instance so a driver who dismisses it is
+ * not shown it again every time the pane is re-attached.
  *
  * ## What the leaf argument holds
  *
@@ -143,18 +144,6 @@ class WidgetTile(
     private var listening = false
     private var prompted = false
     private var state = "not started"
-
-    /**
-     * Where to send the system's bind-permission dialog, when a caller can do
-     * better than firing it blind.
-     *
-     * The default starts it on the phone's display and forgets about it. An
-     * `Activity` that sets this can use `startActivityForResult` and refresh the
-     * pane the moment the user answers, which is what the widget picker should
-     * do; a pane already on the car screen has no such option.
-     */
-    @Volatile
-    var onBindPermissionNeeded: ((Intent) -> Unit)? = null
 
     /**
      * An empty frame; the widget goes in at [start].
@@ -312,20 +301,29 @@ class WidgetTile(
         }
         if (!prompted) {
             prompted = true
-            val intent = bindPermissionIntent(widgetId, provider)
-            val hook = onBindPermissionNeeded
-            if (hook != null) {
-                hook(intent)
-            } else {
-                // The phone's own screen, always. This is a *system consent
-                // dialog* the user has to approve, not app content meant for
-                // the car, and startOnPhoneDisplay now resolves to the
-                // simulated display when one is in use — where the dialog would
-                // appear on a half-size preview window that swallows touches
-                // for panning, i.e. nowhere the user can reach.
-                startOnUserDisplay(context, intent, onStep)
-            }
-            onStep("asked the user to allow Headway to host widgets")
+            // Through WidgetSetupActivity, never straight to the system dialog.
+            //
+            // `ACTION_APPWIDGET_BIND` is only usable when it is started **for a
+            // result**: `AllowBindAppWidgetActivity` identifies its caller with
+            // `Activity.getCallingPackage()`, which is null for a plain
+            // `startActivity`, and with a null package its own
+            // `getApplicationInfo` lookup throws and its catch block calls
+            // `finish()`. It never draws. So this used to leave a pane saying it
+            // was waiting for a permission the driver was never asked for, on
+            // every drive, with no way out.
+            //
+            // The setup activity starts it properly, and `existingId` keeps the
+            // id this pane already stores so the layout does not have to change.
+            //
+            // Still the phone's own screen: this is a system consent dialog, not
+            // content for the car, and on a simulated display it would land on a
+            // half-size preview window that swallows touches for panning.
+            startOnUserDisplay(
+                context,
+                WidgetSetupActivity.intentFor(context, provider, existingId = widgetId),
+                onStep,
+            )
+            onStep("asked the user to allow Headway to host widget $widgetId")
         }
         return null
     }

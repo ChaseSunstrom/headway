@@ -49,11 +49,16 @@ private const val TAG = "HeadwayWidgets"
  *
  * ## What the driver has to do
  *
- * Usually nothing at all: once Headway has been approved as a widget host, once,
- * `bindAppWidgetIdIfAllowed` succeeds silently forever after and most widgets
- * have no configure activity. The first widget of the first drive costs one tap
- * on the phone. That is the cheapest this can be made — `BIND_APPWIDGET` is
- * `signature|privileged`, so there is no version of this that skips the dialog.
+ * One tap on the phone per widget, unless they tick **Always allow** in the
+ * system's dialog — which starts *unticked* for a first-time host, because
+ * AOSP's `AllowBindAppWidgetActivity` initialises that checkbox from
+ * `hasBindAppWidgetPermission`. Ticking it persists the grant and later adds are
+ * silent; not ticking it means the dialog appears every time, which is correct
+ * behaviour rather than a fault. Most widgets have no configure activity, so
+ * that dialog is usually the whole interaction.
+ *
+ * That is the cheapest this can be made: `BIND_APPWIDGET` is
+ * `signature|privileged`, so no version of this skips the dialog.
  *
  * ## Why the id is released on every path out
  *
@@ -82,7 +87,17 @@ class WidgetSetupActivity : AppCompatActivity() {
             return
         }
         provider = wanted
-        widgetId = WidgetTile.allocate(this) { SessionLog.shared.info(TAG, it) }
+        // A repair reuses the id the layout already stores; only a fresh add
+        // allocates. Without this, repairing a pane whose binding was lost would
+        // strand the old id and rewrite the layout for no reason.
+        val existing = intent?.getIntExtra(EXTRA_EXISTING_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
+            ?: AppWidgetManager.INVALID_APPWIDGET_ID
+        widgetId = if (existing != AppWidgetManager.INVALID_APPWIDGET_ID) {
+            SessionLog.shared.info(TAG, "repairing the binding for widget $existing")
+            existing
+        } else {
+            WidgetTile.allocate(this) { SessionLog.shared.info(TAG, it) }
+        }
         // Claimed before anything can run that sweeps orphans. Between allocate
         // and the save the id exists on the host and appears in no layout, which
         // is indistinguishable from an orphan -- and `releaseOrphanedWidgets`
@@ -192,6 +207,9 @@ class WidgetSetupActivity : AppCompatActivity() {
 
         private const val EXTRA_PROVIDER = "dev.headway.app.widget.PROVIDER"
 
+        /** An id to repair rather than allocate. See [intentFor]. */
+        private const val EXTRA_EXISTING_ID = "dev.headway.app.widget.EXISTING_ID"
+
         /**
          * The request code for the provider's configure activity.
          *
@@ -202,10 +220,29 @@ class WidgetSetupActivity : AppCompatActivity() {
          */
         private const val REQUEST_CONFIGURE = 0x4857
 
-        /** The intent that adds [provider] as a widget, from anywhere. */
-        fun intentFor(context: Context, provider: ComponentName): Intent =
+        /**
+         * The intent that adds [provider] as a widget, from anywhere.
+         *
+         * @param existingId an id to re-bind instead of allocating a new one —
+         *   how a *repair* runs, keeping the id the layout already stores.
+         *
+         * A repair has to come through here rather than firing the system dialog
+         * directly. That dialog identifies its caller with
+         * `Activity.getCallingPackage()`, which is null unless it was started
+         * **for a result**; with a null package its own `getApplicationInfo`
+         * lookup throws and its catch block calls `finish()`. So a plain
+         * `startActivity` of `ACTION_APPWIDGET_BIND` shows the driver nothing at
+         * all — the pane just says it is waiting for a permission nobody was
+         * ever asked for.
+         */
+        fun intentFor(
+            context: Context,
+            provider: ComponentName,
+            existingId: Int = AppWidgetManager.INVALID_APPWIDGET_ID,
+        ): Intent =
             Intent(context, WidgetSetupActivity::class.java)
                 .putExtra(EXTRA_PROVIDER, provider.flattenToString())
+                .putExtra(EXTRA_EXISTING_ID, existingId)
                 .addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_CLEAR_TOP or
