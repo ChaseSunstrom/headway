@@ -3,24 +3,52 @@ Android and on-device gate passed before this was published.
 
 ## What is new in this build
 
-**The car screen is panels now, and one of them is a real app.**
+**Your car's own readings, a rail you can move, and touch that works.**
 
-- A **rail** across the top: settings, the microphone, and the
-  layouts and apps *you* pinned. Nothing else.
-- **Panels** in any arrangement, any depth, edited on the car screen
-  itself — settings there, then *Edit this layout* — and locked by
-  default so a thumb on the dashboard cannot rearrange your car.
-- An **App panel** that shows a real app running, with touch going
-  back to it. Opening an app no longer replaces the whole car screen.
+- A **Car panel**: speed, revs, fuel, range, tyre pressures, outside
+  temperature and the odometer, straight off the head unit's sensor
+  channel. Which readings appear is your car's choice — it advertises
+  what it has and Headway subscribes to all of it. It is on the default
+  layout now. (Oil pressure, oil level and coolant are *not* in the
+  Android Auto sensor set at all; they are OBD-II, and no amount of app
+  can conjure them.)
+- **The rail moves.** Any of the four edges, five sizes, and the clock
+  on it with or without the date — from the car screen's settings,
+  under *Rail*. The sizes start at 100% and go up: the buttons are
+  already the smallest a moving car allows.
+- **Touch works again.** The phone-screen cover was a full-screen
+  overlay that accepted touches, and it sat above everything — so it
+  swallowed every gesture coming from the car. Nothing on the car
+  screen responded. It no longer takes touches, and the way back to
+  your phone is **Show phone screen** on Headway's notification or the
+  car screen's settings.
+- **Widgets add properly.** "Unable to add widget" was Headway
+  deleting the widget the system had just bound for it, on every first
+  add. A widget panel is also the way to have **several different apps
+  on screen at once** — screen sharing gives one app at a time, four
+  widget panels are four apps drawing simultaneously.
+- **Any car app in a panel.** The picker lists every car app you have
+  installed and asks for the grant on the one you tap, rather than
+  hiding the ones you had not ticked yet with nothing to say why.
+- **The link gives up when you walk away.** It stops on the car's
+  Bluetooth disconnecting, and after a run of failed attempts, instead
+  of retrying for the rest of the day.
 - **Themes**: dark, true black or light, with six accents including
-  none at all.
-- The link **comes up on its own** when the car's Bluetooth appears,
-  and starts nothing on the phone's screen while doing it.
+  none at all. **Panels** in any arrangement and depth, edited on the
+  car screen and locked by default.
 
 Apps render from the phone's own screen by default — nothing to turn
 on in Developer options, nothing to toggle per drive. The simulated
 display is still there if you want a car-shaped picture, under
 settings → Apps and panels, along with fit-or-crop for the panel.
+
+**Known limits, stated plainly.** The phone-screen cover cannot accept
+touches — that is what broke the car's input — so the app underneath
+still answers a real finger on a screen you cannot see; keep the phone
+somewhere it will not be pressed. And Android 15 and later stop screen
+sharing whenever the phone locks, unconditionally, with no way for an
+app to opt out: Headway notices and offers it back rather than
+pretending otherwise.
 
 ## Before you install this
 
