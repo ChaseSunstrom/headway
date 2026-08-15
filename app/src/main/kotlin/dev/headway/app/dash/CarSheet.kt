@@ -54,20 +54,6 @@ class CarSheet(
 ) {
 
     /** One row. [detail] is optional; [selected] fills the row in the accent. */
-    /**
-     * A heading between groups of rows.
-     *
-     * A sheet of nine equally weighted rows is a list the driver has to read
-     * end to end every time. Headings turn it into four groups they can skip,
-     * which matters more here than in an app: this is read at a glance, in a
-     * car, often while the engine is running.
-     *
-     * Modelled as a [Row] rather than a second type so a caller can build one
-     * list in one order, and `build` renders it as a label instead of a target.
-     * A section is never pressable, so its `onChosen` is never called.
-     */
-    fun section(title: String): Row = Row(title = title, isSection = true) {}
-
     data class Row(
         val title: String,
         val detail: String? = null,
@@ -256,9 +242,33 @@ class CarSheet(
         return holder
     }
 
-    private companion object {
+    companion object {
+
+        /**
+         * A heading between groups of rows.
+         *
+         * A sheet of nine equally weighted rows is a list the driver has to read
+         * end to end every time. Headings turn it into four groups they can
+         * skip, which matters more here than in an app: this is read at a
+         * glance, in a car, often while the engine is running.
+         *
+         * Modelled as a [Row] rather than a second type so a caller can build
+         * one list in one order, and `build` renders it as a label instead of a
+         * target. A section is never pressable, so its `onChosen` is never
+         * called.
+         *
+         * On the companion, not the instance: callers write
+         * `CarSheet.section(...)` beside `CarSheet.Row(...)`, and the second of
+         * those works only because `Row` is a nested *class*. A function needs
+         * to be here to be reachable the same way.
+         */
+        fun section(title: String): Row = Row(title = title, isSection = true) {}
+
+        // The companion had to become public so `section` is reachable the way
+        // `Row` is; these stay private, because they are this file's business.
+
         /** Dark enough that the dashboard behind reads as "not now". */
-        const val SCRIM = 0xCC05070A.toInt()
-        const val CHIP_TEXT = 0.30f
+        private const val SCRIM = 0xCC05070A.toInt()
+        private const val CHIP_TEXT = 0.30f
     }
 }
