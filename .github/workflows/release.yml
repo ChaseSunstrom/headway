@@ -1,0 +1,150 @@
+# This file is part of Headway.
+# Copyright (C) 2026 The Headway Authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: Release
+
+# Publishing is what `main` is for: `development` is where work lands and the
+# full suite runs, and a fast-forward of `main` is the act of shipping it.
+# `workflow_dispatch` is the manual escape, guarded to `main` so a dispatch on a
+# feature branch cannot mint a tag.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never cancel a release. A half-published tag with no APKs attached is worse
+# than a queued one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  gates:
+    name: Full suite before publishing
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish the APKs as a release
+    needs: [gates]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history, so `git rev-parse --short HEAD` names the commit
+          # the APK was actually built from rather than a shallow stand-in.
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-build
+        with:
+          android: "true"
+
+      # ------------------------------------------------------------------
+      # The build number, which is NOT github.run_number any more.
+      #
+      # It used to be, while one workflow published everything. Splitting the
+      # release into its own file resets that counter to 1 -- and 1 is a
+      # *downgrade* from the build already installed on a driver's phone.
+      # Android refuses to install an APK whose versionCode goes backwards, and
+      # the in-app updater compares the build number in the tag, so the symptom
+      # would be every existing install silently stopping at the last good
+      # release with no error anyone could see.
+      #
+      # So it is derived from what has actually been published: the highest
+      # build number among existing tags, plus one. `github.run_number` is the
+      # floor, so a repository with no releases yet still moves forward.
+      # ------------------------------------------------------------------
+      - name: Work out the next build number
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          highest=$(gh release list --limit 100 --json tagName --jq '.[].tagName' \
+            | sed -n 's/.*build\.\([0-9][0-9]*\)$/\1/p' \
+            | sort -n | tail -1)
+          highest=${highest:-0}
+          floor=${{ github.run_number }}
+          next=$(( highest + 1 ))
+          if [ "$next" -lt "$floor" ]; then next=$floor; fi
+          echo "highest published build: $highest; using: $next"
+          echo "number=$next" >> "$GITHUB_OUTPUT"
+
+      # HEADWAY_BUILD_NUMBER becomes the APK's versionCode, and it has to match
+      # the build number in the tag: the updater compares tags and Android
+      # compares versionCodes, and an update where those disagree either never
+      # gets offered or is refused as a downgrade.
+      - name: Assemble both APKs
+        env:
+          HEADWAY_BUILD_NUMBER: ${{ steps.build.outputs.number }}
+        run: ./gradlew :app:assembleHostDebug :app:assembleCompatDebug
+
+      - name: Check the two APKs claim what they should
+        run: tools/check-install-claims.sh
+
+      - name: Name the artifacts after what they actually are
+        id: name
+        run: |
+          set -euo pipefail
+          version=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
+          sha=$(git rev-parse --short HEAD)
+          build=${{ steps.build.outputs.number }}
+          # A dot before the build number would read as a version segment; a
+          # dash keeps the build identifier visibly separate from the version.
+          #
+          # The variant is the LAST segment before .apk on purpose:
+          # ReleaseCatalog.chooseApk matches on the "-host.apk"/"-compat.apk"
+          # suffix so an update keeps the variant it started on. Renaming these
+          # without changing that function silently sends every updater down the
+          # single-APK fallback.
+          echo "tag=v${version}-build.${build}" >> "$GITHUB_OUTPUT"
+          echo "stem=headway-${version}-build${build}-${sha}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage both APKs
+        run: |
+          set -euo pipefail
+          cp app/build/outputs/apk/host/debug/app-host-debug.apk \
+             "${{ steps.name.outputs.stem }}-host.apk"
+          cp app/build/outputs/apk/compat/debug/app-compat-debug.apk \
+             "${{ steps.name.outputs.stem }}-compat.apk"
+          ls -l "${{ steps.name.outputs.stem }}"-*.apk
+
+      # Uses the preinstalled GitHub CLI rather than a third-party action. This
+      # job holds contents:write, so it is the last place to take on a
+      # supply-chain dependency that could rewrite the repository.
+      #
+      # The notes are a checked-in file rather than a heredoc in this workflow:
+      # they are prose about the app, they were drifting out of step with the
+      # README while living here, and a document nobody can review in a diff of
+      # its own is a document nobody reviews.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cp .github/release-notes/body.md notes.md
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "Build ${{ steps.name.outputs.build }} from commit \`${{ steps.name.outputs.sha }}\`."
+          } >> notes.md
+
+          gh release create "${{ steps.name.outputs.tag }}" \
+            "${{ steps.name.outputs.stem }}-host.apk" \
+            "${{ steps.name.outputs.stem }}-compat.apk" \
+            --title "Headway ${{ steps.name.outputs.version }} (build ${{ steps.name.outputs.build }})" \
+            --notes-file notes.md \
+            --prerelease \
+            --target "$GITHUB_SHA"

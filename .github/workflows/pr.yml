@@ -1,0 +1,105 @@
+# This file is part of Headway.
+# Copyright (C) 2026 The Headway Authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: PR
+
+# The fast gate. Everything here runs on a stock runner in a few minutes, so a
+# pull request gets an answer while its author is still looking at it; the full
+# suite, including the emulator, runs on `development` after the merge.
+on:
+  pull_request:
+    branches: [main, development]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".gitignore"
+
+permissions:
+  contents: read
+
+# A second push to the same PR cancels the first. The only thing the older run
+# can still tell anyone is whether a commit nobody will merge was green.
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: Licence headers and tracked TODOs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # No JDK and no SDK on purpose: these are shell scripts over the source
+      # tree, and they are the two gates that can fail in fifteen seconds.
+      - run: tools/check-license-headers.sh
+      - run: tools/check-todos.sh
+
+  jvm:
+    name: Protocol, transport, voice, dash and the emulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build
+
+      # One invocation for every pure-JVM module. `tools/jvm-only` is a second
+      # settings file holding exactly the modules that do not need the Android
+      # plugin, which is what lets this run with no SDK at all.
+      - name: JVM modules
+        run: ./gradlew -p tools/jvm-only test
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr-jvm-test-reports
+          path: "**/build/reports/tests/"
+          retention-days: 7
+
+  android:
+    name: Both APKs build and claim what they should
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build
+        with:
+          android: "true"
+
+      - name: Assemble both debug APKs
+        env:
+          HEADWAY_BUILD_NUMBER: ${{ github.run_number }}
+        run: ./gradlew :app:assembleHostDebug :app:assembleCompatDebug
+
+      # Run against the BUILT APKs rather than the manifest sources: ADR 0009
+      # turns on the two variants differing by exactly two manifest names, and
+      # only the built artifact proves the merger produced them.
+      - name: The two APKs claim what they should
+        run: tools/check-install-claims.sh
+
+      - name: Android unit tests
+        run: ./gradlew :app:testHostDebugUnitTest
+
+      - name: No Google Play services anywhere
+        run: ./gradlew checkNoGms
+
+  # One required status check for branch protection, so adding or renaming a job
+  # above never means editing the protection rule.
+  gate:
+    name: PR gate
+    runs-on: ubuntu-latest
+    needs: [hygiene, jvm, android]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every gate passed
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "upstream results: $results"
+          for r in $results; do
+            [ "$r" = "success" ] || { echo "a required gate did not pass"; exit 1; }
+          done
+          echo "every gate passed"

@@ -1,0 +1,37 @@
+# This file is part of Headway.
+# Copyright (C) 2026 The Headway Authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: Set up a Headway build
+description: >-
+  JDK 17, Gradle with its cache, and optionally the Android SDK. Every job
+  needs the first two and four of them need the third, so the preamble lives
+  here rather than being copied seven times.
+
+inputs:
+  android:
+    description: Also install the Android SDK. Only the jobs that build the APK need it.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: "17"
+
+    - name: Set up the Android SDK
+      if: inputs.android == 'true'
+      uses: android-actions/setup-android@v3
+
+    # Only the integration and release branches may write the Gradle cache.
+    # A feature branch that writes it can evict entries the branches everyone
+    # else builds from depend on, which shows up as unexplained slow builds
+    # on main rather than as a failure on the branch that caused it.
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@v4
+      with:
+        cache-read-only: ${{ github.ref_name != 'development' && github.ref_name != 'main' }}
