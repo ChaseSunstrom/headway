@@ -20,6 +20,7 @@ package dev.headway.app.ui
 import android.content.Context
 import android.content.SharedPreferences
 import dev.headway.dash.AllowedApps
+import dev.headway.dash.CarUiScale
 import dev.headway.dash.CarUnits
 import dev.headway.dash.RailStyle
 
@@ -264,6 +265,33 @@ object HeadwaySettings {
     /** Whether [packageName] may be put on the car screen at all. */
     fun allowsApp(context: Context, packageName: String?): Boolean =
         AllowedApps.allows(allowedApps(context), packageName)
+
+    /**
+     * Per-app panel scale, as `CarUiScale` JSON. See `CarUiScale`.
+     *
+     * One map rather than a key per package, so a driver who has sized four
+     * apps has one preference rather than four, and clearing it is one delete.
+     */
+    const val KEY_APP_UI_SCALE: String = "app_ui_scale"
+
+    /** Every app's chosen panel scale. */
+    fun appUiScales(context: Context): Map<String, Float> =
+        CarUiScale.readAll(
+            runCatching { of(context).getString(KEY_APP_UI_SCALE, null) }.getOrNull(),
+        )
+
+    /** The panel scale for [packageName], or 1.0. */
+    fun appUiScale(context: Context, packageName: String?): Float =
+        CarUiScale.forApp(appUiScales(context), packageName)
+
+    fun setAppUiScale(context: Context, packageName: String, scale: Float) {
+        if (packageName.isBlank()) return
+        runCatching {
+            val next = appUiScales(context).toMutableMap()
+            if (scale == CarUiScale.DEFAULT) next.remove(packageName) else next[packageName] = scale
+            of(context).edit().putString(KEY_APP_UI_SCALE, CarUiScale.writeAll(next)).apply()
+        }
+    }
 
     /** The chosen music app's package, or null to open on the app list. */
     fun mediaApp(context: Context): String? =

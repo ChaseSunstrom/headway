@@ -1066,6 +1066,24 @@ class CarShell(
 
     private fun sheet(): CarSheet = CarSheet(context, metrics)
 
+    /**
+     * A sheet a *tile* wants to show, which it cannot build for itself.
+     *
+     * A tile has the context of its own pane and no access to the shell's
+     * overlay host, so anything it needs to ask has to come through here. Kept
+     * to a title, a sentence and a row of chips because that is what the callers
+     * need; a tile that wants more should be asking for less.
+     */
+    fun showSheet(title: String, detail: String?, chips: List<CarSheet.Row>) {
+        val rows = detail?.let { listOf(CarSheet.Row(it, null) {}) }.orEmpty()
+        showOverlay(
+            sheet().build(title = title, rows = rows, chips = chips, onClose = ::closeOverlay),
+        )
+    }
+
+    /** Closes whatever [showSheet] opened. */
+    fun closeSheet() = closeOverlay()
+
     private fun showOverlay(view: View) {
         overlayHost.removeAllViews()
         overlayHost.addView(view)
@@ -1107,6 +1125,15 @@ class CarShell(
         rows += CarSheet.Row("The rail", railStyle.describe()) { showRailStyle() }
         rows += CarSheet.Row("Pinned", "What sits on the rail, and in what order") { showRailEditor() }
         rows += CarSheet.Row("Units", unitsSummary()) { showUnits() }
+        // Only while a car app is actually open, because the size is that app's
+        // and the sentence would be meaningless without one. The pane itself has
+        // no room for a control -- it is full of somebody else's map.
+        live.filterIsInstance<CarAppTile>().firstOrNull { it.openAppLabel != null }?.let { tile ->
+            rows += CarSheet.Row(
+                title = "${tile.openAppLabel} size",
+                detail = "How large it draws inside its panel",
+            ) { tile.showScalePicker() }
+        }
 
         rows += CarSheet.section("This drive")
         if (HeadwayAccessibilityService.instance.value?.covering == true) {

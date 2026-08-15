@@ -19,6 +19,7 @@ package dev.headway.app.dash.tiles
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.res.Configuration
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -30,16 +31,18 @@ import android.widget.ScrollView
 import androidx.car.app.model.Template
 import dev.headway.app.carapp.CarAppSession
 import dev.headway.app.carapp.CarHostCapability
-import dev.headway.app.media.MediaApps
 import dev.headway.app.carapp.HostState
 import dev.headway.app.carapp.TemplateApp
 import dev.headway.app.carapp.TemplateApps
 import dev.headway.app.carapp.TemplateRenderer
+import dev.headway.app.dash.CarSheet
 import dev.headway.app.dash.CarShell
 import dev.headway.app.dash.DashTile
+import dev.headway.app.media.MediaApps
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
 import dev.headway.dash.AllowedApps
+import dev.headway.dash.CarUiScale
 import dev.headway.dash.PaneKind
 
 /**
@@ -294,8 +297,35 @@ class CarAppTile(
         picker?.visibility = View.GONE
         pickerScroller?.visibility = View.GONE
 
-        val next = CarAppSession(appContext, app, onStep)
-        val drawing = TemplateRenderer(frame.context, next, onStep) { leave() }
+        // One number, two places. The density decides how large the *app* draws
+        // its map into the surface, and -- through a configuration-wrapped
+        // context -- how large *Headway* draws the template chrome over it,
+        // because every size in `CarStyle` is a dp or sp literal resolved
+        // against whatever context it is handed. Wrapping is what makes one
+        // setting move both with no call site changed.
+        val scale = HeadwaySettings.appUiScale(appContext, app.packageName)
+        val carDensity = frame.context.resources.configuration.densityDpi
+        val scaled = CarUiScale(app.packageName, scale).densityFor(carDensity)
+        val uiContext = if (scaled == carDensity) {
+            frame.context
+        } else {
+            runCatching {
+                frame.context.createConfigurationContext(
+                    Configuration(frame.context.resources.configuration).apply {
+                        densityDpi = scaled
+                        fontScale = 1f
+                    },
+                )
+            }.getOrDefault(frame.context)
+        }
+        if (scaled != carDensity) {
+            onStep(
+                "car app: ${app.label} drawing at ${CarUiScale.percentOf(scale)} " +
+                    "($scaled dpi against the car's $carDensity)"
+            )
+        }
+        val next = CarAppSession(appContext, app, densityDpi = scaled, onStep = onStep)
+        val drawing = TemplateRenderer(uiContext, next, onStep) { leave() }
         session = next
         renderer = drawing
         frame.addView(
@@ -303,6 +333,43 @@ class CarAppTile(
             FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT),
         )
         next.connect(listener)
+    }
+
+    /**
+     * Chooses how large this app draws inside its panel.
+     *
+     * Per app, because the thing being scaled is somebody else's rendering: a
+     * map that reads well at 100% sits beside a messenger whose rows are twice
+     * the height they need. Reopens the session, because the density is sent
+     * once at `onAppCreate` and the app builds its renderer from it -- there is
+     * no protocol message for "you are a different size now" short of
+     * `onConfigurationChanged`, which not every app honours.
+     */
+    /** The open app's label, or null when this pane is showing its picker. */
+    val openAppLabel: String? get() = chosen?.label
+
+    fun showScalePicker() {
+        val open = chosen ?: return
+        val shell = CarShell.active() ?: return
+        val current = HeadwaySettings.appUiScale(appContext, open.packageName)
+        val chips = CarUiScale.CHOICES.map { choice ->
+            CarSheet.Row(
+                title = CarUiScale.percentOf(choice),
+                selected = kotlin.math.abs(current - choice) < 0.001f,
+            ) {
+                HeadwaySettings.setAppUiScale(appContext, open.packageName, choice)
+                shell.closeSheet()
+                onStep("car app: ${open.label} set to ${CarUiScale.percentOf(choice)}")
+                // Reopened rather than re-rendered; see the KDoc.
+                open(open)
+            }
+        }
+        shell.showSheet(
+            title = "${open.label} size",
+            detail = "How large this app draws inside its panel — its map, its " +
+                "markers and its text, and Headway's controls over them.",
+            chips = chips,
+        )
     }
 
     private fun closeSession() {

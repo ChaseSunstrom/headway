@@ -744,8 +744,9 @@ internal object SharedWidgetHost {
  * needs one, the tile drawing here should be lifted out of both and this note
  * deleted.
  *
- * The pane also listens for changes to that key, so pinning an app on the phone
- * updates the car screen without a reconnect.
+ * The pane also listens for changes to that key *and* to the allow list, so
+ * allowing an app on the phone updates the car screen without a reconnect --
+ * which is what the empty state tells the driver to go and do.
  *
  * ## Sizing, which is simpler here than in the launcher activity
  *
@@ -783,7 +784,18 @@ class LauncherTile(
         // the main thread — inline when the write came from it, posted to the main
         // handler otherwise — and the dashboard's views are the main thread's even
         // though they are drawn on the car's display rather than the phone's.
-        if (key == null || key == HeadwaySettings.KEY_PINNED_APPS) populate()
+        // The allow list as well as the pins, because the grid now filters by
+        // it. Adding that filter without adding this key meant a driver who
+        // followed the pane's own instructions -- "open Headway on the phone,
+        // then Apps allowed on the car screen" -- came back to the identical
+        // sentence, because the one action it named was the one action that did
+        // not refresh anything.
+        if (key == null ||
+            key == HeadwaySettings.KEY_PINNED_APPS ||
+            key == HeadwaySettings.KEY_ALLOWED_APPS
+        ) {
+            populate()
+        }
     }
 
     override fun createView(context: Context): View {
@@ -860,7 +872,13 @@ class LauncherTile(
                         "No apps allowed on the car screen yet. Open Headway on the phone, " +
                             "then Apps allowed on the car screen."
                     } else {
-                        "No apps pinned yet. Choose some in Headway on the phone."
+                        // Not "pin some apps": nothing in this build writes
+                        // KEY_PINNED_APPS, so that sentence named a screen that
+                        // does not exist. This branch is reachable only when
+                        // apps are allowed and none of them is launchable --
+                        // a car app with no launcher entry, or one uninstalled
+                        // since it was allowed.
+                        "None of the allowed apps can be opened from a launcher."
                     },
                 )
                     .apply {

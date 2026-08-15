@@ -140,6 +140,22 @@ enum class HostState {
 class CarAppSession(
     context: Context,
     val app: TemplateApp,
+    /**
+     * The density the app should draw at, in dpi.
+     *
+     * This is the car's density times the driver's per-app scale, and it is
+     * **not** the phone's. `onAppCreate` used to send
+     * `appContext.resources.configuration` -- the *application* context's, which
+     * is the phone's screen -- so an app sized its map markers, road labels and
+     * location arrow for a 420 or 560 dpi handset and drew them on a 160 dpi car
+     * panel. Everything the app rendered came out about three times too large
+     * while Headway's own chrome, drawn from the car display's context, was
+     * correct. A driver reported it as the location triangle being enormous.
+     *
+     * Zero or less means "use the context's own", which is what a caller with
+     * nothing better to say should pass.
+     */
+    private val densityDpi: Int = 0,
     private val onStep: (String) -> Unit = {},
 ) {
 
@@ -342,7 +358,18 @@ class CarAppSession(
     private fun onHandshakeDone() {
         val remote = carApp ?: return
         val launch = Intent(Intent.ACTION_MAIN).setComponent(app.service)
-        val configuration = Configuration(appContext.resources.configuration)
+        // Built from the *car* display's configuration, with the driver's scale
+        // applied. See [densityDpi].
+        val configuration = Configuration(appContext.resources.configuration).apply {
+            if (densityDpi > 0) {
+                this.densityDpi = densityDpi
+                // `fontScale` is the phone's accessibility text size, which has
+                // no business deciding how large a car app draws on a panel the
+                // driver is looking at from a metre away. The panel scale is the
+                // control for that.
+                fontScale = 1f
+            }
+        }
         send("onAppCreate") {
             remote.onAppCreate(
                 CarHost(),
