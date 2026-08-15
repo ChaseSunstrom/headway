@@ -1232,6 +1232,7 @@ open class HeadwayService : Service() {
         val sensors = CarSensorStream.of(
             profile = profile,
             connectionFor = connectionFor,
+            odometerScale = sessionQuirks.odometerScale,
             onStep = ::step,
         )
         if (sensors == null) {

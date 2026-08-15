@@ -194,12 +194,39 @@ data class CarSensors(
         fun temperatureFromE3(temperatureE3: Int): Double = temperatureE3 / 1000.0
 
         /**
-         * `OdometerData.kms_e1` is **kilometres** times 10, not metres.
+         * Kilometres from `OdometerData.kms_e1`, at [scale] tenths per kilometre.
          *
-         * The field name says so and it is worth restating: reading it as metres
-         * puts a car with 200 000 km on the clock at 20 km, which looks like a
-         * plausible trip meter rather than an obvious unit error.
+         * ## Why this is not simply `/ 10.0`
+         *
+         * The field name says `_e1`, and every other scaled field in the sensor
+         * set follows that convention exactly — `speed_e3`, `rpm_e3`,
+         * `temperature_e3`, `pressure_e2` are all value times ten to the N. So
+         * kilometres times ten is what the reverse-engineered schema says, and
+         * it is the default here.
+         *
+         * A real 2021 Chevrolet Infotainment 3 unit disagrees. Its driver
+         * reported the pane reading **exactly one hundred times** their real
+         * odometer, which puts that unit's raw value at kilometres times a
+         * thousand — metres — whatever the field is called. One hundred is not a
+         * number that arrives by accident, and it is the difference between
+         * `_e1` and `_e3`.
+         *
+         * CLAUDE.md's rule for exactly this situation is to implement the
+         * documented behaviour, make it configurable, and log loudly. So the
+         * schema's reading stays the default, the divisor is a quirk, and
+         * `SensorChannel` logs the raw value beside the converted one so a
+         * single drive's log settles it for any other car.
+         *
+         * @param scale tenths of a kilometre per raw unit: 1 for the schema's
+         *   `_e1`, 1000 for a unit that sends metres.
          */
-        fun odometerKmFromE1(kmsE1: Int): Double = kmsE1 / 10.0
+        fun odometerKmFromE1(kmsE1: Int, scale: Int = ODOMETER_SCALE_E1): Double =
+            kmsE1 / (10.0 * scale.coerceAtLeast(1))
+
+        /** The schema's reading: `kms_e1` really is kilometres times ten. */
+        const val ODOMETER_SCALE_E1: Int = 1
+
+        /** A unit whose `kms_e1` carries metres, which is a hundred times finer. */
+        const val ODOMETER_SCALE_METERS: Int = 100
     }
 }

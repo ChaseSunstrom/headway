@@ -264,6 +264,13 @@ class SensorChannel(
      */
     val advertised: List<SensorType> = emptyList(),
     /**
+     * Tenths of a kilometre per raw `kms_e1` unit. See [CarSensors.odometerKmFromE1].
+     *
+     * A quirk rather than a constant because a real head unit contradicts the
+     * schema by exactly a factor of a hundred. Defaults to the schema.
+     */
+    val odometerScale: Int = CarSensors.ODOMETER_SCALE_E1,
+    /**
      * `SensorRequest.min_update_period`, sent with every request.
      *
      * **No reference states its unit and none states a value.** The field is a
@@ -323,6 +330,9 @@ class SensorChannel(
      */
     var batchesWithNothingKnown: Long = 0L
         private set
+
+    /** Said once per session; a per-batch line would drown the log. */
+    private var odometerLogged: Boolean = false
 
     /** `SENSOR_MESSAGE_ERROR`s received. */
     var errorsReceived: Long = 0L
@@ -519,6 +529,7 @@ class SensorChannel(
             services: List<aap_protobuf.service.ServiceOuterClass.Service>,
             connectionFor: (Int) -> MessageChannel,
             minUpdatePeriod: Long = NO_UPDATE_CAP,
+            odometerScale: Int = CarSensors.ODOMETER_SCALE_E1,
             onStep: (String) -> Unit = {},
         ): SensorChannel? {
             val service = sensorServiceOf(services) ?: return null
@@ -532,6 +543,7 @@ class SensorChannel(
                 channelId = service.id,
                 advertised = sensors,
                 minUpdatePeriod = minUpdatePeriod,
+                odometerScale = odometerScale,
                 onStep = onStep,
             )
         }
@@ -583,8 +595,19 @@ class SensorChannel(
          * and `tire_pressures_e2` "stores kPa in hundredths"
          * (`aa-proxy-rs/src/mitm.rs`, `send_odometer_data` and
          * `send_tire_pressure_data`).
+         *
+         * The odometer's is nonetheless a parameter, because a real 2021
+         * Chevrolet Infotainment 3 unit reads exactly a hundred times high under
+         * the documented scale — its raw value is metres whatever the field is
+         * called. [odometerScale] is that quirk; see
+         * [CarSensors.odometerKmFromE1]. The raw value is logged beside the
+         * converted one so a drive's log settles it for any other car rather
+         * than needing another round of guessing.
          */
-        fun decodeBatch(batch: SensorBatch): CarSensors {
+        fun decodeBatch(
+            batch: SensorBatch,
+            odometerScale: Int = CarSensors.ODOMETER_SCALE_E1,
+        ): CarSensors {
             val speed = batch.speedDataList.lastOrNull()
             val rpm = batch.rpmDataList.lastOrNull()
             val fuel = batch.fuelDataList.lastOrNull()
@@ -620,7 +643,7 @@ class SensorChannel(
                     ?.let { CarSensors.temperatureFromE3(it.temperatureE3) },
                 odometerKm = odometer
                     ?.takeIf { it.hasKmsE1() }
-                    ?.let { CarSensors.odometerKmFromE1(it.kmsE1) },
+                    ?.let { CarSensors.odometerKmFromE1(it.kmsE1, odometerScale) },
                 parkingBrake = brake?.takeIf { it.hasParkingBrake() }?.parkingBrake,
                 nightMode = night?.takeIf { it.hasNightMode() }?.nightMode,
                 drivingStatus = driving?.takeIf { it.hasStatus() }?.status,

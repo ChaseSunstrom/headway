@@ -225,6 +225,8 @@ class CarSensorStream(
         fun of(
             profile: HeadUnitProfile,
             connectionFor: (Int) -> MessageChannel,
+            /** See `HeadUnitQuirks.odometerScale`. */
+            odometerScale: Int = CarSensors.ODOMETER_SCALE_E1,
             onStep: (String) -> Unit = {},
         ): CarSensorStream? {
             val service = sensorServiceOf(profile) ?: return null
@@ -234,7 +236,12 @@ class CarSensorStream(
             // advertisement and logs it, so the constant lambda below is only
             // saying "you already have your connection".
             val view = connectionFor(service.id)
-            val channel = SensorChannel.of(profile.services, { view }, onStep = onStep) ?: return null
+            val channel = SensorChannel.of(
+                services = profile.services,
+                connectionFor = { view },
+                odometerScale = odometerScale,
+                onStep = onStep,
+            ) ?: return null
             return CarSensorStream(channel = channel, view = view, onStep = onStep)
         }
     }

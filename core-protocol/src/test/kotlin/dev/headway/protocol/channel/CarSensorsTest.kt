@@ -72,6 +72,16 @@ class CarSensorsTest {
         // The trap: read as metres this is 20 km, which looks like a trip meter
         // rather than an obviously wrong odometer.
         assertEquals(200_000.0, CarSensors.odometerKmFromE1(2_000_000), 0.001)
+        // The same raw value on a unit that sends metres. A hundred times
+        // finer, which is exactly the error a driver reported from a real car.
+        assertEquals(
+            2_000.0,
+            CarSensors.odometerKmFromE1(2_000_000, CarSensors.ODOMETER_SCALE_METERS),
+            0.001,
+        )
+        // A nonsense scale must not divide by zero or flip the sign.
+        assertEquals(200_000.0, CarSensors.odometerKmFromE1(2_000_000, 0), 0.001)
+        assertEquals(200_000.0, CarSensors.odometerKmFromE1(2_000_000, -5), 0.001)
     }
 
     @Test

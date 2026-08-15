@@ -50,6 +50,7 @@ import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
 import dev.headway.app.video.CarAppDisplay
 import dev.headway.dash.DashNode
+import dev.headway.dash.AllowedApps
 import dev.headway.dash.PaneKind
 import kotlin.math.max
 
@@ -847,9 +848,21 @@ class LauncherTile(
         cells.columnCount = columnsFor(context, cells.width)
         if (apps.isEmpty()) {
             // No dialog from here: a tile has no `Activity` to show one on, and
-            // the picker that would fill this list lives on the phone.
+            // the picker that would fill this list lives on the phone. Which of
+            // the two sentences depends on why it is empty -- "pin some" is
+            // useless advice to a driver who has allowed nothing, because the
+            // pinning screen would be empty too.
+            val nothingAllowed = HeadwaySettings.allowedApps(context).isEmpty()
             cells.addView(
-                messageView(context, "No apps pinned yet. Choose some in Headway on the phone.")
+                messageView(
+                    context,
+                    if (nothingAllowed) {
+                        "No apps allowed on the car screen yet. Open Headway on the phone, " +
+                            "then Apps allowed on the car screen."
+                    } else {
+                        "No apps pinned yet. Choose some in Headway on the phone."
+                    },
+                )
                     .apply {
                         // Centred across the whole pane rather than left in the
                         // top-left corner of a one-column grid, where a lone
@@ -942,8 +955,24 @@ class LauncherTile(
     }
 
     /** Null pins means "the driver has never chosen", which shows everything. */
+    /**
+     * What the grid shows: allowed apps, narrowed to the pins if there are any.
+     *
+     * The allow-list filter is the part that was missing, and its absence made
+     * the grid a wall of buttons that do nothing. Every one of them routes
+     * through `CarShell.openApp`, which refuses anything not allowed -- so an
+     * unfiltered grid offered the driver dozens of taps with no effect and no
+     * explanation. A driver reported it that way round: "the all apps screen
+     * shows every app, even if I only have permissions for a few".
+     *
+     * This is the opposite call from the car-app picker, deliberately. That
+     * picker is where a grant is *given*, so hiding an app there hides the way
+     * to allow it. This grid only *launches*, so an entry that cannot launch is
+     * a dead button and nothing else.
+     */
     private fun pinnedApps(context: Context): List<AppEntry> {
-        val all = launchableApps(context)
+        val allowed = HeadwaySettings.allowedApps(context)
+        val all = launchableApps(context).filter { AllowedApps.allows(allowed, it.packageName) }
         val pinned = HeadwaySettings.of(context)
             .getStringSet(HeadwaySettings.KEY_PINNED_APPS, null)
             ?: return all

@@ -20,6 +20,7 @@ package dev.headway.app.quirks
 import aap_protobuf.service.control.message.ServiceDiscoveryResponseOuterClass.ServiceDiscoveryResponse
 import android.content.Context
 import dev.headway.protocol.channel.CarPoint
+import dev.headway.protocol.channel.CarSensors
 import dev.headway.protocol.control.VersionHandshake
 import java.io.File
 import java.util.Locale
@@ -317,6 +318,19 @@ data class HeadUnitQuirks(
      */
     val videoFocusRequest: Boolean = true,
 
+    /**
+     * Tenths of a kilometre per raw `OdometerData.kms_e1` unit.
+     *
+     * 1 is the schema's own reading — `_e1` means times ten, like every other
+     * scaled field in the sensor set. 100 is a unit whose raw value is metres.
+     *
+     * A quirk because a real 2021 Chevrolet Infotainment 3 reads exactly a
+     * hundred times high under the schema, which is not a factor that arrives by
+     * accident. `SensorChannel` logs the raw value against the converted one
+     * once per session, so a driver who can read their own dashboard can settle
+     * it without another round of guessing. See `CarSensors.odometerKmFromE1`.
+     */
+    val odometerScale: Int = CarSensors.ODOMETER_SCALE_E1,
     val touch: TouchQuirks = TouchQuirks(),
 ) {
 
@@ -634,6 +648,7 @@ class QuirkStore(
         private const val KEY_CERTIFICATE = "certificate"
         private const val KEY_SUGGEST_CAR_NETWORK = "suggestCarNetwork"
         private const val KEY_VIDEO_FOCUS_REQUEST = "videoFocusRequest"
+        private const val KEY_ODOMETER_SCALE = "odometerScale"
         private const val KEY_TOUCH = "touch"
 
         private const val KEY_INVERT_X = "invertX"
@@ -659,6 +674,7 @@ class QuirkStore(
             KEY_MEDIA_AUDIO_OVER_AAP, KEY_KEYFRAME_INTERVAL, KEY_TOUCH,
             KEY_HIDDEN_SSID, KEY_PIN_BSSID, KEY_ANNOUNCE_WIFI_CHANNEL,
             KEY_CERTIFICATE, KEY_SUGGEST_CAR_NETWORK, KEY_VIDEO_FOCUS_REQUEST,
+            KEY_ODOMETER_SCALE,
         )
 
         /** Exposed so a test can prove [PROFILE_KEYS] covers everything written. */
@@ -750,6 +766,7 @@ class QuirkStore(
                     .put(KEY_ANNOUNCE_WIFI_CHANNEL, quirks.announceWifiChannel)
                     .put(KEY_SUGGEST_CAR_NETWORK, quirks.suggestCarNetwork)
                     .put(KEY_VIDEO_FOCUS_REQUEST, quirks.videoFocusRequest)
+                    .put(KEY_ODOMETER_SCALE, quirks.odometerScale)
                     .apply {
                         // Omitted when automatic: an absent key is what "let
                         // Headway alternate" looks like, and writing `false`
@@ -873,6 +890,9 @@ class QuirkStore(
                     videoFocusRequest = json.optBoolean(
                         KEY_VIDEO_FOCUS_REQUEST, defaults.videoFocusRequest,
                     ),
+                    odometerScale = json.optIntChecked(
+                        KEY_ODOMETER_SCALE, defaults.odometerScale, index, warnings,
+                    ).coerceAtLeast(1),
                     touch = touch,
                 ),
             )
