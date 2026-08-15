@@ -3,39 +3,61 @@ Android and on-device gate passed before this was published.
 
 ## What is new in this build
 
-**Six things a driver reported from a real car, and the reasons they
+**Eight things a driver reported from a real car, and the reasons they
 happened.**
 
-- **Your map appears.** A maps car app was drawing a live map the whole
-  time and Headway was painting over it — the pane was a `SurfaceView`
-  with an opaque background, which is a combination that punches a hole
-  for the map and then fills it straight back in. You saw the routing
-  buttons that drew on top. It is a `TextureView` now, the map shows, and
-  it takes pan, pinch and tap (a stray full-screen scroll view above it
-  was eating every touch).
-- **Widgets add.** Widget setup was being launched onto the car's own
-  display, which Android refuses outright — so the car said "finish this
-  on the phone" and nothing ever appeared there.
-- **The car's readings are in your units.** One choice for the whole
-  panel — automatic, metric or imperial — on the car screen under
-  *Units*. Before, only the speed followed your region and the odometer,
-  temperature and tyre pressures were always metric.
-- **Steering-wheel skip buttons work.** They were being logged by name and
-  acted on by nothing.
-- **The connection stops cutting out.** Headway was ending a healthy
-  session every time the car's Bluetooth blipped — which happens
-  constantly on a normal drive, because Bluetooth carries only the
-  handshake and shares an antenna with the Wi-Fi the session runs on. It
-  now stops only when the car is genuinely gone.
-- **Music reaches the car.** Several separate faults, the worst of which
-  was Headway taking permanent audio focus and thereby telling the very
-  player it was recording to stop.
+- **Widgets add.** The "That widget was not added" message was Headway
+  hiding the answer: *blank the phone screen* is on by default and is an
+  opaque accessibility overlay, which sits above everything the system
+  draws — including the phone's own "Allow Headway to add widgets?"
+  dialog. You looked at the phone and saw black. The dialog then cancels
+  itself on the first stray touch, and Headway reported the cancellation.
+  The phone is now uncovered for as long as that dialog is up, and a
+  cancelled dialog that bound the widget anyway is no longer thrown away.
+- **The car opens on the map.** It used to open on whatever tab the last
+  drive ended on, so the map was something to go and find at the start of
+  every drive. Under *Settings → Opens on* you can put it back, or name a
+  tab.
+- **Now playing is inside the music panel.** Artwork, track, artist and
+  album, and the transport, at the foot of the library — the Android Auto
+  shape — following the app you are browsing rather than whatever else is
+  playing. The separate Now playing panel is still there if you want it.
+- **The music panel lists only the apps you allowed**, like the all-apps
+  panel already did.
+- **Everything in every panel scales.** *Settings → Panel size* moves
+  Headway's own drawing in all of them at once. The per-app size is still
+  per app, because a map and a messenger disagree about what 100% means.
+- **The location marker can be shrunk.** Some map apps size their own
+  marker in fixed pixels and ignore every size the host sends — a driver
+  found one. *Map detail*, in the same sheet as the app's size, hands the
+  app a larger buffer than the panel so anything drawn in fixed pixels
+  lands smaller while everything else stays put.
+- **Your odometer reads correctly.** Two independent readings of real
+  hardware put it a hundred times high, which is exactly the ratio between
+  what the protocol field is named and what the unit actually sends. The
+  default now matches the hardware; `odometerScale` in the quirk file
+  still exists for a unit that means what the schema says.
+- **Messages became Notifications.** The pane was reading everything the
+  phone shows and then dropping anything that did not look like a
+  conversation. *Notifications* keeps all of it, newest first. The
+  Messages pane stays, because a pane that is only conversations and can
+  reply to them is worth having.
 
-Also: the all-apps panel lists only the apps you have allowed, instead of
-every app on the phone with a button that silently does nothing; tapping a
-pinned app now always says what happened; and the car-app picker names
-your music apps and points at the Music panel rather than leaving you to
-conclude they are unsupported.
+**Two more, from the drive before.** A car app that ignored the size you
+picked was being told the phone's density all along — the value was
+silently discarded before it was sent, so the slider moved Headway's
+chrome and the app's own text and nothing else. And every car app was
+being told it was running on a tall portrait handset; it is now told the
+panel's real shape, orientation and size class.
+
+**Apps can lay out in landscape.** A portrait phone mirrored into a wide
+panel is about a quarter of it, and no amount of scaling makes a tall map
+a wide one — an app's layout is decided by the display it runs on.
+*Settings → Apps and panels → Turn the phone sideways for apps* rotates
+the phone for the drive and puts it back afterwards. It needs one
+permission, granted on the phone, and it cannot help an app that locks
+itself to portrait. `BLOCKERS.md` B-025 has the five routes that would
+have avoided touching the phone at all, and why each is closed.
 
 **About music, because it is not obvious.** Headway sends your music to
 the car by capturing what the phone is playing, and Android only allows
@@ -44,11 +66,12 @@ and while a session is up the car has switched away from Bluetooth, so
 there is no second route. Tap the notification to allow it. The same grant
 is what lets a pinned app show on the car screen at all.
 
-**Your odometer may read a hundred times high.** The protocol field says
-kilometres-times-ten and one real head unit sends metres instead. The log
-now prints the raw value beside the converted one once per session; if it
-disagrees with your dashboard, `odometerScale` in the quirk file is the
-one-line fix and the log tells you so.
+**A simulated display cannot be touched.** If you use the Developer
+options "Simulate secondary displays" path, the car can see the app and
+cannot tap it. That is a hardcoded exclusion in Android's accessibility
+service — by display type, with no permission behind it — so no version of
+Headway can fix it. It says so now, on every session. `BLOCKERS.md` B-024
+has the AOSP source.
 
 ## Before you install this
 
@@ -163,4 +186,3 @@ which is public and protects nothing — it exists to be *stable*, not
 secret, in exactly the way the platform-wide Android debug key is. A real
 distribution key belongs in CI secrets; the build picks one up from
 `HEADWAY_KEYSTORE` without a code change.
-

@@ -99,7 +99,11 @@ class MediaBrowseTile(
         context = context,
         compact = true,
         preferPackage = { session?.app?.packageName },
+        onOpen = ::showQueue,
     )
+
+    /** True while the list is showing the play queue rather than the library. */
+    private var showingQueue = false
 
     private var apps: List<MediaApp> = emptyList()
 
@@ -110,8 +114,16 @@ class MediaBrowseTile(
     private val listener = CarMediaBrowser.Listener { state, items ->
         lastState = state
         lastCount = items.size
-        renderBrowse(state, items)
+        lastItems = items
+        // Held, not drawn, while the queue is up. A browse result arriving
+        // behind the queue is still the truth about the library -- it just is
+        // not what the driver is looking at, and replacing the queue under
+        // them would be the pane changing subject on its own.
+        if (!showingQueue) renderBrowse(state, items)
     }
+
+    /** The last browse result, so leaving the queue can put the list back. */
+    private var lastItems: List<MediaBrowser.MediaItem> = emptyList()
 
     override fun createView(context: Context): View {
         val panel = CarStyle.panel(context)
@@ -199,6 +211,8 @@ class MediaBrowseTile(
         // The strip holds a MediaController callback and a session listener of
         // its own; leaving them registered outlives the pane that owns them.
         runCatching { nowPlaying.stop() }
+        showingQueue = false
+        lastItems = emptyList()
         // The session goes with the pane. A browser left connected holds a
         // binding into another app's process, and its subscriptions call back
         // into views that are about to be thrown away.
@@ -228,6 +242,7 @@ class MediaBrowseTile(
         session?.close()
         val next = CarMediaBrowser(appContext, app, onStep)
         session = next
+        showingQueue = false
         // The strip prefers this app's session, and the preference has just
         // changed. Without this it keeps showing whatever it bound at start()
         // until that session next says something.
@@ -243,7 +258,64 @@ class MediaBrowseTile(
      * [CarMediaBrowser.close] exists to prevent, and reconnecting costs one
      * bind.
      */
+    /**
+     * The play queue, in place of the library, from a tap on the strip.
+     *
+     * Android Auto puts the queue one tap from now playing rather than in a
+     * panel of its own, and a driver asked for that shape. It replaces the list
+     * rather than opening anything, so Back is the way out and there is nothing
+     * new to learn.
+     *
+     * A session with no queue is not an error and not a dead end: several apps
+     * publish none, and the list says so rather than emptying.
+     */
+    private fun showQueue(controller: android.media.session.MediaController) {
+        val list = rows ?: return
+        val context = list.context
+        showingQueue = true
+        list.removeAllViews()
+        backTarget?.visibility = View.VISIBLE
+        headerLabel?.text = "Playing next"
+        val queue = runCatching { controller.queue }.getOrNull().orEmpty()
+        if (queue.isEmpty()) {
+            list.gravity = Gravity.CENTER
+            list.addView(
+                CarStyle.emptyState(
+                    context,
+                    "This app publishes no queue.
+Its controls still work.",
+                ),
+            )
+            return
+        }
+        list.gravity = Gravity.TOP
+        val playing = runCatching { controller.playbackState?.activeQueueItemId }.getOrNull()
+        queue.take(MAX_QUEUE).forEach { item ->
+            val description = item.description
+            val title = description.title?.toString()?.takeIf { it.isNotBlank() } ?: "Untitled"
+            list.addView(
+                row(
+                    context = context,
+                    icon = artOf(description),
+                    title = if (item.queueId == playing) "▶  $title" else title,
+                    subtitle = description.subtitle?.toString()?.takeIf { it.isNotBlank() },
+                    browsable = false,
+                ) {
+                    runCatching { controller.transportControls.skipToQueueItem(item.queueId) }
+                        .onFailure { onStep("media: could not skip to '$title'") }
+                },
+            )
+        }
+    }
+
     private fun goBack() {
+        // Out of the queue first: it replaced the list, so Back should put the
+        // list back rather than leave the app the driver is still inside.
+        if (showingQueue) {
+            showingQueue = false
+            if (session == null) renderApps() else renderBrowse(lastState, lastItems)
+            return
+        }
         val current = session
         if (current == null) return
         if (current.canGoBack()) {
@@ -254,6 +326,7 @@ class MediaBrowseTile(
         session = null
         lastState = BrowseState.UNKNOWN
         lastCount = 0
+        lastItems = emptyList()
         runCatching { nowPlaying.reconsider() }
         renderApps()
     }
@@ -455,5 +528,15 @@ class MediaBrowseTile(
          * level becomes a memory problem.
          */
         const val MAX_ART_BYTES = 512 * 1024
+
+        /**
+         * How much of a queue is drawn.
+         *
+         * A shuffled library can publish thousands of entries and every row
+         * here is a real view with a decoded bitmap, built on the thread that
+         * draws the car screen. Fifty is more than anybody scrolls at a
+         * junction and is bounded work.
+         */
+        const val MAX_QUEUE = 50
     }
 }

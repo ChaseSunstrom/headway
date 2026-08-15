@@ -153,6 +153,15 @@ class NowPlayingTile(
      * ordinary "playing first" choice.
      */
     private val preferPackage: () -> String? = { null },
+    /**
+     * Called when the strip is tapped, with the session it is showing.
+     *
+     * Null means the strip is not a target. The pane that embeds it decides
+     * what a tap means -- the music pane opens the play queue, which is the
+     * other half of "just like the android auto version" and the half a
+     * transport row cannot express.
+     */
+    private val onOpen: ((MediaController) -> Unit)? = null,
 ) : DashTile {
 
     private val appContext: Context = context.applicationContext
@@ -368,6 +377,15 @@ class NowPlayingTile(
         row.addView(artView)
         row.addView(textColumn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         row.addView(controls)
+        // The art and the text, not the whole row: the transport buttons are
+        // in the row too, and a parent that also took taps would make every
+        // missed skip open the queue instead.
+        onOpen?.let { open ->
+            val target = View.OnClickListener { controller?.let(open) }
+            artView.setOnClickListener(target)
+            textColumn.setOnClickListener(target)
+            textColumn.isClickable = true
+        }
 
         val progressView = ProgressRule(context).apply {
             layoutParams = LinearLayout.LayoutParams(
