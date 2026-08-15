@@ -113,6 +113,15 @@ class WidgetSetupActivity : AppCompatActivity() {
             provider = savedInstanceState.getString(STATE_PROVIDER)
                 ?.let { ComponentName.unflattenFromString(it) }
             generation = savedInstanceState.getInt(STATE_GENERATION, 0)
+            // Saved too, and it has to be. Without it a recreate *while the
+            // provider's setup screen is up* -- the longest-lived state this
+            // activity has, and so the likeliest one to be reclaimed -- restores
+            // `configuring` as NOT_CONFIGURING, and the guard in
+            // [onActivityResult] then discards the real result as though it
+            // belonged to a superseded add. The widget would be bound and
+            // configured and never placed, and the car screen would wait on a
+            // callback that never came.
+            configuring = savedInstanceState.getInt(STATE_CONFIGURING, NOT_CONFIGURING)
             WidgetSetup.claim(widgetId)
             SessionLog.shared.info(TAG, "restored an add already in flight for widget $widgetId")
             return
@@ -126,6 +135,7 @@ class WidgetSetupActivity : AppCompatActivity() {
         outState.putBoolean(STATE_OWNS_ID, ownsId)
         outState.putString(STATE_PROVIDER, provider?.flattenToString())
         outState.putInt(STATE_GENERATION, generation)
+        outState.putInt(STATE_CONFIGURING, configuring)
     }
 
     /**
@@ -355,6 +365,7 @@ class WidgetSetupActivity : AppCompatActivity() {
         private const val STATE_OWNS_ID = "owns_id"
         private const val STATE_PROVIDER = "provider"
         private const val STATE_GENERATION = "generation"
+        private const val STATE_CONFIGURING = "configuring"
 
         /**
          * The intent that adds [provider] as a widget, from anywhere.
