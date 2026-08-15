@@ -66,6 +66,22 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 private const val TAG = "HeadwayDashTiles"
 
+/**
+ * The setting that says which notification listeners the user has enabled.
+ *
+ * World-readable, so observing it needs no permission -- which is what lets a
+ * pane notice the grant arriving instead of staying empty until a rebuild.
+ * Spelled out rather than referenced through the `@hide`
+ * `Settings.Secure.ENABLED_NOTIFICATION_LISTENERS`.
+ */
+private const val ENABLED_NOTIFICATION_LISTENERS = "enabled_notification_listeners"
+
+/** The art box's fallback size, used before the view has been measured. */
+private const val ART_BOX_DP = 84f
+
+/** A ceiling on the halving, so a malformed image cannot loop. */
+private const val MAX_ART_SAMPLE = 32
+
 // ---------------------------------------------------------------------------
 // Now playing
 // ---------------------------------------------------------------------------
@@ -281,6 +297,16 @@ class NowPlayingTile(context: Context) : DashTile {
             // Expected until the user grants notification access. Logged at info
             // rather than warn so a first-run log does not read like a fault.
             SessionLog.shared.info(TAG, "media sessions unavailable: notification access not granted")
+            // And watched for, which is the half that was missing. `running` was
+            // already true by here and `start()` opens with `if (running)
+            // return`, so nothing ever tried again: a driver who followed the
+            // pane's own advice, granted access on the phone and came back saw
+            // the identical empty state for the rest of the drive. Only a full
+            // tile rebuild recovered it, and that needs a tab switch.
+            //
+            // The grant is readable without any permission, so this is a
+            // ContentObserver on the setting rather than a poll.
+            watchForGrant()
             render()
             return
         }
@@ -288,7 +314,56 @@ class NowPlayingTile(context: Context) : DashTile {
         refresh()
     }
 
+    /**
+     * Re-arms once the driver grants notification access, without a rebuild.
+     *
+     * `Settings.Secure.enabled_notification_listeners` is world-readable, so
+     * observing it costs nothing and needs nothing. When it changes, the
+     * registration is simply tried again: if it now succeeds the pane fills in,
+     * and if it does not this stays armed.
+     */
+    private fun watchForGrant() {
+        if (grantWatcher != null) return
+        val resolver = runCatching { appContext.contentResolver }.getOrNull() ?: return
+        val uri = runCatching {
+            android.provider.Settings.Secure.getUriFor(ENABLED_NOTIFICATION_LISTENERS)
+        }.getOrNull() ?: return
+        val observer = object : android.database.ContentObserver(handler) {
+            override fun onChange(selfChange: Boolean) {
+                val manager = appContext.getSystemService(MediaSessionManager::class.java) ?: return
+                val listener = MediaSessionManager.OnActiveSessionsChangedListener { refresh() }
+                val ok = runCatching {
+                    manager.addOnActiveSessionsChangedListener(
+                        listener,
+                        listenerComponent(appContext),
+                        handler,
+                    )
+                }.isSuccess
+                if (!ok) return
+                SessionLog.shared.info(TAG, "notification access granted; now playing is live")
+                sessionsListener = listener
+                stopWatchingForGrant()
+                refresh()
+            }
+        }
+        runCatching { resolver.registerContentObserver(uri, false, observer) }
+            .onSuccess { grantWatcher = observer }
+    }
+
+    private fun stopWatchingForGrant() {
+        grantWatcher?.let { observer ->
+            grantWatcher = null
+            runCatching { appContext.contentResolver.unregisterContentObserver(observer) }
+        }
+    }
+
+    private var grantWatcher: android.database.ContentObserver? = null
+
+    /** So the refusal is said once a session rather than once a repaint. */
+    private var refusalLogged: Boolean = false
+
     override fun stop() {
+        stopWatchingForGrant()
         if (!running) return
         running = false
 
@@ -322,10 +397,66 @@ class NowPlayingTile(context: Context) : DashTile {
         val manager = appContext.getSystemService(MediaSessionManager::class.java)
         val sessions = runCatching {
             manager?.getActiveSessions(listenerComponent(appContext))
+        }.onFailure {
+            // Said once. This used to be `.getOrNull()` with nothing logged at
+            // all, so an exported log from a drive where the pane was empty
+            // contained no trace of why -- against the one rule that makes a
+            // real-car log worth having.
+            if (!refusalLogged) {
+                refusalLogged = true
+                SessionLog.shared.warn(TAG, "getActiveSessions refused: $it")
+            }
         }.getOrNull().orEmpty()
         bind(sessions.firstOrNull { isActive(it.playbackState?.state) } ?: sessions.firstOrNull())
         render()
     }
+
+    /**
+     * Cover art published as a `content://` URI rather than as a bitmap.
+     *
+     * Decoded at the size the pane actually shows -- `inSampleSize` against the
+     * art box -- because a full-resolution cover is several megabytes and this
+     * runs on the thread drawing the car screen. Cached by URI so a repaint,
+     * which happens on every playback-state push, does not decode again.
+     *
+     * Every failure is a null: a cross-app `content://` may refuse, and a pane
+     * that falls back to the app's icon is the behaviour that was already there.
+     */
+    private fun artFromUri(metadata: MediaMetadata?): android.graphics.Bitmap? {
+        val uri = listOf(
+            MediaMetadata.METADATA_KEY_ALBUM_ART_URI,
+            MediaMetadata.METADATA_KEY_ART_URI,
+            MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI,
+        ).firstNotNullOfOrNull { key ->
+            metadata?.getString(key)?.takeIf { it.isNotBlank() }
+        } ?: return null
+        cachedArtUri?.let { if (it == uri) return cachedArt }
+        val box = artView.width.takeIf { it > 0 } ?: CarStyle.dp(appContext, ART_BOX_DP)
+        val decoded = runCatching {
+            val parsed = android.net.Uri.parse(uri)
+            val bounds = android.graphics.BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            appContext.contentResolver.openInputStream(parsed)?.use {
+                android.graphics.BitmapFactory.decodeStream(it, null, bounds)
+            }
+            val sample = generateSequence(1) { it * 2 }
+                .first { bounds.outWidth / it <= box || it >= MAX_ART_SAMPLE }
+            val options = android.graphics.BitmapFactory.Options().apply {
+                inSampleSize = sample
+            }
+            appContext.contentResolver.openInputStream(parsed)?.use {
+                android.graphics.BitmapFactory.decodeStream(it, null, options)
+            }
+        }.getOrNull()
+        cachedArtUri = uri
+        cachedArt = decoded
+        if (decoded == null) SessionLog.shared.info(TAG, "cover art at $uri could not be read")
+        return decoded
+    }
+
+    private var cachedArtUri: String? = null
+    private var cachedArt: android.graphics.Bitmap? = null
 
     private fun bind(next: MediaController?) {
         val current = controller
@@ -400,10 +531,18 @@ class NowPlayingTile(context: Context) : DashTile {
         titleView.text = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
             ?: "Playing"
-        artistView.text = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST)
+        // Artist and album on one line, the way a car screen has room for and
+        // the way Android Auto reads: "Artist - Album". The album was never
+        // read at all before, which a driver noticed.
+        val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST)
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE)
-            ?: ""
+        val album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM)
+            ?: metadata?.getString(MediaMetadata.METADATA_KEY_DISPLAY_DESCRIPTION)
+        artistView.text = listOfNotNull(
+            artist?.takeIf { it.isNotBlank() },
+            album?.takeIf { it.isNotBlank() && it != artist },
+        ).joinToString(" \u00b7 ")
         artistView.visibility =
             if (artistView.text.isNullOrBlank()) View.GONE else View.VISIBLE
         sourceView.text = appLabel(session.packageName).uppercase()
@@ -414,6 +553,13 @@ class NowPlayingTile(context: Context) : DashTile {
         val bitmap = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
             ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+            // And by URI, which is how a Media3 app publishes it. Media3's
+            // legacy bridge fills the *_ART_URI keys and only fills the bitmap
+            // keys when raw artwork bytes happen to exist -- so for a Media3
+            // player the three reads above are all null and the pane fell back
+            // to the app's launcher icon. A driver reported exactly that about
+            // Symfonium: no cover.
+            ?: artFromUri(metadata)
         if (bitmap == null) {
             // The app's own icon rather than an empty square: a radio stream
             // with no cover art still has a recognisable source, and a hole
