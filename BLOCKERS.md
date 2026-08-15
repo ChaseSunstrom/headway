@@ -995,10 +995,28 @@ notification back.
 
 It is **on by default** as of this build, because Headway can now tell which kind
 of sharing is running rather than having to ask: `onCapturedContentResize`
-reports the captured region's real size, and a region smaller than display 0 is a
-single app. `AppPaneHost.sharingSingleApp` is that measurement and
-`HeadwayService.coverPhoneScreen` is the gate — a whole-display capture never
-gets a cover, where it would be the entire picture.
+reports the captured region's real size, and a region smaller than *every*
+display it could be is a single app. `AppPaneHost.sharingSingleApp` is that
+measurement and `HeadwayService.coverPhoneScreen` is the gate — a whole-display
+capture never gets a cover, where it would be the entire picture.
+
+"Every display it could be" rather than "the display", because a simulated one
+can be *larger* than the phone's own panel: a 1920x720 car geometry against a
+1080x2400 screen is wider than it, so measuring a whole-phone capture against the
+simulated display's size called it single-app and raised the cover over the
+picture the car was being sent. The test errs the other way now — a single app
+mistaken for a display gets no cover and a pane fitted to the display rectangle,
+which is what every build before app sharing did.
+
+**The cover cannot take touches, and that is not fixable.** It carries
+`FLAG_NOT_TOUCHABLE` because `dispatchGesture` re-enters the ordinary input
+pipeline and is hit-tested top-down: a touchable `TYPE_ACCESSIBILITY_OVERLAY`
+sits above everything and swallows every gesture the car injects. Nothing marks
+an injected gesture as exempt. So the app underneath still responds to a real
+finger on a phone the driver cannot see — a phone in a pocket or under a bag can
+be operated blind. The README, the phone's own explanation of the switch and the
+log all say so, and the way back is the notification's **Show phone screen**
+action or the car screen's settings sheet rather than a tap.
 
 **How to close it:** not closable from inside the app. The honest description is
 "the phone looks off and behaves as though it were", not "it works locked", and
@@ -1024,6 +1042,13 @@ short of the display by at least that much, zero otherwise, with the horizontal
 component halved from the width difference. Exact for the ordinary case (a
 portrait app below the status bar) and exact for a whole-display capture, which
 is the only other one the pane can be in.
+
+The simulated display is a third case and is answered by measurement rather than
+by the display's existence: a capture the size of that display starts at its own
+origin and has no bars, and anything else is display 0 with bars, even when a
+simulated display happens to be configured. Short-circuiting on `active != null`
+gave a single-app capture on the phone an origin of (0, 0) and a picture offset
+by the height of a status bar.
 
 **What would go wrong:** an app in an unusual window — a freeform or
 split-screen window, or one inset on only one side — would be shifted by the
