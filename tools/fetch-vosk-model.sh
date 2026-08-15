@@ -27,4 +27,4 @@ unzip -q -o "${DEST}/model.zip" -d "$DEST"
 rm -f "${DEST}/model.zip"
 
 echo "Model installed at ${DEST}/${MODEL_NAME}"
-echo "Run tests with: ./gradlew :core-voice:test -Dheadway.vosk.model=${DEST}/${MODEL_NAME}"
+echo "Run tests with: ./gradlew :core-voice:test -Pheadway.vosk.model=${DEST}/${MODEL_NAME}"

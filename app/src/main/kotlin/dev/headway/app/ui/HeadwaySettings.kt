@@ -95,8 +95,13 @@ object HeadwaySettings {
      * phone that is off: the screen has to stay lit for the shared app to keep
      * drawing, and this makes it black to look at without touching what is
      * captured, because app screen sharing excludes system UI. With
-     * whole-display sharing it blacks out the car screen too, which is why it is
-     * a choice and not a default.
+     * whole-display sharing it would black out the car screen too.
+     *
+     * **On by default**, which is only safe because the cover gates itself:
+     * `HeadwayService.coverPhoneScreen` puts it up once `AppPaneHost` has
+     * *measured* the capture as a single app, and never for a whole-display one.
+     * This KDoc said "a choice and not a default" while both readers passed
+     * `true`.
      */
     const val KEY_BLANK_PHONE_SCREEN: String = "blank_phone_screen"
 

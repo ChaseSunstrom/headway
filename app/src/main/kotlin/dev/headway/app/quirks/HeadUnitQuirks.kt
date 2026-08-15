@@ -658,7 +658,7 @@ class QuirkStore(
             KEY_MAKE, KEY_MODEL, KEY_MAX_FRAGMENT_SIZE, KEY_ANNOUNCED_VERSION,
             KEY_MEDIA_AUDIO_OVER_AAP, KEY_KEYFRAME_INTERVAL, KEY_TOUCH,
             KEY_HIDDEN_SSID, KEY_PIN_BSSID, KEY_ANNOUNCE_WIFI_CHANNEL,
-            KEY_CERTIFICATE, KEY_SUGGEST_CAR_NETWORK,
+            KEY_CERTIFICATE, KEY_SUGGEST_CAR_NETWORK, KEY_VIDEO_FOCUS_REQUEST,
         )
 
         /** Exposed so a test can prove [PROFILE_KEYS] covers everything written. */
@@ -749,6 +749,7 @@ class QuirkStore(
                     .put(KEY_HIDDEN_SSID, quirks.hiddenSsid)
                     .put(KEY_ANNOUNCE_WIFI_CHANNEL, quirks.announceWifiChannel)
                     .put(KEY_SUGGEST_CAR_NETWORK, quirks.suggestCarNetwork)
+                    .put(KEY_VIDEO_FOCUS_REQUEST, quirks.videoFocusRequest)
                     .apply {
                         // Omitted when automatic: an absent key is what "let
                         // Headway alternate" looks like, and writing `false`

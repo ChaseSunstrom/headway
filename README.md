@@ -800,6 +800,7 @@ blank page. This is exactly what it writes:
       "hiddenSsid": false,
       "announceWifiChannel": false,
       "suggestCarNetwork": false,
+      "videoFocusRequest": true,
       "touch": {
         "invertX": false,
         "invertY": false,
