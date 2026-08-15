@@ -208,10 +208,12 @@ class HeadwayAccessibilityService : AccessibilityService() {
      * not "you are being recorded". Recording is signalled by the projection's
      * own notification and the status-bar chip, and Headway suppresses neither
      * — its foreground-service notification stays exactly as loud as it was.
-     * The honest cost is that a full-screen overlay does cover the status bar,
-     * which is why one tap removes it.
+     * The honest cost is that a full-screen overlay does cover the status bar.
+     * Because the window is `FLAG_NOT_TOUCHABLE` the shade still opens through
+     * it, so the "Show phone screen" action on Headway's own notification is
+     * always reachable; the car screen's settings sheet has the same row.
      */
-    fun showBlackout(onDismissed: () -> Unit = {}) {
+    fun showBlackout() {
         if (blackout != null) return
         val windows = getSystemService(WindowManager::class.java) ?: run {
             SessionLog.shared.warn(TAG, "no WindowManager, so the phone screen cannot be covered")
@@ -219,21 +221,39 @@ class HeadwayAccessibilityService : AccessibilityService() {
         }
         val view = View(this).apply {
             setBackgroundColor(android.graphics.Color.BLACK)
-            contentDescription = "Headway is projecting. Tap to show the phone screen."
-            setOnClickListener {
-                hideBlackout()
-                onDismissed()
-            }
+            contentDescription = "Headway is projecting. The phone screen is covered."
         }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            // Not FLAG_NOT_TOUCHABLE: the tap is the way back out, and a cover
-            // the driver cannot remove would be a trap rather than a feature.
+            // FLAG_NOT_TOUCHABLE is not optional, and this window is the reason
+            // touch from the car did nothing at all.
+            //
+            // A gesture injected with `dispatchGesture` re-enters the ordinary
+            // input pipeline and is hit-tested top-down. `TYPE_ACCESSIBILITY_OVERLAY`
+            // is window layer 31 -- above everything, which is the whole reason
+            // this window can cover the projection preview -- so while it was
+            // touchable it was the topmost hit at *every* coordinate on display 0,
+            // and every finger from the car landed on this black View instead of
+            // the shared app.
+            //
+            // The two states were self-reinforcing, which is why it looked like
+            // touch was simply unimplemented: the cover only exists when the
+            // accessibility service is bound, and the service being bound is
+            // exactly the condition for gestures to be dispatched at all. So the
+            // driver got either "nothing is injected" or "everything is injected
+            // into Headway's own window", and never the case where it works.
+            //
+            // Passing touches through costs the tap-to-dismiss that used to live
+            // here. The replacements cannot intercept a gesture: the "Show phone
+            // screen" action on the foreground-service notification -- reachable
+            // because the shade opens through a non-touchable window -- and a row
+            // on the car screen's settings sheet.
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 // The flag that makes this cover worth having. Without it the
                 // phone sleeps a minute in, and everything that needs display 0
                 // goes with it: a shared app stops drawing when its display
@@ -259,6 +279,9 @@ class HeadwayAccessibilityService : AccessibilityService() {
         blackout = view
         SessionLog.shared.info(TAG, "phone screen covered; tap it to bring the phone back")
     }
+
+    /** True while the phone-screen cover is up. */
+    val covering: Boolean get() = blackout != null
 
     /** Removes the cover. Idempotent, and safe from any thread the service uses. */
     fun hideBlackout() {

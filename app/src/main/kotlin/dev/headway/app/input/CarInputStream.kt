@@ -23,6 +23,7 @@ import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaC
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.view.WindowManager
+import dev.headway.app.dash.CarShell
 import dev.headway.app.video.AppPaneHost
 import dev.headway.app.video.CarAppDisplay
 import dev.headway.dash.PaneRect
@@ -553,6 +554,15 @@ class CarInputStream(
         return built
     }
 
+    /**
+     * Whether the missing-grant message has already been shown this session.
+     *
+     * Once, not per touch: a driver dragging across a dead pane produces a
+     * gesture every few milliseconds, and a banner per gesture would be its own
+     * fault report.
+     */
+    private var warnedAboutAccessibility: Boolean = false
+
     /** The rectangle [paneTransform] was built for. */
     private var paneRect: PaneRect? = null
 
@@ -574,6 +584,23 @@ class CarInputStream(
         // platform no longer knows about.
         val dispatcher = HeadwayAccessibilityService.instance.value?.dispatcher
         if (dispatcher == null || !dispatcher.submit(gesture)) {
+            // Said once, on the car screen, the first time a touch is thrown
+            // away. This is the single gate the whole app-pane path hangs on,
+            // and until now it failed in total silence: the rail, the tabs and
+            // the panes all kept working, so a driver saw a dashboard that
+            // responded everywhere except inside the app and had nothing
+            // anywhere telling them a grant was missing.
+            if (dispatcher == null && !warnedAboutAccessibility) {
+                warnedAboutAccessibility = true
+                onStep(
+                    "input: a touch reached the app pane but Headway's accessibility service " +
+                        "is not bound, so it was dropped. Enable Headway under Settings > " +
+                        "Accessibility. On Android 13 and later a sideloaded app is behind " +
+                        "\"Restricted setting\": App info > three-dot menu > Allow restricted " +
+                        "settings, then enable it",
+                )
+                CarShell.active()?.showVoiceMessage("Touch needs the Car touchscreen grant")
+            }
             gesturesDropped++
             // Whatever comes next in this chain would be a continueStroke on a
             // stroke the platform never received, so the chain ends here. The

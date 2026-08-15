@@ -34,8 +34,11 @@ import dev.headway.app.carapp.HostState
 import dev.headway.app.carapp.TemplateApp
 import dev.headway.app.carapp.TemplateApps
 import dev.headway.app.carapp.TemplateRenderer
+import dev.headway.app.dash.CarShell
 import dev.headway.app.dash.DashTile
+import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
+import dev.headway.dash.AllowedApps
 import dev.headway.dash.PaneKind
 
 /**
@@ -175,6 +178,42 @@ class CarAppTile(
 
     // --- the session -------------------------------------------------------
 
+    /**
+     * Opens the app, or asks for it to be allowed first.
+     *
+     * The per-app grant the driver asked for is kept — nothing runs on the car
+     * screen until it is allowed — but it is now *askable from the seat* rather
+     * than only from a settings screen on the phone. Choosing an app in a picker
+     * is itself a deliberate act, so one confirmation is the whole ceremony.
+     */
+    private fun chooseOrAsk(app: TemplateApp) {
+        if (app.allowed(appContext)) {
+            open(app)
+            return
+        }
+        val shell = CarShell.active()
+        if (shell == null) {
+            // No car screen to ask on. Allowing silently would defeat the gate,
+            // so this says what is missing instead.
+            onStep("car app: ${app.label} is not allowed and there is no screen to ask on")
+            return
+        }
+        shell.confirm(
+            title = "Allow ${app.label}?",
+            detail = "It will draw its own interface on the car screen. You can " +
+                "change this in Headway on the phone.",
+            confirmLabel = "Allow",
+        ) {
+            HeadwaySettings.setAllowedApps(
+                appContext,
+                AllowedApps.allow(HeadwaySettings.allowedApps(appContext), app.packageName),
+            )
+            onStep("car app: ${app.label} allowed from the car screen")
+            apps = TemplateApps.installed(appContext)
+            open(app)
+        }
+    }
+
     private fun open(app: TemplateApp) {
         closeSession()
         val frame = stack ?: return
@@ -309,7 +348,7 @@ class CarAppTile(
             setPadding(gap, gap / 2, gap, gap / 2)
             isFocusable = true
             contentDescription = app.label
-            Headway.pressable(this, CarStyle.radius(context)) { open(app) }
+            Headway.pressable(this, CarStyle.radius(context)) { chooseOrAsk(app) }
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
                 bottomMargin = gap / 4
             }
@@ -324,8 +363,17 @@ class CarAppTile(
         )
         val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         column.addView(CarStyle.label(context, 16f, CarStyle.TEXT).apply { text = app.label })
+        // An app that still needs a grant is listed and *marked*, never hidden.
+        // Hiding it was the previous behaviour and it made the gate look like a
+        // missing feature: a driver with five car apps saw one, with nothing on
+        // the car screen saying why or how to change it.
+        val detail = if (app.allowed(appContext)) {
+            app.describeCategories()
+        } else {
+            "Tap to allow on the car screen"
+        }
         column.addView(
-            CarStyle.label(context, 13f, CarStyle.DIM).apply { text = app.describeCategories() },
+            CarStyle.label(context, 13f, CarStyle.DIM).apply { text = detail },
         )
         line.addView(column, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         line.addView(

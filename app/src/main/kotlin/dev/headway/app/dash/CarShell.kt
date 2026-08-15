@@ -1146,7 +1146,13 @@ class CarShell(
                 .filter { it != AppWidgetManager.INVALID_APPWIDGET_ID }
                 .toSet()
         }.getOrNull() ?: return
-        runCatching { WidgetTile.releaseOrphans(context, keep, onStep) }
+        // Plus whatever an add is part way through. This runs on every car-screen
+        // bring-up, and reconnection makes those frequent, so without the
+        // in-flight id a driver who is still in a provider's setup screen when
+        // the car reconnects has the widget deleted out from under them.
+        val inFlight = WidgetSetup.pendingId
+            .takeIf { it != AppWidgetManager.INVALID_APPWIDGET_ID }
+        runCatching { WidgetTile.releaseOrphans(context, keep + setOfNotNull(inFlight), onStep) }
     }
 
     /**
@@ -1193,7 +1199,10 @@ class CarShell(
      */
     private fun mapsTileFor(leaf: DashNode.Leaf): DashTile {
         if (!CarHostCapability.available(context)) return MapsTile(context, onStep)
-        val navigators = TemplateApps.navigators(context)
+        // Allowed only: this pane opens a navigator with no further prompt, so
+        // an app the driver has never approved must not start here. The Car app
+        // pane's picker shows every car app and asks.
+        val navigators = TemplateApps.allowedNavigators(context)
         if (navigators.isEmpty()) return MapsTile(context, onStep)
         val wanted = leaf.argument?.let { argument ->
             navigators.firstOrNull { it.service.flattenToString() == argument }
@@ -1201,6 +1210,38 @@ class CarShell(
         }
         val app = wanted ?: navigators.first()
         return CarAppTile(context, app.service.flattenToString(), onStep)
+    }
+
+    /**
+     * Asks a yes/no question on the car screen and runs [onConfirmed] for yes.
+     *
+     * Public because tiles need it: a pane that has to ask permission for
+     * something cannot build its own sheet, since the overlay host belongs to the
+     * shell. Cancel is the default -- closing the sheet any other way does
+     * nothing -- because every caller so far is granting an app access to the car
+     * screen, and the safe answer to a question a driver did not mean to open is
+     * no.
+     */
+    fun confirm(
+        title: String,
+        detail: String,
+        confirmLabel: String,
+        onConfirmed: () -> Unit,
+    ) {
+        showOverlay(
+            sheet().build(
+                title = title,
+                rows = listOf(
+                    CarSheet.Row(confirmLabel, detail) {
+                        closeOverlay()
+                        runCatching { onConfirmed() }
+                            .onFailure { onStep("car screen: the confirmed action failed: $it") }
+                    },
+                    CarSheet.Row("Not now", null) { closeOverlay() },
+                ),
+                onClose = ::closeOverlay,
+            ),
+        )
     }
 
     // --- the widget list ------------------------------------------------------

@@ -83,6 +83,11 @@ class WidgetSetupActivity : AppCompatActivity() {
         }
         provider = wanted
         widgetId = WidgetTile.allocate(this) { SessionLog.shared.info(TAG, it) }
+        // Claimed before anything can run that sweeps orphans. Between allocate
+        // and the save the id exists on the host and appears in no layout, which
+        // is indistinguishable from an orphan -- and `releaseOrphanedWidgets`
+        // runs on every car-screen bring-up, which reconnection makes frequent.
+        WidgetSetup.claim(widgetId)
         if (widgetId == AppWidgetManager.INVALID_APPWIDGET_ID) {
             SessionLog.shared.warn(TAG, "the widget host would not allocate an id")
             deliver(AppWidgetManager.INVALID_APPWIDGET_ID)
@@ -108,12 +113,26 @@ class WidgetSetupActivity : AppCompatActivity() {
             cancel()
             return
         }
-        // Approval is host-wide rather than per widget, so this is the last time
-        // the dialog appears -- but the bind itself still has to be made, because
-        // the dialog grants the right and does not exercise it.
-        val target = provider
-        if (target == null || !WidgetTile.bind(this, widgetId, target)) {
-            SessionLog.shared.warn(TAG, "the widget could not be bound even after approval")
+        // `RESULT_OK` means "Settings has already bound it", NOT "you may now
+        // bind". AOSP's `AllowBindAppWidgetActivity.onClick` performs the bind
+        // itself and only sets `RESULT_OK` if that bind succeeded.
+        //
+        // This used to bind a second time from Headway's own process, and that
+        // second call cannot succeed: unless the driver also ticked the
+        // "always allow" checkbox -- which starts unticked for a first-time host
+        // -- Headway is not in the bind allowlist, so
+        // `bindAppWidgetIdIfAllowed` returns false. The code then treated that
+        // false as "could not be bound", cancelled, and *deleted the widget the
+        // dialog had just bound for it*. Every single first add failed, and the
+        // driver's evidence for it was a widget that never appeared.
+        //
+        // So verify rather than repeat. The dialog also returns the id it bound,
+        // which is authoritative over the one allocated here.
+        result.data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
+            ?.takeIf { it != AppWidgetManager.INVALID_APPWIDGET_ID }
+            ?.let { widgetId = it }
+        if (!WidgetTile.isBound(this, widgetId)) {
+            SessionLog.shared.warn(TAG, "the approval dialog returned OK but nothing is bound")
             cancel()
             return
         }
@@ -219,6 +238,24 @@ object WidgetSetup {
     private var pending: ((Int, ComponentName?) -> Unit)? = null
 
     /**
+     * The id an add is part way through, or [AppWidgetManager.INVALID_APPWIDGET_ID].
+     *
+     * `WidgetTile.releaseOrphans` documents that its keep-set must be every id in
+     * every saved layout **plus any id a picker is part way through allocating**.
+     * This is that second half. Without it, a car screen rebuilt while the driver
+     * is still in the system dialog or the provider's setup screen deletes the id
+     * they are configuring, and the add fails with nothing to explain it.
+     */
+    @Volatile
+    var pendingId: Int = AppWidgetManager.INVALID_APPWIDGET_ID
+        private set
+
+    /** Marks [id] as in flight, so an orphan sweep leaves it alone. */
+    fun claim(id: Int) {
+        pendingId = id
+    }
+
+    /**
      * Starts the phone-side flow and calls [onDone] with the result.
      *
      * [onDone] runs on whichever thread the activity finished on, which is the
@@ -246,6 +283,7 @@ object WidgetSetup {
 
     /** Hands the result to whoever asked, and clears the request. */
     fun deliver(widgetId: Int, provider: ComponentName?) {
+        pendingId = AppWidgetManager.INVALID_APPWIDGET_ID
         val waiting = synchronized(lock) { pending.also { pending = null } }
         waiting?.invoke(widgetId, provider)
     }

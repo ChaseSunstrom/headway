@@ -293,6 +293,17 @@ open class HeadwayService : Service() {
             return START_NOT_STICKY
         }
 
+        // The way back out from the phone-screen cover. It used to be a tap on
+        // the cover itself, which had to go: a touchable full-screen window sits
+        // above everything and swallowed every gesture injected from the car.
+        // The shade opens through the cover now that it is not touchable, so
+        // this action is always reachable.
+        if (intent?.action == ACTION_SHOW_PHONE) {
+            runCatching { HeadwayAccessibilityService.instance.value?.hideBlackout() }
+            step("the driver asked for the phone screen back")
+            return START_STICKY
+        }
+
         intent?.getStringExtra(EXTRA_CAR_ADDRESS)?.let { carAddress = it }
         adoptProjectionGrant(intent)
 
@@ -1613,6 +1624,26 @@ open class HeadwayService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(contentIntent)
+            .apply {
+                // Only while the cover is actually up, so the notification does
+                // not offer to undo something that is not happening.
+                if (HeadwayAccessibilityService.instance.value?.covering == true) {
+                    addAction(
+                        NotificationCompat.Action(
+                            0,
+                            "Show phone screen",
+                            PendingIntent.getService(
+                                this@HeadwayService,
+                                REQUEST_SHOW_PHONE,
+                                Intent(this@HeadwayService, HeadwayService::class.java)
+                                    .setAction(ACTION_SHOW_PHONE),
+                                PendingIntent.FLAG_IMMUTABLE or
+                                    PendingIntent.FLAG_UPDATE_CURRENT,
+                            ),
+                        ),
+                    )
+                }
+            }
             .build()
     }
 
@@ -1905,6 +1936,12 @@ open class HeadwayService : Service() {
         const val JOIN_RETRY_DELAY_MILLIS: Long = 30_000
 
         const val ACTION_STOP: String = "dev.headway.app.action.STOP"
+
+        /** Removes the phone-screen cover. See `HeadwayAccessibilityService.showBlackout`. */
+        const val ACTION_SHOW_PHONE: String = "dev.headway.app.action.SHOW_PHONE"
+
+        /** Distinct from the stop action's, or the two PendingIntents collide. */
+        private const val REQUEST_SHOW_PHONE: Int = 1
 
         /** Where the learned head-unit port and the saved car link live. */
         private const val PREFS: String = "headway_link"

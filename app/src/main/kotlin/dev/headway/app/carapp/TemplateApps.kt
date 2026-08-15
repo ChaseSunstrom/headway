@@ -45,6 +45,17 @@ data class TemplateApp(
         context.packageManager.getApplicationIcon(packageName)
     }.getOrNull()
 
+    /**
+     * Whether the driver has allowed this app onto the car screen.
+     *
+     * Carried on the app rather than applied as a filter, so a picker can show
+     * every car app and mark the ones that still need a grant. The gate is the
+     * same one `AllowedApps` enforces everywhere else; only its *visibility*
+     * changed.
+     */
+    fun allowed(context: Context): Boolean =
+        packageName in HeadwaySettings.allowedApps(context)
+
     /** "Navigation", "Points of interest", … for a picker row. */
     fun describeCategories(): String = categories
         .mapNotNull { CATEGORY_NAMES[it] }
@@ -120,18 +131,40 @@ object TemplateApps {
         installed(context).filter { CarAppService.CATEGORY_NAVIGATION_APP in it.categories }
 
     /**
+     * Navigators the driver has already allowed, best first.
+     *
+     * The Maps pane opens one of these *without being asked*, so unlike the
+     * picker it must not offer an app the driver has never approved. The picker
+     * shows everything and asks; this list is what may run unprompted.
+     */
+    fun allowedNavigators(context: Context): List<TemplateApp> =
+        navigators(context).filter { it.allowed(context) }
+
+    /**
      * Every car app on the phone, by label.
      *
      * `MATCH_ALL` is deliberately not passed: a disabled component should not be
      * offered, and the default match already excludes it.
      */
+    /**
+     * Every car app on the phone, allowed or not.
+     *
+     * ## Why the allow-list is not applied here
+     *
+     * It was, and it made the feature look broken. Filtering inside *discovery*
+     * meant an app the driver had not ticked was not "blocked" but **invisible**:
+     * the picker showed a shorter list with nothing to say why, a driver with
+     * five car apps installed saw one, and there was no route from the car screen
+     * to the setting that would have revealed the rest. It also silently broke
+     * the two self-test diagnostics that BLOCKERS B-012 names as the way to close
+     * it, since those enumerate car apps through this function.
+     *
+     * A filter you cannot see is not a permission gate, it is a bug. So discovery
+     * reports what exists, and [TemplateApp.allowed] carries the decision — the
+     * picker shows every app and asks for a grant on the one the driver taps.
+     */
     fun installed(context: Context): List<TemplateApp> {
         val packages = context.packageManager
-        // The same gate as the app picker and the widget picker: an app reaches
-        // the car screen only after the driver said it may, once, on the phone.
-        // A car app draws that app's own interface on the car screen, so it is
-        // the same decision -- see `AllowedApps`.
-        val allowed = HeadwaySettings.allowedApps(context)
         val query = Intent(CarAppService.SERVICE_INTERFACE)
         val resolved = runCatching {
             packages.queryIntentServices(
@@ -145,7 +178,6 @@ object TemplateApps {
             .mapNotNull { info ->
                 val service = info.serviceInfo ?: return@mapNotNull null
                 if (service.packageName == context.packageName) return@mapNotNull null
-                if (service.packageName !in allowed) return@mapNotNull null
                 TemplateApp(
                     packageName = service.packageName,
                     service = ComponentName(service.packageName, service.name),

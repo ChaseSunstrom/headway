@@ -469,6 +469,23 @@ class WidgetTile(
                 .also { onStep("allocated widget id $it") }
 
         /**
+         * Whether this id is bound to a provider right now.
+         *
+         * `getAppWidgetInfo` returns null both for an id that was never bound
+         * and for one whose provider has been uninstalled, which is exactly the
+         * question a caller wants answered: is there something to render.
+         *
+         * Exists because the system's approval dialog *performs the bind itself*
+         * and then returns `RESULT_OK` -- so after it, the right move is to
+         * verify, never to bind again. See `WidgetSetupActivity.onBound`.
+         */
+        fun isBound(context: Context, widgetId: Int): Boolean {
+            if (widgetId == AppWidgetManager.INVALID_APPWIDGET_ID) return false
+            val manager: AppWidgetManager = AppWidgetManager.getInstance(context) ?: return false
+            return runCatching { manager.getAppWidgetInfo(widgetId) }.getOrNull() != null
+        }
+
+        /**
          * Binds without asking, which only works once the user has approved
          * Headway as a widget host.
          *
@@ -586,6 +603,67 @@ class WidgetTile(
  * and stops when the last one goes, which is what `DashTile` asks of a tile that
  * observes something expensive.
  */
+/**
+ * An `AppWidgetHost` whose failure states are Headway's words, not the platform's.
+ *
+ * ## Why this exists
+ *
+ * A driver reported **"Unable to add widget"** and reasonably read it as the add
+ * having failed. It had not. That string is
+ * `com.android.internal.R.string.gadget_host_error_inflating`, and the only
+ * thing in the platform that shows it is `AppWidgetHostView.getErrorView()` —
+ * a black-tinted `TextView` the framework substitutes *inside the host view*
+ * when the provider's `RemoteViews` will not inflate. So the widget was bound,
+ * Headway's own pane was drawing, and what filled it was the framework
+ * apologising for somebody else's layout.
+ *
+ * That message is actively misleading in a car: it names the wrong step, gives
+ * the driver nothing to do, and sends them back through an add flow that was
+ * never the problem. Overriding [AppWidgetHostView.getErrorView] is public,
+ * unprivileged API and replaces it with a sentence that says which app failed.
+ *
+ * [getDefaultView] is overridden for the same reason: it is what the framework
+ * shows before any `RemoteViews` arrive, and a cold provider can sit there for
+ * seconds while its process starts.
+ */
+private class HeadwayWidgetHost(context: Context) : AppWidgetHost(context, SharedWidgetHost.HOST_ID) {
+
+    override fun onCreateView(
+        context: Context,
+        appWidgetId: Int,
+        appWidget: AppWidgetProviderInfo?,
+    ): AppWidgetHostView = HeadwayWidgetHostView(context, appWidget)
+}
+
+/** The view that reports a provider's failure in words a driver can act on. */
+private class HeadwayWidgetHostView(
+    context: Context,
+    private val info: AppWidgetProviderInfo?,
+) : AppWidgetHostView(context) {
+
+    override fun getErrorView(): View = message(
+        "${label()} could not draw its widget.\n" +
+            "That is the app's own layout failing, not the connection. " +
+            "Try removing and re-adding it, or use a different widget from it.",
+    )
+
+    override fun getDefaultView(): View = message("Loading ${label()}…")
+
+    private fun label(): String = runCatching {
+        info?.loadLabel(context.packageManager)
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: "This widget"
+
+    private fun message(text: String): View = TextView(context).apply {
+        this.text = text
+        gravity = Gravity.CENTER
+        setTextColor(Headway.DIM)
+        setBackgroundColor(Headway.GROUND)
+        val pad = CarStyle.gutter(context)
+        setPadding(pad, pad, pad, pad)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+    }
+}
+
 internal object SharedWidgetHost {
 
     /**
@@ -606,7 +684,7 @@ internal object SharedWidgetHost {
 
     /** The host, created on first use against the application context. */
     fun host(context: Context): AppWidgetHost = synchronized(lock) {
-        instance ?: AppWidgetHost(context.applicationContext, HOST_ID).also { instance = it }
+        instance ?: HeadwayWidgetHost(context.applicationContext).also { instance = it }
     }
 
     /** The host, listening. Balance with [release]. */
