@@ -3,52 +3,52 @@ Android and on-device gate passed before this was published.
 
 ## What is new in this build
 
-**Your car's own readings, a rail you can move, and touch that works.**
+**Six things a driver reported from a real car, and the reasons they
+happened.**
 
-- A **Car panel**: speed, revs, fuel, range, tyre pressures, outside
-  temperature and the odometer, straight off the head unit's sensor
-  channel. Which readings appear is your car's choice — it advertises
-  what it has and Headway subscribes to all of it. It is on the default
-  layout now. (Oil pressure, oil level and coolant are *not* in the
-  Android Auto sensor set at all; they are OBD-II, and no amount of app
-  can conjure them.)
-- **The rail moves.** Any of the four edges, five sizes, and the clock
-  on it with or without the date — from the car screen's settings,
-  under *Rail*. The sizes start at 100% and go up: the buttons are
-  already the smallest a moving car allows.
-- **Touch works again.** The phone-screen cover was a full-screen
-  overlay that accepted touches, and it sat above everything — so it
-  swallowed every gesture coming from the car. Nothing on the car
-  screen responded. It no longer takes touches, and the way back to
-  your phone is **Show phone screen** on Headway's notification or the
-  car screen's settings.
-- **Widgets add properly.** "Unable to add widget" was Headway
-  deleting the widget the system had just bound for it, on every first
-  add. A widget panel is also the way to have **several different apps
-  on screen at once** — screen sharing gives one app at a time, four
-  widget panels are four apps drawing simultaneously.
-- **Any car app in a panel.** The picker lists every car app you have
-  installed and asks for the grant on the one you tap, rather than
-  hiding the ones you had not ticked yet with nothing to say why.
-- **The link gives up when you walk away.** It stops on the car's
-  Bluetooth disconnecting, and after a run of failed attempts, instead
-  of retrying for the rest of the day.
-- **Themes**: dark, true black or light, with six accents including
-  none at all. **Panels** in any arrangement and depth, edited on the
-  car screen and locked by default.
+- **Your map appears.** A maps car app was drawing a live map the whole
+  time and Headway was painting over it — the pane was a `SurfaceView`
+  with an opaque background, which is a combination that punches a hole
+  for the map and then fills it straight back in. You saw the routing
+  buttons that drew on top. It is a `TextureView` now, the map shows, and
+  it takes pan, pinch and tap (a stray full-screen scroll view above it
+  was eating every touch).
+- **Widgets add.** Widget setup was being launched onto the car's own
+  display, which Android refuses outright — so the car said "finish this
+  on the phone" and nothing ever appeared there.
+- **The car's readings are in your units.** One choice for the whole
+  panel — automatic, metric or imperial — on the car screen under
+  *Units*. Before, only the speed followed your region and the odometer,
+  temperature and tyre pressures were always metric.
+- **Steering-wheel skip buttons work.** They were being logged by name and
+  acted on by nothing.
+- **The connection stops cutting out.** Headway was ending a healthy
+  session every time the car's Bluetooth blipped — which happens
+  constantly on a normal drive, because Bluetooth carries only the
+  handshake and shares an antenna with the Wi-Fi the session runs on. It
+  now stops only when the car is genuinely gone.
+- **Music reaches the car.** Several separate faults, the worst of which
+  was Headway taking permanent audio focus and thereby telling the very
+  player it was recording to stop.
 
-Apps render from the phone's own screen by default — nothing to turn
-on in Developer options, nothing to toggle per drive. The simulated
-display is still there if you want a car-shaped picture, under
-settings → Apps and panels, along with fit-or-crop for the panel.
+Also: the all-apps panel lists only the apps you have allowed, instead of
+every app on the phone with a button that silently does nothing; tapping a
+pinned app now always says what happened; and the car-app picker names
+your music apps and points at the Music panel rather than leaving you to
+conclude they are unsupported.
 
-**Known limits, stated plainly.** The phone-screen cover cannot accept
-touches — that is what broke the car's input — so the app underneath
-still answers a real finger on a screen you cannot see; keep the phone
-somewhere it will not be pressed. And Android 15 and later stop screen
-sharing whenever the phone locks, unconditionally, with no way for an
-app to opt out: Headway notices and offers it back rather than
-pretending otherwise.
+**About music, because it is not obvious.** Headway sends your music to
+the car by capturing what the phone is playing, and Android only allows
+that capture through a **screen-sharing grant**. No grant means no music —
+and while a session is up the car has switched away from Bluetooth, so
+there is no second route. Tap the notification to allow it. The same grant
+is what lets a pinned app show on the car screen at all.
+
+**Your odometer may read a hundred times high.** The protocol field says
+kilometres-times-ten and one real head unit sends metres instead. The log
+now prints the raw value beside the converted one once per session; if it
+disagrees with your dashboard, `odometerScale` in the quirk file is the
+one-line fix and the log tells you so.
 
 ## Before you install this
 
