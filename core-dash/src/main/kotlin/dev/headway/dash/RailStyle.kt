@@ -69,10 +69,10 @@ enum class RailEdge {
  * @param edge which side the rail is fixed to.
  * @param scale a multiplier on every control the rail carries -- buttons,
  *   pills, icons, the clock -- and so on the rail's thickness, which is
- *   whatever those need. Clamped to [MIN_SCALE]..[MAX_SCALE]; 1.0 is a button
- *   one touch target square. The car screen applies it by scaling its metrics
- *   (`CarMetrics.scaled`), which keeps the 44-pixel touch floor, so the
- *   smallest setting is still hittable at speed.
+ *   whatever those need. Clamped to [MIN_SCALE]..[MAX_SCALE]. 1.0 is a button
+ *   one touch target square, and it is the *smallest*: the rail grows, it does
+ *   not shrink, because the touch target is already the minimum a moving car
+ *   allows. See [MIN_SCALE].
  * @param showClock whether the time appears at the far end of the rail.
  * @param showDate whether the date appears under (or beside) the time. Ignored
  *   when [showClock] is false, because a date with no time reads as a label
@@ -106,16 +106,36 @@ data class RailStyle(
         .put(KEY_DATE, showDate)
 
     companion object {
-        /** Half a touch target. Below this the glyphs stop being hittable in a car. */
-        const val MIN_SCALE: Float = 0.7f
+        /**
+         * The comfortable touch target, and the smallest the rail can be.
+         *
+         * The rail grows and does not shrink, because there is nothing below
+         * this to shrink into: CLAUDE.md asks for "minimum 48 dp targets scaled
+         * to the head unit density", `CarMetrics.touchTargetPx` is exactly that
+         * number with an absolute 44-pixel floor under it, and the car screen
+         * applies size by scaling those metrics.
+         *
+         * Offering smaller was worse than refusing to. On a 160 dpi 800x480 unit
+         * the target is 48 px, so 0.7 computed 33 and 0.85 computed 40 -- and
+         * both were floored back to 44, along with the gutter and the radius
+         * that derive from them. Two of the five chips in the picker produced a
+         * byte-identical rail: the selection moved and the screen did not.
+         */
+        const val MIN_SCALE: Float = 1.0f
 
         /** Any larger and the rail is taking a third of an 800x480 panel. */
-        const val MAX_SCALE: Float = 1.6f
+        const val MAX_SCALE: Float = 1.9f
 
         val DEFAULT: RailStyle = RailStyle()
 
-        /** The sizes a settings screen should offer, smallest first. */
-        val SCALE_CHOICES: List<Float> = listOf(0.7f, 0.85f, 1.0f, 1.25f, 1.6f)
+        /**
+         * The sizes a settings screen should offer, smallest first.
+         *
+         * Spaced so that each one is a different number of pixels at the
+         * densities a head unit actually reports -- see `RailStyleTest`, which
+         * measures that rather than trusting it.
+         */
+        val SCALE_CHOICES: List<Float> = listOf(1.0f, 1.2f, 1.4f, 1.6f, 1.9f)
 
         private const val KEY_EDGE = "edge"
         private const val KEY_SCALE = "scale"

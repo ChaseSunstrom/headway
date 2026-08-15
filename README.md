@@ -122,9 +122,15 @@ open often. Both are your choice, in your order.
 **Where the rail goes and how big it is are yours too**, from the car screen's
 settings under *Rail*: any of the four edges, five sizes, and the clock with or
 without the date (or off, if you would rather have a Clock panel). The size moves
-every control on the rail together — buttons, pins, the clock — and stops at a
-44-pixel touch target, because a rail you cannot hit at speed is not a smaller
-rail, it is a broken one.
+every control on the rail together — buttons, pins, the clock — and the rail's
+thickness follows from what they need.
+
+The sizes **start at 100% and go up**. The rail grows; it does not shrink. Its
+buttons are already the minimum a moving car allows — 48 dp at your head unit's
+density, with an absolute floor under that — so there is nothing below the
+default to shrink into. Offering smaller was worse than refusing: on a
+160 dpi 800×480 unit the two smallest settings both hit the floor and drew a
+pixel-identical rail, so the selection moved and the screen did not.
 
 A layout is any arrangement of panels, of any depth, and you edit it **on the car
 screen**: the rail's settings button, then *Edit this layout*, then split a

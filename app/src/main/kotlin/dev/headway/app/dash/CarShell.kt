@@ -211,8 +211,9 @@ class CarShell(
     }
 
     override fun onStop() {
+        // No `super.onStop()` here: [teardown] makes that call, so that the
+        // paths which reach it *without* a working `onStop` get it too.
         teardown()
-        super.onStop()
     }
 
     /** True once [teardown] has run, so a second call is free. */
@@ -234,10 +235,27 @@ class CarShell(
      * which `active()` then hands to the touch router and the car-app pane for
      * the life of the process.
      *
+     * `super.onStop()` is part of it, and has to be: `Presentation.onStart`
+     * registers a `DisplayListener` with `DisplayManager` and `Presentation.onStop`
+     * is the only thing that unregisters it. `DisplayManagerGlobal` is a process
+     * singleton holding a strong reference, and the listener is a non-static
+     * inner class of the `Presentation` — so the shell, its context and its whole
+     * view tree are pinned for the life of the process, once per refused
+     * bring-up, which reconnection repeats.
+     *
      * Idempotent, because the caller that catches a failed `show()` and the
-     * `onStop` of a shell that did come up can both reach it.
+     * `onStop` of a shell that did come up can both reach it. Main-thread only,
+     * like every other thing that touches these views: the tiles' `stop()`
+     * detach views, and a `requestLayout` from a pool thread throws
+     * `CalledFromWrongThreadException` — which the per-tile `runCatching` would
+     * swallow, silently skipping the widget host, media session and surface
+     * releases that follow it.
      */
     fun teardown() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            main.post { teardown() }
+            return
+        }
         if (tornDown) return
         tornDown = true
         DashLayoutStore.unobserveChanges(layoutsChanged)
@@ -254,6 +272,13 @@ class CarShell(
         // the process, and the only symptom is battery.
         live.forEach { runCatching { it.stop() } }
         AppPaneHost.pictureRect = EMPTY_RECT
+        // Last, and the reason this is not simply the old `onStop` body: it is
+        // what gives the platform's display listener back. Called directly
+        // rather than inside a `runCatching`, because Kotlin forbids a `super`
+        // call from a lambda; it is safe uncaught, since
+        // `unregisterDisplayListener` no-ops on a listener that was never
+        // registered and `Dialog.onStop` is empty.
+        super.onStop()
     }
 
     // --- what the outside world asks of the shell -----------------------------
@@ -1551,20 +1576,34 @@ class CarShell(
         title: String,
         detail: String,
         confirmLabel: String,
+        onDeclined: () -> Unit = {},
         onConfirmed: () -> Unit,
     ) {
+        // Runs once, whichever way the sheet is left. A caller that has nothing
+        // on screen until one of the two answers arrives -- the car-app pane is
+        // one -- would otherwise be left blank for the rest of the drive by a
+        // driver who tapped "Not now" or closed the sheet.
+        var answered = false
+        fun decline() {
+            if (answered) return
+            answered = true
+            closeOverlay()
+            runCatching { onDeclined() }
+                .onFailure { onStep("car screen: the declined action failed: $it") }
+        }
         showOverlay(
             sheet().build(
                 title = title,
                 rows = listOf(
                     CarSheet.Row(confirmLabel, detail) {
+                        answered = true
                         closeOverlay()
                         runCatching { onConfirmed() }
                             .onFailure { onStep("car screen: the confirmed action failed: $it") }
                     },
-                    CarSheet.Row("Not now", null) { closeOverlay() },
+                    CarSheet.Row("Not now", null) { decline() },
                 ),
-                onClose = ::closeOverlay,
+                onClose = ::decline,
             ),
         )
     }

@@ -317,7 +317,6 @@ class CarStartupView(
 
         const val EXIT_FROM = 0.86f
 
-        /** How far a bar passes its resting place before coming back. */
         /**
          * How hard a bar overshoots, in `OvershootInterpolator`'s units.
          *

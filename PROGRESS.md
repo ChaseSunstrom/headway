@@ -39,9 +39,12 @@ order — and the clock. The six hardcoded tabs are gone; a pinned layout *is* a
 tab, and a driver who only uses two of them now has two buttons rather than six.
 
 Its **edge, size and clock are settings** (`RailStyle`, `core-dash`): any of the
-four edges, five sizes, clock with or without the date. The size is applied by
+four edges, five sizes, clock with or without the date. Size is applied by
 scaling the car screen's `CarMetrics`, so every control on the rail moves
-together and the 44-pixel touch floor still holds at the smallest setting.
+together. The scale multiplies what comes *out* of the touch-target floor rather
+than what goes in, and the choices start at 1.0 — the rail grows and does not
+shrink, because the touch target is already the minimum a moving car allows, and
+two sizes that both land on the floor draw the same rail.
 
 A layout is a binary split tree of any depth, so "any number of panels" is true
 without a limit anywhere. It is **editable on the car screen** — split a pane,

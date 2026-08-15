@@ -199,8 +199,12 @@ class CarAppTile(
         val shell = CarShell.active()
         if (shell == null) {
             // No car screen to ask on. Allowing silently would defeat the gate,
-            // so this says what is missing instead.
+            // so this says what is missing instead -- and shows the picker, or
+            // the pane is left with nothing in it at all. `createView` builds an
+            // empty container; until `open` or `renderPicker` runs there is
+            // literally nothing to look at and no control to recover with.
             onStep("car app: ${app.label} is not allowed and there is no screen to ask on")
+            renderPicker()
             return
         }
         shell.confirm(
@@ -208,12 +212,29 @@ class CarAppTile(
             detail = "It will draw its own interface on the car screen. You can " +
                 "change this in Headway on the phone.",
             confirmLabel = "Allow",
+            // Same reason: "Not now" and closing the sheet both have to leave
+            // the driver something. The picker is the honest answer -- the app
+            // they had pinned is in it, still askable.
+            onDeclined = { if (running) renderPicker() },
         ) {
+            // The sheet outlives the tile: any `render()` -- a divider drag, a
+            // tab switch, a theme change, a layout edited from the phone --
+            // stops every tile and builds new ones, while this callback is still
+            // waiting on the driver. Opening from a stopped tile would bind a
+            // third-party car-app service into a view that is no longer in the
+            // tree, with nothing left to close it for the rest of the drive.
+            //
+            // The grant is still worth recording: the driver said yes, and the
+            // tile that replaced this one reads the same setting.
             HeadwaySettings.setAllowedApps(
                 appContext,
                 AllowedApps.allow(HeadwaySettings.allowedApps(appContext), app.packageName),
             )
             onStep("car app: ${app.label} allowed from the car screen")
+            if (!running) {
+                onStep("car app: ${app.label} was allowed after its pane went away")
+                return@confirm
+            }
             apps = TemplateApps.installed(appContext)
             open(app)
         }

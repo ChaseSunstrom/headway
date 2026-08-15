@@ -408,6 +408,8 @@ class CarSurface private constructor(
                     // Shown, started and observing, and the caller has already
                     // returned null and released the display -- so this would
                     // sit there for the life of the process with no route to it.
+                    // Already on the main thread here, which is where a window
+                    // may be taken apart.
                     onStep("car surface: the dashboard arrived too late to be used; taking it back down")
                     shell?.teardown()
                     runCatching { shell?.dismiss() }
@@ -423,10 +425,19 @@ class CarSurface private constructor(
                     built.getAndSet(null)
                 }
                 // Published between the timeout and the lock: same orphan, other
-                // side of the race.
-                late?.let {
-                    it.teardown()
-                    Handler(Looper.getMainLooper()).post { runCatching { it.dismiss() } }
+                // side of the race. This side is the *caller's* thread, which is
+                // a `Dispatchers.Default` worker -- so the whole teardown goes to
+                // the main looper in one runnable rather than running here. The
+                // tiles' `stop()` detach views, and a `requestLayout` off the
+                // main thread throws `CalledFromWrongThreadException`, which the
+                // per-tile `runCatching` swallows: the widget host would keep
+                // listening, a car app's service binding would stay held, and a
+                // `Surface` would never be released, all silently.
+                late?.let { orphan ->
+                    Handler(Looper.getMainLooper()).post {
+                        orphan.teardown()
+                        runCatching { orphan.dismiss() }
+                    }
                 }
                 onStep("car surface: the dashboard window did not appear within $SHOW_TIMEOUT_MILLIS ms")
                 return null

@@ -1008,6 +1008,15 @@ picture the car was being sent. The test errs the other way now — a single app
 mistaken for a display gets no cover and a pane fitted to the display rectangle,
 which is what every build before app sharing did.
 
+**Raised by a measurement, and taken down by one.** The same handler that puts
+the cover up when the capture measures as a single app takes it down when a
+measurement says whole-display. Only raising it was not enough: a cover survives
+the grant being lost, because the link stays up and the session teardown that
+uncovers never runs. A driver who shared one app, locked the phone -- which on
+Android 15 and later stops the projection unconditionally -- and then re-shared
+as "Entire screen" had the *cover itself* recorded, and the car showed a solid
+black rectangle while frames kept arriving.
+
 **The cover cannot take touches, and that is not fixable.** It carries
 `FLAG_NOT_TOUCHABLE` because `dispatchGesture` re-enters the ordinary input
 pipeline and is hit-tested top-down: a touchable `TYPE_ACCESSIBILITY_OVERLAY`

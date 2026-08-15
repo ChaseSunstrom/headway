@@ -30,7 +30,9 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -1324,6 +1326,18 @@ open class HeadwayService : Service() {
                 if (single) {
                     runCatching { coverPhoneScreen() }
                         .onFailure { step("the phone screen could not be covered: $it") }
+                } else {
+                    // The other half, and the one that was missing. A cover is
+                    // not only raised at bring-up: it survives a grant being
+                    // lost, because the link stays up and the session's teardown
+                    // -- the only other place that uncovers -- never runs. So a
+                    // driver who shared one app, locked the phone, and then
+                    // re-shared as "Entire screen" had the *cover* recorded, and
+                    // the car showed a black rectangle while frames kept
+                    // arriving. Whatever raised it, a measurement that says
+                    // "whole display" takes it down.
+                    runCatching { HeadwayAccessibilityService.instance.value?.hideBlackout() }
+                    refreshNotification()
                 }
             }
             // A lost grant has to reach the field the service holds, or nothing
@@ -1337,8 +1351,18 @@ open class HeadwayService : Service() {
                 )
                 runCatching { offerScreenSharing() }
             }
-            runCatching { coverPhoneScreen() }
-                .onFailure { step("the phone screen could not be covered: $it") }
+            // On the main looper, not on this coroutine. `showBlackout` calls
+            // `WindowManager.addView`, which builds a `ViewRootImpl` and so a
+            // `Handler`, and this runs on `Dispatchers.Default` -- a pool thread
+            // with no `Looper`. The throw was swallowed by the `runCatching`, so
+            // the cover simply never appeared on this path and the log said only
+            // that it could not be covered. The `onSharingKnown` call site above
+            // is already on the right thread, which is why it works and this did
+            // not.
+            Handler(Looper.getMainLooper()).post {
+                runCatching { coverPhoneScreen() }
+                    .onFailure { step("the phone screen could not be covered: $it") }
+            }
             startSubsystem("audio") { audio?.start(this) }
             startSubsystem("input") { input?.start(this) }
             startSubsystem("voice") { voice?.start(this) }
@@ -1658,12 +1682,30 @@ open class HeadwayService : Service() {
         step("no screen-sharing grant this session; offered it in the notification shade")
     }
 
+    /**
+     * Claims the foreground types, keeping any this service has already earned.
+     *
+     * `Service.startForeground` **replaces** the type set rather than adding to
+     * it: `ActiveServices.setServiceForegroundInnerLocked` assigns
+     * `r.foregroundServiceType`. So a later call naming only
+     * `CONNECTED_DEVICE` drops `MEDIA_PROJECTION`, and on Android 14 and later
+     * the platform ends a `MediaProjection` as soon as the app stops running a
+     * foreground service of that type -- the grant dies, `onGrantLost` fires,
+     * and every app pane says screen sharing is off for the rest of the drive.
+     *
+     * This is the first statement of `onStartCommand`, so *every* delivered
+     * intent went through it -- including the "Show phone screen" action, which
+     * is reached from the notification and from the car screen's settings sheet
+     * mid-drive. Tapping "uncover my phone" would have killed the video.
+     */
     private fun startForegroundNow() {
+        val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+            if (projection != null) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
-            buildNotification(getString(R.string.app_name), "Starting"),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            buildNotification(getString(R.string.app_name), notificationText),
+            types,
         )
     }
 

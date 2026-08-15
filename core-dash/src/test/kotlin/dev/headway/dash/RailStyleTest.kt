@@ -87,6 +87,30 @@ class RailStyleTest {
     }
 
     @Test
+    fun `no two offered sizes draw the same rail`() {
+        // The bug this exists for: sizes are applied by scaling the car's
+        // metrics, and `CarMetrics.touchTargetPx` has an absolute 44-pixel floor
+        // under it. Two choices that both land under that floor produce an
+        // identical rail -- the chip moves, the screen does not. Modelled here
+        // rather than in the app module because `CarMetrics` cannot be reached
+        // from a JVM test, and the arithmetic is the whole of it.
+        fun targetPx(densityDpi: Int, scale: Float): Int {
+            val base = maxOf(44, (48.0 * densityDpi / 160.0).toInt())
+            return (base * scale).toInt().coerceAtLeast(44)
+        }
+        // 160 is what the target head unit reports; 120 and 213 stand in for a
+        // unit that under- and over-reports.
+        listOf(120, 160, 213).forEach { dpi ->
+            val drawn = RailStyle.SCALE_CHOICES.map { targetPx(dpi, it) }
+            assertEquals(
+                drawn.size,
+                drawn.toSet().size,
+                "at $dpi dpi two sizes draw the same rail: ${RailStyle.SCALE_CHOICES.zip(drawn)}",
+            )
+        }
+    }
+
+    @Test
     fun `only the side edges are vertical`() {
         assertTrue(RailEdge.LEFT.vertical)
         assertTrue(RailEdge.RIGHT.vertical)

@@ -342,7 +342,12 @@ class HeadwayMark(context: Context) : View(context) {
  * @param heightPx the car's own pixel height.
  * @param densityDpi the car's advertised density.
  */
-data class CarMetrics(val widthPx: Int, val heightPx: Int, val densityDpi: Int) {
+data class CarMetrics(
+    val widthPx: Int,
+    val heightPx: Int,
+    val densityDpi: Int,
+    val scale: Float = 1f,
+) {
 
     /**
      * The minimum comfortable touch target, in car pixels.
@@ -350,9 +355,20 @@ data class CarMetrics(val widthPx: Int, val heightPx: Int, val densityDpi: Int) 
      * 48 dp at the *car's* density, floored so a unit that under-reports its
      * density cannot produce a target too small to hit. CLAUDE.md asks for 48 dp
      * "scaled to the head unit density" and this is that number.
+     *
+     * [scale] multiplies what comes out of the floor rather than what goes into
+     * it. The other order looked equivalent and was not: on a unit that
+     * under-reports density the floor is what decides the target, so two
+     * different sizes could both land under it and produce a pixel-identical
+     * result -- at 120 dpi the base is 36 and every scale up to 1.22 came back
+     * as 44. Multiplying afterwards means every distinct scale is a distinct
+     * number of pixels at every density, which is what a size picker promises.
      */
     val touchTargetPx: Int
-        get() = maxOf(MIN_TARGET_PX, (MIN_TARGET_DP * densityDpi / BASE_DPI).toInt())
+        get() {
+            val base = maxOf(MIN_TARGET_PX, (MIN_TARGET_DP * densityDpi / BASE_DPI).toInt())
+            return (base * scale).toInt().coerceAtLeast(MIN_TARGET_PX)
+        }
 
     /** The layout unit everything else is a multiple of. */
     val unit: Int get() = touchTargetPx
@@ -369,15 +385,13 @@ data class CarMetrics(val widthPx: Int, val heightPx: Int, val densityDpi: Int) 
     /**
      * The same screen at a different control size, for one part of the layout.
      *
-     * Scales [densityDpi], because every size below is derived from it -- so a
-     * scaled copy moves the touch target, the gutter and the corner radius
-     * together and nothing has to be scaled twice. The 44-pixel floor still
-     * applies, which is the point: a driver who shrinks the rail cannot shrink
-     * a button below what a moving car lets them hit.
+     * Everything below is derived from [touchTargetPx], so one multiplier moves
+     * the touch target, the gutter and the corner radius together and nothing
+     * has to be scaled twice. Multiplicative, so nesting two scaled copies
+     * composes rather than the inner one winning.
      */
     fun scaled(factor: Float): CarMetrics =
-        if (factor == 1f) this
-        else copy(densityDpi = (densityDpi * factor).toInt().coerceAtLeast(1))
+        if (factor == 1f) this else copy(scale = scale * factor)
 
     private companion object {
         const val MIN_TARGET_DP = 48.0

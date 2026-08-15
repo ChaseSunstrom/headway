@@ -200,12 +200,22 @@
           setup screen. The car screen cannot do either: both are
           startActivityForResult calls and a Presentation is not an activity.
           See WidgetSetupActivity.
+
+          `configChanges` covers everything, and this is the rare activity where
+          that is right rather than lazy: it draws nothing -- the theme is
+          invisible and it inflates no layout -- so there is no configuration to
+          re-read, and being recreated is purely destructive. Recreation runs
+          onDestroy before the new onCreate, which dropped the claim protecting
+          the widget id already in flight and then allocated a second one; the
+          first was left bound, in no layout, and unprotected, so the next
+          car-screen bring-up swept it away mid-add.
         -->
         <activity
             android:name=".dash.tiles.WidgetSetupActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection"
             android:theme="@style/Theme.Headway.Invisible" />
 
         <!--

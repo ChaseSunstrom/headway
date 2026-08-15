@@ -89,6 +89,41 @@ class WidgetSetupActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        begin()
+    }
+
+    /**
+     * A second request arriving while this one is still on screen.
+     *
+     * The activity is `singleTop` and started with `CLEAR_TOP`, so a driver who
+     * opens the widget picker again -- on a different pane, while the first
+     * provider's setup screen is still up -- gets *this* instance back rather
+     * than a new one. Without this override the new intent was dropped:
+     * `getIntent()` still returned the first one, so the second request's
+     * provider was never read, and the first flow's result was handed to the
+     * second requester's callback. The driver's second pane got the first
+     * pane's widget and the first pane got nothing.
+     *
+     * `WidgetSetup` already treats a second request as cancelling the first --
+     * it keeps one callback -- so the honest thing here is to abandon the
+     * in-flight add and start the new one.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // The id this instance allocated belongs to a request nobody is waiting
+        // for any more. A repair's id is not ours to release; see [ownsId].
+        if (ownsId && widgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
+            WidgetTile.forget(this, widgetId) { SessionLog.shared.info(TAG, it) }
+        }
+        WidgetSetup.release(widgetId)
+        widgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+        provider = null
+        ownsId = false
+        begin()
+    }
+
+    private fun begin() {
         val wanted = intent?.getStringExtra(EXTRA_PROVIDER)
             ?.let { ComponentName.unflattenFromString(it) }
         if (wanted == null) {
@@ -224,6 +259,14 @@ class WidgetSetupActivity : AppCompatActivity() {
         // this activity while the driver is in a provider's setup screen -- would
         // otherwise leave the claim standing for the life of the process, and an
         // id no sweep will ever collect.
+        //
+        // Not while the activity is merely being rebuilt, though. The manifest
+        // takes every configuration change so recreation should not happen at
+        // all, and if the system reclaims-and-restores anyway the add is still
+        // in flight: dropping the claim there would leave the id the driver is
+        // configuring unprotected against the next car-screen bring-up, which
+        // sweeps orphans.
+        if (isChangingConfigurations) return
         if (WidgetSetup.pendingId == widgetId) WidgetSetup.release(widgetId)
     }
 
