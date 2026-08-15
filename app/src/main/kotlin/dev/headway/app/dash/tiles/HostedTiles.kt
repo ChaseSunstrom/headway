@@ -656,7 +656,7 @@ private class HeadwayWidgetHostView(
     private fun message(text: String): View = TextView(context).apply {
         this.text = text
         gravity = Gravity.CENTER
-        setTextColor(Headway.DIM)
+        setTextColor(CarStyle.DIM)
         setBackgroundColor(Headway.GROUND)
         val pad = CarStyle.gutter(context)
         setPadding(pad, pad, pad, pad)
