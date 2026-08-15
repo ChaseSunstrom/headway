@@ -472,6 +472,19 @@ class NowPlayingTile(
         }.getOrNull() ?: return
         val observer = object : android.database.ContentObserver(handler) {
             override fun onChange(selfChange: Boolean) {
+                // Posted to the main looper rather than run inline, so this can
+                // arrive *after* `stop()` has already unregistered the observer
+                // -- and a second one can be sitting queued behind the first,
+                // because the setting it watches is a process-wide list that
+                // any app's grant rewrites. Either way a registration made here
+                // would never come back out: `stop()` returns early when
+                // `running` is false, and `sessionsListener` remembers only the
+                // newest, orphaning the one it replaced into a process
+                // singleton that holds this whole pane's view tree.
+                if (!running || sessionsListener != null) {
+                    stopWatchingForGrant()
+                    return
+                }
                 val manager = appContext.getSystemService(MediaSessionManager::class.java) ?: return
                 val listener = MediaSessionManager.OnActiveSessionsChangedListener { refresh() }
                 val ok = runCatching {

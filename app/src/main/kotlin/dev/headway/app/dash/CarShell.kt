@@ -846,7 +846,21 @@ class CarShell(
         stage.removeAllViews()
 
         val builder = PaneTreeView(
-            context = context,
+            // The *scaled* context, and this is the whole of "Panel size".
+            //
+            // Every tile builds its views from the context `createView` is
+            // handed, not from the one its constructor took -- most of them keep
+            // only `context.applicationContext` from that -- so passing
+            // `paneContext` to the constructors moved nothing at all. This is
+            // the one call site that decides what a panel's contents resolve
+            // their dp and sp against, because `PaneTreeView.leaf` passes this
+            // straight to `tile.createView`.
+            //
+            // The panel furniture is unaffected on purpose: the radius, the
+            // divider and the empty-pane caption all size from `metrics`, which
+            // is pixels the head unit negotiated. The frame stays put and what
+            // is inside it scales, which is what was asked for.
+            context = paneContext,
             metrics = metrics,
             tileFor = ::tileFor,
             onRatioChanged = ::persistRatio,
@@ -1005,7 +1019,13 @@ class CarShell(
             return tabs.firstOrNull { it.name == name } ?: store.active()
         }
         if (wanted != HeadwaySettings.START_LAYOUT_DRIVING) return store.active()
-        return tabs.firstOrNull { tab -> tab.leaves().any { it.kind in MAP_PANES } }
+        // A real Maps pane wins outright, and only then a car-app pane. Both
+        // are in [MAP_PANES] because a navigation app draws its map in a car-app
+        // pane -- but so does a messenger, a weather app and anything else with
+        // a car interface, and a single pass would open a session on whichever
+        // came first in the driver's own tab order.
+        return tabs.firstOrNull { tab -> tab.leaves().any { it.kind == PaneKind.MAPS } }
+            ?: tabs.firstOrNull { tab -> tab.leaves().any { it.kind in MAP_PANES } }
             ?: store.active()
     }
 

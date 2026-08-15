@@ -131,7 +131,6 @@ object PhoneRotation {
     /** Puts back whatever the driver had. Safe to call when nothing was changed. */
     fun restore(context: Context, onStep: (String) -> Unit = {}) {
         val previous = saved ?: return
-        saved = null
         val resolver = context.contentResolver ?: return
         runCatching {
             Settings.System.putInt(resolver, Settings.System.USER_ROTATION, previous.rotation)
@@ -140,6 +139,13 @@ object PhoneRotation {
                 Settings.System.ACCELEROMETER_ROTATION,
                 previous.auto,
             )
+            // Only once both writes have landed. Cleared *before* them, a
+            // `SecurityException` from a `WRITE_SETTINGS` appop the driver
+            // revoked mid-drive would throw the record away with nothing left
+            // to retry from -- and the next session would then read Headway's
+            // own landscape back as "the driver's", making every teardown
+            // afterwards restore the phone to sideways.
+            saved = null
             onStep("landscape apps: the phone's rotation is back to how you had it")
         }.onFailure { SessionLog.shared.warn(TAG, "could not restore the phone's rotation: $it") }
     }

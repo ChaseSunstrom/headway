@@ -123,7 +123,7 @@ class WidgetSetupActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        holdPhoneScreen(savedInstanceState)
+        holdPhoneScreen()
         if (savedInstanceState != null) {
             // Restored rather than restarted. The manifest takes every
             // configuration change, but the system can still destroy a stopped
@@ -162,7 +162,10 @@ class WidgetSetupActivity : AppCompatActivity() {
         outState.putInt(STATE_GENERATION, generation)
         outState.putInt(STATE_CONFIGURING, configuring)
         outState.putInt(STATE_BINDING_FOR, bindingFor)
-        outState.putBoolean(STATE_UNCOVERED, uncovered)
+        // `uncovered` is deliberately NOT saved. It is not state that survives
+        // this instance: the hold is taken in `onCreate` and given back in
+        // `onDestroy`, both unconditionally, so a restored instance starts with
+        // nothing held and takes its own.
     }
 
     /**
@@ -174,11 +177,11 @@ class WidgetSetupActivity : AppCompatActivity() {
      * recreate: the hold is already counted, and taking a second one would
      * leave the phone permanently uncovered for the rest of the drive.
      */
-    private fun holdPhoneScreen(savedInstanceState: Bundle?) {
-        if (savedInstanceState != null) {
-            uncovered = savedInstanceState.getBoolean(STATE_UNCOVERED, false)
-            return
-        }
+    private fun holdPhoneScreen() {
+        // Deliberately no "restored, so it is already held" branch. There is no
+        // such state: [onDestroy] releases on every path, including the one
+        // that produced this bundle, so a restored instance holds nothing and
+        // has to take its own. See the comment there.
         // Not "is the cover up right now": it may go up a moment from now.
         // `AppPaneHost.onSharingKnown` raises it the first time a capture is
         // measured, which can land while this dialog is on screen, and the
@@ -427,8 +430,16 @@ class WidgetSetupActivity : AppCompatActivity() {
         // in flight: dropping the claim there would leave the id the driver is
         // configuring unprotected against the next car-screen bring-up, which
         // sweeps orphans.
-        if (isChangingConfigurations) return
-        if (WidgetSetup.pendingId == widgetId) WidgetSetup.release(widgetId)
+        // Above the configuration-change return, and its take is in every
+        // `onCreate`, because the two have to be exact complements or they
+        // drift apart. They did: the release was skipped only on a
+        // configuration change while the take was skipped on *any* saved
+        // bundle -- and this activity's manifest takes every configuration
+        // change itself, so a config recreate never happens and the only thing
+        // that produces a bundle is the system reclaiming this stopped
+        // activity. That path dropped the hold and the rebuilt instance took
+        // no other, re-covering the phone on top of the very setup screen the
+        // driver had been sent to look at.
         if (uncovered) {
             uncovered = false
             runCatching {
@@ -438,6 +449,8 @@ class WidgetSetupActivity : AppCompatActivity() {
                 )
             }
         }
+        if (isChangingConfigurations) return
+        if (WidgetSetup.pendingId == widgetId) WidgetSetup.release(widgetId)
     }
 
     private fun deliver(id: Int) {
@@ -474,7 +487,6 @@ class WidgetSetupActivity : AppCompatActivity() {
         private const val STATE_GENERATION = "generation"
         private const val STATE_CONFIGURING = "configuring"
         private const val STATE_BINDING_FOR = "binding_for"
-        private const val STATE_UNCOVERED = "uncovered"
 
         /**
          * The intent that adds [provider] as a widget, from anywhere.
