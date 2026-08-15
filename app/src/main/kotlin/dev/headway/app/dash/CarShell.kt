@@ -501,12 +501,19 @@ class CarShell(
             val pad = metrics.gutter / 2
             setPadding(pad, 0, pad, 0)
         }
-        val time = CarStyle.label(context, 20f * style.effectiveScale, CarStyle.TEXT, bold = true)
+        // `Headway.title` rather than `CarStyle.label`: CarStyle is internal to
+        // the tiles package and the shell has its own idiom, used by the rail's
+        // pinned items a few lines below. Sizes are in car pixels off the layout
+        // unit, so the clock scales with the rail rather than with a fixed sp.
+        val unit = metrics.unit
+        val time = Headway.title(context, (unit * style.effectiveScale).toInt(), "").apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
         column.addView(time)
         val date = if (style.clockShowsDate) {
-            CarStyle.label(context, 12f * style.effectiveScale, CarStyle.DIM).also {
-                column.addView(it)
-            }
+            Headway.title(context, (unit * style.effectiveScale * DATE_FRACTION).toInt(), "")
+                .apply { setTextColor(Headway.TEXT_MUTED) }
+                .also { column.addView(it) }
         } else {
             null
         }
@@ -1646,6 +1653,9 @@ class CarShell(
         fun active(): CarShell? = shown
 
         private const val RAIL_TEXT = 0.30f
+
+        /** The date's size relative to the time above it. */
+        private const val DATE_FRACTION = 0.55f
 
         /** Long enough to read a short phrase at a glance, short enough not to linger. */
         private const val BANNER_MILLIS = 2_600L
