@@ -316,7 +316,21 @@ open class HeadwayService : Service() {
             // the whole point of the instructions, and refusing to try would
             // make them uncheckable.
             addressingFailures = 0
-            linkJob = scope.launch { supervisor().run() }
+            linkJob = scope.launch {
+                supervisor().run()
+                // `run` returns only when the supervisor has given up -- an
+                // attempt limit reached, or a failure it will not retry. Before
+                // this the service stayed alive afterwards with a foreground
+                // notification and nothing running behind it: a permanent
+                // "Disconnected" in the shade, holding wake state and a
+                // microphone/projection foreground type, doing nothing.
+                //
+                // Stopping is the honest end, and it is not a dead end: an ACL
+                // connection from the car starts a fresh session with no user
+                // action, which is the same path that started this one.
+                step("nothing left to retry; stopping until the car comes back")
+                stopSelf()
+            }
         }
         return START_REDELIVER_INTENT
     }
@@ -346,6 +360,15 @@ open class HeadwayService : Service() {
 
     private fun supervisor() = SessionSupervisor(
         runSession = { onUp -> runSession(onUp) },
+        // The backstop for a car that is simply not there. `CarPresenceReceiver`
+        // stops the session outright on ACL disconnect, which is the ordinary
+        // path and needs no limit; this catches the cases where that signal
+        // never arrives -- a session started by hand and then driven away from,
+        // a broadcast dropped under memory pressure, a unit that holds its
+        // Bluetooth link up while refusing projection. Giving up costs one
+        // automatic restart, because an ACL connection starts a fresh
+        // supervisor; not giving up costs a night of joins that cannot succeed.
+        maxConsecutiveFailures = MAX_CONSECUTIVE_FAILURES,
         onState = { state ->
             publish(state)
             updateNotification(describe(state))
@@ -1969,6 +1992,18 @@ open class HeadwayService : Service() {
         const val JOIN_RETRY_DELAY_MILLIS: Long = 30_000
 
         const val ACTION_STOP: String = "dev.headway.app.action.STOP"
+
+        /**
+         * Consecutive failed attempts before Headway stops trying by itself.
+         *
+         * Twelve, which with the backoff is a few minutes of a car that never
+         * answers -- long enough to ride out a head unit rebooting or a Wi-Fi
+         * flap mid-drive, short enough that a phone carried indoors stops
+         * within the walk from the driveway. It resets on any session that
+         * establishes, so a drive that reconnects repeatedly never approaches
+         * it.
+         */
+        private const val MAX_CONSECUTIVE_FAILURES: Int = 12
 
         /** Removes the phone-screen cover. See `HeadwayAccessibilityService.showBlackout`. */
         const val ACTION_SHOW_PHONE: String = "dev.headway.app.action.SHOW_PHONE"

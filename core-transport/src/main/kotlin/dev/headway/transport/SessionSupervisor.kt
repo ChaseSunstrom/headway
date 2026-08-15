@@ -60,6 +60,13 @@ sealed interface LinkState {
  * attempts would mean a phone that sat in a driveway overnight needs the user to
  * tap something in the morning, which is exactly the "without user interaction"
  * the spec rules out.
+ *
+ * That reasoning holds only while something else can say the car has *gone*. On
+ * Android that is `ACTION_ACL_DISCONNECTED`, which stops the session outright;
+ * see `CarPresenceReceiver`. [maxConsecutiveFailures] is the backstop for when
+ * that signal never comes, and it is safe precisely because an ACL connection
+ * starts a fresh supervisor with no user action — so giving up costs one
+ * automatic restart, not a morning tap.
  */
 class SessionSupervisor(
     /**
@@ -108,6 +115,27 @@ class SessionSupervisor(
     private val terminalFailure: (Throwable) -> Boolean = { false },
     /** Null means retry forever, which is the default and the intended behaviour. */
     private val maxAttempts: Int? = null,
+    /**
+     * Give up after this many *consecutive* failures with no session in between.
+     *
+     * Distinct from [maxAttempts], which counts every attempt including the
+     * successful ones. This counts only a run of failures, so a drive that
+     * reconnects fifty times over an hour never approaches it while a phone
+     * that cannot reach the car at all does.
+     *
+     * Null keeps retrying forever, which is right whenever something *else*
+     * knows the car has gone — on Android that is `ACTION_ACL_DISCONNECTED`,
+     * and `CarPresenceReceiver` acts on it. This is the backstop for when that
+     * signal never arrives: a session started by hand and then driven away
+     * from, a broadcast dropped under memory pressure, a head unit that keeps
+     * its Bluetooth link up while refusing the projection.
+     *
+     * The cost of giving up too early is one automatic restart, because an ACL
+     * connection starts a fresh supervisor with no user action. The cost of
+     * never giving up is a phone that joins a network that is not there every
+     * few seconds, all night, with a foreground notification up.
+     */
+    private val maxConsecutiveFailures: Int? = null,
     /** Injected so tests can run the state machine without real waiting. */
     private val sleep: suspend (Long) -> Unit = { delay(it) },
 ) {
@@ -183,6 +211,19 @@ class SessionSupervisor(
             val limit = maxAttempts
             if (limit != null && attempts >= limit) {
                 if (failure != null) report(LinkState.GaveUp(describe(failure)))
+                return
+            }
+
+            val failureLimit = maxConsecutiveFailures
+            if (failureLimit != null && consecutiveFailures >= failureLimit) {
+                report(
+                    LinkState.GaveUp(
+                        "the car has not answered in $consecutiveFailures attempts, so " +
+                            "Headway has stopped trying. It will start again on its own " +
+                            "when the car's Bluetooth connects" +
+                            (failure?.let { ". Last failure: ${describe(it)}" } ?: ""),
+                    ),
+                )
                 return
             }
 

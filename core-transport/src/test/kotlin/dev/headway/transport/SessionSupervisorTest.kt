@@ -351,4 +351,58 @@ class SessionSupervisorTest {
         assertTrue(gaveUp is LinkState.GaveUp)
         assertEquals("EOFException", (gaveUp as LinkState.GaveUp).cause)
     }
+
+    /**
+     * A car that is simply not there must stop being chased.
+     *
+     * A driver reported Headway "continuously trying to reconnect even when not
+     * in range", and this is the backstop for it: `CarPresenceReceiver` stops
+     * the session on ACL disconnect, and this catches the cases where that
+     * signal never arrives.
+     */
+    @Test
+    fun `a run of failures ends the supervisor`() = runBlocking {
+        val h = Harness()
+        SessionSupervisor(
+            runSession = { _ -> throw EOFException() },
+            onState = { h.states += it },
+            maxConsecutiveFailures = 4,
+            sleep = h::sleep,
+        ).run()
+        val gaveUp = h.states.last()
+        assertTrue(gaveUp is LinkState.GaveUp, "expected GaveUp, got $gaveUp")
+        assertTrue(
+            (gaveUp as LinkState.GaveUp).cause.contains("start again on its own"),
+            "the driver must be told it recovers by itself: ${gaveUp.cause}",
+        )
+    }
+
+    /**
+     * ...but a drive that keeps reconnecting must never hit that limit.
+     *
+     * This is the case the whole unbounded design exists for: a head unit that
+     * reboots, a Wi-Fi flap, walking out of range and back. Each of those is a
+     * failure followed by a session, and the counter has to reset or a long
+     * drive would eventually stop reconnecting on its own.
+     */
+    @Test
+    fun `a session in between resets the run of failures`() = runBlocking {
+        val h = Harness()
+        var round = 0
+        SessionSupervisor(
+            // Fail, connect, fail, connect... twenty times. With a limit of 4
+            // and no reset this would give up during the first few rounds.
+            runSession = { onUp ->
+                round++
+                if (round % 2 == 1) throw EOFException()
+                onUp()
+                if (round >= 20) throw IllegalStateException("done")
+            },
+            onState = { h.states += it },
+            maxConsecutiveFailures = 4,
+            maxAttempts = 40,
+            sleep = h::sleep,
+        ).run()
+        assertTrue(round >= 20, "gave up after only $round rounds")
+    }
 }

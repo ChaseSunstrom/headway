@@ -271,12 +271,20 @@
           still register for after Android 8, which is the whole reason this can
           work with the app not running. BOOT_COMPLETED and MY_PACKAGE_REPLACED
           re-arm it after a reboot or an update.
+
+          ACL_DISCONNECTED is the other half, and it is not optional: it is the
+          only signal that says the car is not there, as opposed to a session
+          that failed while it was. Without it a phone carried out of range
+          retried the join forever, because retrying is the correct response to
+          every failure that happens while the car IS present. It is exempt from
+          the implicit-broadcast ban for the same reason its partner is.
         -->
         <receiver
             android:name=".link.CarPresenceReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+                <action android:name="android.bluetooth.device.action.ACL_DISCONNECTED" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

@@ -83,7 +83,43 @@ class CarPresenceReceiver : BroadcastReceiver() {
             -> onBoot(context)
 
             BluetoothDevice.ACTION_ACL_CONNECTED -> onDeviceConnected(context, intent)
+
+            BluetoothDevice.ACTION_ACL_DISCONNECTED -> onDeviceDisconnected(context, intent)
         }
+    }
+
+    /**
+     * The car's Bluetooth went away, so stop trying to reach it.
+     *
+     * ## Why this has to exist
+     *
+     * Without it nothing ever told Headway the car was gone. The supervisor
+     * retries with backoff and no attempt limit -- which is right while the car
+     * is *there*, because a head unit rebooting or a Wi-Fi flap must not need
+     * the driver -- so a phone carried out of range went on waking up, joining a
+     * network that was not there and timing out, indefinitely, with a foreground
+     * notification the whole time. A driver reported exactly that: it "keeps
+     * trying to reconnect even when not in range, and doesn't turn off".
+     *
+     * ACL disconnect is the one signal that says the car is *not* there, as
+     * distinct from a session that failed while it was. Walking away, switching
+     * the ignition off and toggling Bluetooth all produce it.
+     *
+     * Stopping is cheap to undo: `ACTION_ACL_CONNECTED` starts a session again
+     * with no user action, which is the same path that started this one. So the
+     * cost of stopping too eagerly is one automatic restart, and the cost of not
+     * stopping is a night of retries.
+     */
+    private fun onDeviceDisconnected(context: Context, intent: Intent) {
+        val device = deviceOf(intent) ?: return
+        val expected = HeadwaySettings.carAddress(context)
+        // Only the car. Every other Bluetooth device on the phone -- headphones,
+        // a watch, a tracker -- produces this broadcast too, and stopping the
+        // session because a pair of earbuds went idle would be its own bug.
+        if (expected == null || !expected.equals(device.address, ignoreCase = true)) return
+        SessionLog.shared.info(TAG, "the car's Bluetooth disconnected; stopping the session")
+        runCatching { HeadwayService.stop(context) }
+            .onFailure { SessionLog.shared.warn(TAG, "could not stop the session: $it") }
     }
 
     /**

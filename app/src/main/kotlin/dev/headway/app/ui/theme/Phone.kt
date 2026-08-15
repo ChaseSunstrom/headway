@@ -52,6 +52,12 @@ import android.widget.TextView
  *
  * - **Cards.** Each concern is a raised panel with a title. Scanning for the one
  *   you want is a glance rather than a read.
+ * - **Sections.** Cards are grouped under a [sectionLabel] with one line saying
+ *   who the group is for, in the order a first drive needs them. Cards alone
+ *   were not enough: a dozen equally raised panels, in the order they happened
+ *   to be written, still leaves "which of these must I do" unanswered. The last
+ *   section is fenced off with a rule, because nothing in it is needed by a car
+ *   that connects.
  * - **Status before prose.** Every card leads with what its state *is* — a
  *   coloured dot and six words — and the explanation is folded away behind
  *   [disclosure]. The text is all still there for the person who wants it; it
@@ -113,14 +119,56 @@ object Phone {
         setPadding(0, 0, 0, dp(context, 10f))
     }
 
-    /** A section break between groups of cards. */
-    fun sectionLabel(context: Context, text: String): TextView = TextView(context).apply {
-        this.text = text.uppercase()
-        setTextColor(Headway.ACCENT)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-        letterSpacing = 0.14f
-        setTypeface(Typeface.DEFAULT_BOLD)
-        setPadding(dp(context, 4f), dp(context, 18f), 0, dp(context, 8f))
+    /**
+     * A section break between groups of cards.
+     *
+     * @param subtitle one line under the heading saying who the group is for.
+     *   The heading answers "what is this"; the subtitle answers "do I have to
+     *   read it", which is the question someone opening the screen for the
+     *   first time actually has, and the one a column of same-sized cards
+     *   cannot answer at all.
+     * @param withDivider draws a rule above the heading. Used once, for the
+     *   break between the part of the screen a driver uses and the part they
+     *   open only when something is wrong.
+     */
+    fun sectionLabel(
+        context: Context,
+        text: String,
+        subtitle: String? = null,
+        withDivider: Boolean = false,
+    ): View {
+        val heading = TextView(context).apply {
+            this.text = text.uppercase()
+            setTextColor(Headway.ACCENT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            letterSpacing = 0.14f
+            setTypeface(Typeface.DEFAULT_BOLD)
+            setPadding(dp(context, 4f), dp(context, 18f), 0, dp(context, 8f))
+        }
+        if (subtitle == null && !withDivider) return heading
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            if (withDivider) {
+                addView(
+                    divider(context).apply {
+                        // A page-level rule wants more air around it than the
+                        // one that separates two rows inside a card.
+                        layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 1).apply {
+                            topMargin = dp(context, 20f)
+                        }
+                    },
+                )
+            }
+            addView(heading)
+            if (subtitle != null) {
+                addView(
+                    note(context, subtitle).apply {
+                        setPadding(dp(context, 4f), 0, 0, dp(context, 4f))
+                    },
+                )
+            }
+        }
     }
 
     // --- text -----------------------------------------------------------------
@@ -351,7 +399,19 @@ object Phone {
      * the change reads as the same object opening instead of two different
      * screens.
      */
-    fun disclosure(context: Context, summary: String, detail: CharSequence): View {
+    fun disclosure(context: Context, summary: String, detail: CharSequence): View =
+        disclosure(context, summary, note(context, detail))
+
+    /**
+     * The same fold, over views rather than prose.
+     *
+     * Whole cards go behind this one: the quirk switches and the certificate
+     * import are for a car that will not connect at all, and a driver whose car
+     * works should not have to scroll past them to reach anything. The controls
+     * are all still on the screen — they are one tap in rather than zero, which
+     * is the trade the rest of this file makes for explanations.
+     */
+    fun disclosure(context: Context, summary: String, detail: View): View {
         val holder = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
@@ -373,9 +433,13 @@ object Phone {
             setTextColor(Headway.ACCENT)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
         }
-        val body = note(context, detail).apply {
+        // Wrapped rather than padded directly: `detail` may be a card that has
+        // its own padding and margins, and overwriting those would reshape it.
+        val body = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
             visibility = View.GONE
             setPadding(0, dp(context, 8f), 0, 0)
+            addView(detail)
         }
 
         val header = LinearLayout(context).apply {

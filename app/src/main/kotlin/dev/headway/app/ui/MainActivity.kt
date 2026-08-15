@@ -411,37 +411,88 @@ class MainActivity : AppCompatActivity() {
     // --- layout -------------------------------------------------------------
 
     /**
-     * The page.
+     * The page, in the order a first drive needs it.
      *
-     * Ordered by when a user needs each part rather than by how the code is
-     * organised: what the link is doing and the one button that changes it,
-     * then the things that have to be granted once, then the car-specific
-     * settings, then the things that only matter when something is wrong.
+     * Five groups, and the order is the README's "First connect to a real car"
+     * order rather than the order the cards were written in:
+     *
+     * 1. **Connect**, with no section label above it, because a label between
+     *    the button and the checklist that gates it would separate the two
+     *    things that belong together. Whatever a user came here to do, this is
+     *    it: the state of the link, the one filled button, the checklist of
+     *    everything granted once, the VPN warning that appears only when a VPN
+     *    would silently break the link, and the Wi-Fi pairing that ends
+     *    Android's approval prompt (README step 6).
+     * 2. **What the car shows** — the choices about the dashboard itself, which
+     *    matter on the first drive but not before it.
+     * 3. **Your choice** — the parked-only toggle, which is nobody's decision
+     *    but the driver's.
+     * 4. **If something is wrong**, behind a rule: the self-test, the log, and
+     *    then the quirk file and the certificate import folded away again
+     *    inside a [Phone.disclosure], because a driver whose car works should
+     *    never have to scroll past them.
+     * 5. **This build** — which APK is installed, and updates.
      *
      * Every card's explanation is folded away behind a [Phone.disclosure]. The
-     * text is unchanged and it is all still here — it is simply no longer
-     * between the reader and the button.
+     * text is all still here — it is simply no longer between the reader and
+     * the button.
      */
     private fun buildContent(): View {
         val column = Phone.page(this)
 
         column.addView(buildHero())
-        column.addView(Phone.sectionLabel(this, "Before the first drive"))
         column.addView(buildChecklist())
-        column.addView(Phone.sectionLabel(this, "The car"))
-        column.addView(buildCarScreenCard())
+        // Hidden unless a VPN is actually up, and directly under the checklist
+        // when it is: it is the one condition that lets every step above go
+        // green and still fails the connection.
         column.addView(buildVpnCard())
-        column.addView(buildAllowedAppsCard())
-        column.addView(buildAppDisplayCard())
-        column.addView(TabsCard(this) { }.also { tabsCard = it }.view)
         column.addView(buildCarWifiCard())
-        column.addView(buildQuirksCard())
-        column.addView(buildCertificateCard())
-        column.addView(Phone.sectionLabel(this, "Your choice"))
+
+        column.addView(
+            Phone.sectionLabel(
+                this,
+                "What the car shows",
+                "How the dashboard looks and what may appear on it.",
+            ),
+        )
+        column.addView(buildCarScreenCard())
+        column.addView(buildAllowedAppsCard())
+        column.addView(TabsCard(this) { }.also { tabsCard = it }.view)
+        column.addView(buildAppDisplayCard())
+
+        column.addView(
+            Phone.sectionLabel(this, "Your choice", "Headway does not decide this one for you."),
+        )
         column.addView(buildDrivingCard())
-        column.addView(Phone.sectionLabel(this, "If something is wrong"))
+
+        column.addView(
+            Phone.sectionLabel(
+                this,
+                "If something is wrong",
+                "Nothing below here is needed by a car that connects.",
+                withDivider = true,
+            ),
+        )
         column.addView(buildSelfTestCard())
         column.addView(buildDiagnosticsCard())
+        // The last two are for a car that will not come up at all: one head
+        // unit in a hundred needs a quirk, and fewer still need a certificate
+        // of their own. They stay one tap away rather than in the column.
+        column.addView(
+            Phone.disclosure(
+                this,
+                "Head unit quirks, and the phone certificate",
+                LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(buildQuirksCard())
+                    addView(buildCertificateCard())
+                },
+            ),
+        )
+
+        column.addView(
+            Phone.sectionLabel(this, "This build", "Which APK is installed, and updates."),
+        )
         column.addView(buildUpdatesCard())
 
         Phone.stagger(column)
@@ -631,7 +682,11 @@ class MainActivity : AppCompatActivity() {
                 this,
                 "When you tap an app on the car screen, Headway can either mirror " +
                     "your phone or hand the app a display the size of the car panel " +
-                    "and let it draw itself there.",
+                    "and let it draw itself there.\n\n" +
+                    "Mirroring is the default and needs nothing set up. The simulated " +
+                    "display is the only way to get a genuinely car-shaped picture, and " +
+                    "it costs a Developer options toggle and a phone screen that has to " +
+                    "stay on all drive.",
             ),
         )
         appDisplayStatus = Phone.StatusRow(this, "Simulated car display")
@@ -658,22 +713,23 @@ class MainActivity : AppCompatActivity() {
         }
         card.addView(appDisplaySwitch)
         card.addView(
+            Phone.note(
+                this,
+                "To check which display you picked — and whether it is a (secure) one " +
+                    "— run the self-test under If something is wrong. It lists every " +
+                    "display with its flags.",
+            ).apply { layoutParams = Phone.spaced(this@MainActivity, 10f) },
+        )
+        card.addView(
             Phone.disclosure(
                 this,
                 "What to turn on, and what to pick",
-                "Three steps, all in Settings, none of them needing a computer.\n\n" +
+                "Two steps, both in Settings, neither needing a computer.\n\n" +
                     "1. Settings, System, Developer options, \"Simulate secondary " +
                     "displays\". Pick 720x480/142. Do NOT pick an entry whose label " +
                     "says (secure) — those cannot be recorded and the car goes black " +
                     "with no error.\n\n" +
-                    "2. In the same screen, turn on \"Disable screen-share protections " +
-                    "for apps and notifications\". Android 15 and later stop a screen " +
-                    "capture when the phone locks and ask again on the next unlock, " +
-                    "which costs the car its picture every time; this is the reported " +
-                    "way to prevent it. Worth turning on, though Headway has not been " +
-                    "able to confirm from Android's own source that this is the toggle " +
-                    "that governs it.\n\n" +
-                    "3. Turn the switch above on. Then when you press Connect and " +
+                    "2. Turn the switch above on. Then when you press Connect and " +
                     "Android asks what to share, pick the row named for that display " +
                     "— not \"Entire screen\".\n\n" +
                     "Why this works: Android refuses to let an app put another app's " +
@@ -681,42 +737,38 @@ class MainActivity : AppCompatActivity() {
                     "is trusted, and any app may be launched onto a trusted display. " +
                     "So the app lays itself out for 720 by 480, Headway records that " +
                     "display rather than your phone, and the car gets 720 of its 800 " +
-                    "columns at true size. Mirroring your phone fills 216 of them.\n\n" +
-                    "Two costs, and they are real. The list of sizes is fixed by " +
-                    "Android and has no 800x480, so there is a 40-pixel black bar down " +
-                    "each side. And your phone's screen has to stay on for the whole " +
-                    "drive, because Android switches the simulated display off with it " +
-                    "— turn the brightness right down. A half-size preview window also " +
-                    "sits on your phone the whole time; Android offers no setting that " +
-                    "hides it, but the switch above covers it.",
+                    "columns at true size. Mirroring your phone fills 216 of them.",
             ),
         )
+        // Kept as its own fold rather than merged into the steps above: these
+        // are the reasons not to do it, and they are what a driver comes back
+        // to read after one drive with the preview window in the way.
         card.addView(
-            Phone.note(
+            Phone.disclosure(
                 this,
-                "The switch that covers it is \"Blank the phone screen while driving\", " +
-                    "under The car screen above. It is on by default.",
+                "What a simulated display costs",
+                "The list of sizes is fixed by Android and has no 800x480, so there " +
+                    "is a 40-pixel black bar down each side.\n\n" +
+                    "Your phone's screen has to stay on for the whole drive, because " +
+                    "Android switches the simulated display off with it. There is no " +
+                    "Developer options toggle for that, and none for the related " +
+                    "problem either: since Android 15 QPR1 the platform stops a " +
+                    "screen capture whenever the device locks, with no exemption an " +
+                    "app can ask for. An earlier version of this screen pointed at " +
+                    "\"Disable screen-share protections for apps and notifications\", " +
+                    "and that was wrong — it governs what is redacted from a share, " +
+                    "not the stop-on-lock. What helps is not letting the phone lock, " +
+                    "which \"Blank the phone screen while driving\" does by holding " +
+                    "the screen awake behind the black cover.\n\n" +
+                    "A half-size window sits on your phone the whole time. It is not a " +
+                    "preview — it is the simulated display's actual output surface, so " +
+                    "closing it would destroy the display and the car picture with it, " +
+                    "and Android has no setting that hides it. What Headway can do is " +
+                    "cover it, which is what \"Blank the phone screen while driving\", " +
+                    "on The car screen card, is for; it is on by default and needs " +
+                    "the accessibility grant. Your notification shade still shows " +
+                    "that recording is happening.",
             ),
-        )
-        card.addView(
-            Phone.note(
-                this,
-                "This is how you get rid of the preview window. Android has no setting " +
-                    "that hides it and it cannot be closed — it is not a preview, it is the " +
-                    "simulated display's actual output surface, and destroying it destroys " +
-                    "the display. What Headway can do is cover it, which needs the " +
-                    "accessibility service. Tap the black screen to bring the phone back. " +
-                    "The screen still has to stay on, and your notification shade still " +
-                    "shows that recording is happening.",
-            ).apply { layoutParams = Phone.spaced(this@MainActivity, 8f) },
-        )
-        card.addView(
-            Phone.note(
-                this,
-                "To check which display you picked — and whether it is a (secure) one " +
-                    "— run the self-test at the bottom of this screen. It lists every " +
-                    "display with its flags.",
-            ).apply { layoutParams = Phone.spaced(this@MainActivity, 10f) },
         )
         return card
     }
@@ -797,32 +849,23 @@ class MainActivity : AppCompatActivity() {
                     "one panel that shows a real app, running. Arrange them on the car " +
                     "screen itself: the settings button on the rail unlocks the layout.\n\n" +
                     "Android gives an app one screen capture at a time, so exactly one " +
-                    "panel mirrors a real app and the others are places to move it to. " +
-                    "For several different apps on screen at once, use Car app or Widget " +
-                    "panels — those are drawn by the apps themselves and there is no " +
-                    "limit on how many run together.",
+                    "panel can show a live app. Car app and Widget panels have no such " +
+                    "limit.",
             ),
         )
 
-        themeValue = Phone.body(this, describeTheme())
+        themeValue = Phone.body(this, describeTheme()).apply {
+            layoutParams = Phone.spaced(this@MainActivity, 12f)
+        }
         card.addView(themeValue)
         card.addView(
             Phone.button(this, "Change the theme") { chooseTheme() },
         )
 
-        card.addView(blankScreenSwitch())
-        card.addView(
-            Phone.note(
-                this,
-                "Covers your phone with black for the drive, so nothing of the phone " +
-                    "shows and nothing can be tapped by accident. The screen has to stay " +
-                    "on -- Android stops a shared app drawing when its display sleeps -- " +
-                    "so this is the closest there is to \"off\". It is applied only when " +
-                    "you shared a single app, where the car cannot see it; sharing your " +
-                    "whole screen leaves the phone alone, because the cover would be all " +
-                    "the car got.",
-            ),
-        )
+        // The three switches together, in the order the README's settings table
+        // lists them, rather than each one buried under its own paragraph. What
+        // each does is under the two folds at the foot of the card.
+        card.addView(Phone.divider(this))
 
         autoConnectSwitch = SwitchCompat(this).apply {
             text = "Connect on its own when the car appears"
@@ -838,6 +881,8 @@ class MainActivity : AppCompatActivity() {
             layoutParams = Phone.spaced(this@MainActivity, 12f)
         }
         card.addView(autoConnectSwitch)
+
+        card.addView(blankScreenSwitch())
 
         dashboardSwitch = SwitchCompat(this).apply {
             text = "Draw the car screen (turn off only to diagnose)"
@@ -857,6 +902,24 @@ class MainActivity : AppCompatActivity() {
         }
         card.addView(dashboardSwitch)
 
+        // The blanking explanation lives here, once. "How apps reach the car"
+        // used to repeat most of it twice more, in slightly different words; it
+        // now names this switch and stops.
+        card.addView(
+            Phone.disclosure(
+                this,
+                "What blanking does, and why the phone stays on",
+                "Covers your phone with black for the drive, so nothing of the phone " +
+                    "shows and nothing can be tapped by accident. The screen has to stay " +
+                    "on -- Android stops a shared app drawing when its display sleeps -- " +
+                    "so this is the closest there is to \"off\". Tap the black screen to " +
+                    "bring the phone back, and turn the brightness right down.\n\n" +
+                    "It is applied only when you shared a single app, where the car " +
+                    "cannot see it; sharing your whole screen leaves the phone alone, " +
+                    "because the cover would be all the car got. Covering needs the " +
+                    "accessibility grant, and the log says so when it does not have it.",
+            ),
+        )
         card.addView(
             Phone.disclosure(
                 this,
@@ -872,8 +935,13 @@ class MainActivity : AppCompatActivity() {
                     "An app still reaches the car as pixels — that is the one thing " +
                     "Android will not let Headway draw itself — but those pixels now " +
                     "land inside a panel of the car screen rather than replacing all " +
-                    "of it. Turning this switch off falls back to sending the car a " +
-                    "raw capture of the phone, with no panels at all. It exists to " +
+                    "of it. Android gives an app one screen capture at a time, so " +
+                    "exactly one panel mirrors a real app and the others are places to " +
+                    "move it to. For several different apps on screen at once, use Car " +
+                    "app or Widget panels — those are drawn by the apps themselves and " +
+                    "there is no limit on how many run together.\n\n" +
+                    "Turning \"Draw the car screen\" off falls back to sending the car " +
+                    "a raw capture of the phone, with no panels at all. It exists to " +
                     "diagnose a car that will not show the drawn screen.",
             ),
         )
@@ -1066,9 +1134,27 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * The last step of a first connection, and the one that makes every later
+     * one automatic. Sits in the connect group for that reason, immediately
+     * under the checklist, matching the README's "First connect to a real car".
+     */
     private fun buildCarWifiCard(): View {
         val card = Phone.card(this, "Car Wi-Fi")
-        carWifiValue = Phone.body(this, describeCarWifi())
+        // Deliberately short: describeCarWifi() below already says what to do
+        // when no network is known yet, and saying it twice was how this screen
+        // got long in the first place.
+        card.addView(
+            Phone.body(
+                this,
+                "Pair once, and Android stops asking you to approve the car's " +
+                    "network on every connection. That is what lets a drive start " +
+                    "with the phone in your pocket.",
+            ),
+        )
+        carWifiValue = Phone.body(this, describeCarWifi()).apply {
+            layoutParams = Phone.spaced(this@MainActivity, 10f)
+        }
         card.addView(carWifiValue)
 
         // The row that ends the approval sheet. See pairWithCarWifi and
