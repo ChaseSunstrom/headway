@@ -202,8 +202,8 @@
           See WidgetSetupActivity.
 
           `configChanges` covers everything, and this is the rare activity where
-          that is right rather than lazy: it draws nothing -- the theme is
-          invisible and it inflates no layout -- so there is no configuration to
+          that is right rather than lazy: it draws nothing (the theme is
+          invisible and it inflates no layout), so there is no configuration to
           re-read, and being recreated is purely destructive. Recreation runs
           onDestroy before the new onCreate, which dropped the claim protecting
           the widget id already in flight and then allocated a second one; the

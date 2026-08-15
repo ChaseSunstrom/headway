@@ -252,3 +252,9 @@ jobs:
       # "Every TODO left in code must have a matching entry in BLOCKERS.md."
       - name: Every TODO is tracked
         run: ./tools/check-todos.sh
+
+      # Cheap, and it runs in seconds rather than several minutes into the
+      # Android build, which is where an unparseable manifest otherwise
+      # surfaces -- with no line number.
+      - name: Every XML file parses
+        run: ./tools/check-xml.sh
