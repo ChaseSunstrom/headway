@@ -133,14 +133,23 @@ class PaneTreeView(
         container: LinearLayout,
         horizontal: Boolean,
     ): View {
-        val thickness = if (editing) metrics.unit / 2 else HAIRLINE_PX
+        val thickness = if (editing) metrics.unit / 2 else GUTTER_PX
         val view = View(context).apply {
             layoutParams = if (horizontal) {
                 LinearLayout.LayoutParams(thickness, MATCH_PARENT)
             } else {
                 LinearLayout.LayoutParams(MATCH_PARENT, thickness)
             }
-            setBackgroundColor(if (editing) Headway.ACCENT_DIM else Headway.OUTLINE)
+            // A locked divider is a *gap*, not a rule. It used to be painted
+            // `OUTLINE`, which drew a visible line between every pair of panes on
+            // top of the gap the panes' own cards already leave -- a driver
+            // reported it as "a weird line between panels" and they were right:
+            // the panes are already separated by their card edges, so the line
+            // was a second, thinner border with nothing to delimit.
+            //
+            // While editing it stays visible on purpose. Then it is a control,
+            // and a control the driver cannot see is one they cannot drag.
+            setBackgroundColor(if (editing) Headway.ACCENT_DIM else Headway.GROUND)
         }
         if (!editing) return view
 
@@ -288,7 +297,14 @@ class PaneTreeView(
     }
 
     private companion object {
-        const val HAIRLINE_PX = 2
+        /**
+         * The gap between two locked panes, in pixels.
+         *
+         * Wide enough to read as a seam and narrow enough not to waste a car
+         * screen's very limited height. Painted in the dashboard's own ground
+         * colour, so it is a space rather than a line.
+         */
+        const val GUTTER_PX = 2
 
         /** Dark enough to read a label over any tile, light enough to see which. */
         const val SCRIM = 0xC0101418.toInt()
