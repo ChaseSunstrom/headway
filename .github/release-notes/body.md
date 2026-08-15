@@ -81,17 +81,32 @@ for what is known to be missing.
 
 ## If it fails in the car
 
-Export the log from inside the app and read the `rx`/`tx` lines. The
-whole RFCOMM conversation is logged in both directions with hex, which
-is what made the last real-car bug findable at all. Every constant is
-cited in `docs/protocol-notes.md`, so a captured frame can be decoded
-by hand against it.
+Export the log from inside the app. On a **release** build that log says
+what happened at each step, which is usually enough.
+
+If it is not — a handshake that fails, a car that hangs up, anything on the
+wire — install the matching **`-debug`** APK below and export again. That
+build compiles in the whole RFCOMM and AAP conversation in both directions
+with hex, which is what made every real-car bug so far findable. Every
+constant is cited in `docs/protocol-notes.md`, so a captured frame can be
+decoded by hand against it. Moving between the two is an ordinary update:
+same package, same key.
 
 ## Updating
 
 Headway can update itself: **Check for updates** at the bottom of the
 main screen. It only ever checks when you press it — nothing runs in
 the background, and the car link never touches the internet.
+
+It keeps you on the variant you installed — a `host` install is offered
+the `host` APK and a `compat` install the `compat` one, matched by
+filename, because handing a host install the compat APK would silently
+strip the car-app host and the other way round fails to install at all.
+
+**Builds up to 151 were debug builds published under the plain names.** The
+plain names now carry the release build, so the next update moves you onto
+it. That is deliberate and it is an ordinary update — same package, same
+key, no uninstall.
 
 **Coming from build 19 or earlier, uninstall Headway first.** Those
 builds were each signed with a throwaway key generated on the CI runner
@@ -102,33 +117,50 @@ in-app updater can work at all.
 
 ## Which APK to download
 
-Two are attached. They are the same app; they differ in two lines of
-manifest.
+Four are attached. Take a **plain** one — `-host.apk` or `-compat.apk`.
 
 - **`-host.apk` — take this one.** It declares
   `android.car.permission.TEMPLATE_RENDERER` and owns the
-  `androidx.car.app.connection` authority, which is what lets
-  third-party car apps draw their own interface on the car screen.
+  `androidx.car.app.connection` authority, which is what lets third-party
+  car apps draw their own interface on the car screen.
 - **`-compat.apk` — take this one if `-host.apk` says "App not
   installed".** A permission name has one definer per device and a
-  provider authority one owner, so if something else on your phone
-  already holds either — realistically Google's Android Auto — the
-  host APK cannot install at all. The compat APK claims neither and
-  installs anywhere. You lose only the car-app host; the car link,
-  video, touch, audio, voice, maps, phone and media are identical.
+  provider authority one owner, so if something else on your phone already
+  holds either — realistically Google's Android Auto — the host APK cannot
+  install at all. The compat APK claims neither and installs anywhere. You
+  lose only the car-app host; the car link, video, touch, audio, voice,
+  maps, phone and media are identical.
 
 Same package name and same signing key, so you can switch between them
-later with no uninstall and no data loss. The in-app updater keeps you
-on whichever you installed.
+later with no uninstall and no data loss. The in-app updater keeps you on
+whichever you installed — it matches the variant by filename, and the
+debug names below are deliberately outside that match so it can never hand
+you one by accident.
 
-## About these APKs
+### The `-debug` APKs, and when you want one
 
-They are **debug** builds, and deliberately so: protocol frame logging
-is compiled in, which is what makes a first-connection failure
-diagnosable from the in-app log export.
+`-host-debug.apk` and `-compat-debug.apk` are the same app built for
+diagnosis rather than for driving.
 
-It is signed with the development key committed in `signing/`, which is
-public and protects nothing — it exists to be *stable*, not secret, in
-exactly the way the platform-wide Android debug key is. A real
+**These are what to install if Headway will not connect to your car, and
+what to send a log from.** They compile in frame-level protocol logging —
+the whole RFCOMM and AAP conversation in both directions, with hex — which
+is what made every real-car bug so far findable at all. The release build
+compiles that out, so its log records what happened without recording every
+byte it happened to.
+
+Otherwise take a release build. It is minified and resource-shrunk, it does
+not carry the protocol logging, and it is the one meant for a drive.
+
+Both build types are signed with the same key and carry the same package
+name, so moving between them is an ordinary update with no uninstall and no
+data loss.
+
+## About the signing key
+
+Every APK here is signed with the development key committed in `signing/`,
+which is public and protects nothing — it exists to be *stable*, not
+secret, in exactly the way the platform-wide Android debug key is. A real
 distribution key belongs in CI secrets; the build picks one up from
 `HEADWAY_KEYSTORE` without a code change.
+

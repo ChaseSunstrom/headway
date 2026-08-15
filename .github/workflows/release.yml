@@ -82,13 +82,25 @@ jobs:
       # the build number in the tag: the updater compares tags and Android
       # compares versionCodes, and an update where those disagree either never
       # gets offered or is refused as a downgrade.
-      - name: Assemble both APKs
+      # Four: a release build of each variant, which is what people install,
+      # and a debug build of each, which is what diagnoses a car that will not
+      # connect. The release build is minified and has protocol frame logging
+      # compiled out; the debug build keeps both.
+      - name: Assemble every APK
         env:
           HEADWAY_BUILD_NUMBER: ${{ steps.build.outputs.number }}
-        run: ./gradlew :app:assembleHostDebug :app:assembleCompatDebug
+        run: |
+          ./gradlew :app:assembleHostRelease :app:assembleCompatRelease \
+                    :app:assembleHostDebug :app:assembleCompatDebug
 
-      - name: Check the two APKs claim what they should
+      - name: Check the two debug APKs claim what they should
         run: tools/check-install-claims.sh
+
+      - name: Check the two release APKs claim what they should
+        run: |
+          tools/check-install-claims.sh \
+            app/build/outputs/apk/host/release/app-host-release.apk \
+            app/build/outputs/apk/compat/release/app-compat-release.apk
 
       - name: Name the artifacts after what they actually are
         id: name
@@ -111,13 +123,24 @@ jobs:
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
           echo "build=${build}" >> "$GITHUB_OUTPUT"
 
-      - name: Stage both APKs
+      # The plain `-host.apk` / `-compat.apk` names go to the RELEASE builds,
+      # because `ReleaseCatalog.chooseApk` matches exactly those suffixes: an
+      # install follows its own variant onto the build people are meant to run.
+      # The debug names deliberately fall outside that match --
+      # `-host-debug.apk` does not end with `-host.apk` -- so an updater can
+      # never hand somebody a debug build by accident.
+      # `ReleaseCatalogVariantTest` pins all four names.
+      - name: Stage every APK
         run: |
           set -euo pipefail
-          cp app/build/outputs/apk/host/debug/app-host-debug.apk \
+          cp app/build/outputs/apk/host/release/app-host-release.apk \
              "${{ steps.name.outputs.stem }}-host.apk"
-          cp app/build/outputs/apk/compat/debug/app-compat-debug.apk \
+          cp app/build/outputs/apk/compat/release/app-compat-release.apk \
              "${{ steps.name.outputs.stem }}-compat.apk"
+          cp app/build/outputs/apk/host/debug/app-host-debug.apk \
+             "${{ steps.name.outputs.stem }}-host-debug.apk"
+          cp app/build/outputs/apk/compat/debug/app-compat-debug.apk \
+             "${{ steps.name.outputs.stem }}-compat-debug.apk"
           ls -l "${{ steps.name.outputs.stem }}"-*.apk
 
       # Uses the preinstalled GitHub CLI rather than a third-party action. This
@@ -144,6 +167,8 @@ jobs:
           gh release create "${{ steps.name.outputs.tag }}" \
             "${{ steps.name.outputs.stem }}-host.apk" \
             "${{ steps.name.outputs.stem }}-compat.apk" \
+            "${{ steps.name.outputs.stem }}-host-debug.apk" \
+            "${{ steps.name.outputs.stem }}-compat-debug.apk" \
             --title "Headway ${{ steps.name.outputs.version }} (build ${{ steps.name.outputs.build }})" \
             --notes-file notes.md \
             --prerelease \

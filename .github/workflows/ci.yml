@@ -136,6 +136,17 @@ jobs:
           HEADWAY_BUILD_NUMBER: ${{ github.run_number }}
         run: ./gradlew :app:assembleHostDebug :app:assembleCompatDebug
 
+      # The release build is what people install now, so it is built on every
+      # push rather than only at publish time. R8 and resource shrinking are the
+      # reason: they fail at *build* time on a missing keep rule and at *run*
+      # time on a wrong one, and the release job is the worst place to find
+      # either. proguard-rules.pro exists because a release build once shipped a
+      # permanently broken speech recogniser while every debug build was fine.
+      - name: Assemble both release APKs
+        env:
+          HEADWAY_BUILD_NUMBER: ${{ github.run_number }}
+        run: ./gradlew :app:assembleHostRelease :app:assembleCompatRelease
+
       # The one property the variants exist for, checked on the built APKs
       # rather than on the intent. Both ways of getting it wrong are silent:
       # claims left in `compat` make the fallback uninstallable on exactly the
@@ -143,6 +154,15 @@ jobs:
       # host with no error anywhere.
       - name: The two APKs claim what they should
         run: ./tools/check-install-claims.sh
+
+      # The same assertion against the minified build. R8 rewrites the manifest
+      # too, and a rule that stripped the provider would produce exactly the
+      # "App not installed" the variant split exists to prevent.
+      - name: The two release APKs claim what they should
+        run: |
+          ./tools/check-install-claims.sh \
+            app/build/outputs/apk/host/release/app-host-release.apk \
+            app/build/outputs/apk/compat/release/app-compat-release.apk
 
       # The variants share every line of Kotlin, so running the suite twice
       # would buy nothing; `host` is the default and the one people install.
@@ -159,6 +179,8 @@ jobs:
           path: |
             app/build/outputs/apk/host/debug/app-host-debug.apk
             app/build/outputs/apk/compat/debug/app-compat-debug.apk
+            app/build/outputs/apk/host/release/app-host-release.apk
+            app/build/outputs/apk/compat/release/app-compat-release.apk
           retention-days: 14
 
   instrumented:

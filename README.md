@@ -1091,10 +1091,14 @@ sent. CLAUDE.md's "no update checks" rule is about the app never depending on
 connectivity or phoning home, and both still hold: Headway starts, connects to
 the car and drives with no network at all.
 
-### Which of the two APKs to take
+### Which of the four APKs to take
 
-Every release carries two. They are the same app, built from the same commit,
-signed with the same key, and they differ in **two lines of manifest**.
+Every release carries four: a **release** build and a **debug** build of each of
+two variants. Take a plain `-host.apk` or `-compat.apk`; the `-debug` pair is for
+diagnosing a car that will not connect.
+
+The two *variants* are the same app, built from the same commit, signed with the
+same key, and they differ in **two lines of manifest**.
 
 | | `-host.apk` | `-compat.apk` |
 |---|---|---|
@@ -1117,7 +1121,32 @@ card rather than a live map. Everything else is identical. The *Updates* card
 tells you which build you are running, so a refusal months later is readable.
 
 Same package name and same key, so you can move between them later with no
-uninstall and no data loss. The in-app updater keeps you on whichever you have.
+uninstall and no data loss. The in-app updater keeps you on whichever you have —
+it matches the variant by filename, and the `-debug` names sit deliberately
+outside that match so it can never hand you one by accident.
+
+#### Release or debug
+
+| | plain (`-host.apk`) | `-host-debug.apk` |
+|---|---|---|
+| What it is for | driving | diagnosing |
+| Minified and resource-shrunk (R8) | yes | no |
+| Frame-level protocol logging in the exported log | no | **yes** |
+| TLS session keys exportable | no | yes |
+| Everything a driver uses | identical | identical |
+
+**Take the release build.** It is smaller and faster and its log records what
+happened rather than every byte it happened to.
+
+**Install the `-debug` build when something on the wire is wrong** — a handshake
+that fails, a car that hangs up, video that never starts — and export a log from
+it. That log carries the whole RFCOMM and AAP conversation in both directions
+with hex, which is what made every real-car bug so far findable at all. Moving
+between the two is an ordinary update: same package, same key, no uninstall.
+
+Builds up to 151 were debug builds published under the plain names. The plain
+names now carry the release build, so an update from one of those moves you onto
+it.
 
 ### If it says "App not installed"
 
