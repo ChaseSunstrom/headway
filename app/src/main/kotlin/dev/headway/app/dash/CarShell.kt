@@ -878,6 +878,7 @@ class CarShell(
     /** Everything the driver can change from the car. */
     private fun showSettings() {
         val rows = mutableListOf<CarSheet.Row>()
+        rows += CarSheet.section("This layout")
         rows += CarSheet.Row(
             title = if (layout.locked) "Edit this layout" else "Save and lock",
             detail = if (layout.locked) {
@@ -890,12 +891,19 @@ class CarShell(
             unlockOrLock()
         }
         rows += CarSheet.Row("Layouts", "Switch, add or delete a layout") { showLayouts() }
-        rows += CarSheet.Row("Pinned", "What sits on the rail, and in what order") { showRailEditor() }
+
+        rows += CarSheet.section("Apps")
         rows += CarSheet.Row("Open an app", "Show a running app in the app pane") {
             showAppPicker { openApp(it) }
         }
+        rows += CarSheet.Row("Apps and panels", appSourceSummary()) { showAppSettings() }
+
+        rows += CarSheet.section("Appearance")
         rows += CarSheet.Row("Theme", themeSummary()) { showThemes() }
         rows += CarSheet.Row("The rail", railStyle.describe()) { showRailStyle() }
+        rows += CarSheet.Row("Pinned", "What sits on the rail, and in what order") { showRailEditor() }
+
+        rows += CarSheet.section("This drive")
         if (HeadwayAccessibilityService.instance.value?.covering == true) {
             rows += CarSheet.Row(
                 title = "Show the phone screen",
@@ -905,7 +913,6 @@ class CarShell(
                 runCatching { HeadwayAccessibilityService.instance.value?.hideBlackout() }
             }
         }
-        rows += CarSheet.Row("Apps and panels", appSourceSummary()) { showAppSettings() }
         rows += CarSheet.Row("About this session", sessionSummary()) { }
 
         showOverlay(

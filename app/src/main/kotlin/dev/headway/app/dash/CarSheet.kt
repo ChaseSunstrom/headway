@@ -54,12 +54,28 @@ class CarSheet(
 ) {
 
     /** One row. [detail] is optional; [selected] fills the row in the accent. */
+    /**
+     * A heading between groups of rows.
+     *
+     * A sheet of nine equally weighted rows is a list the driver has to read
+     * end to end every time. Headings turn it into four groups they can skip,
+     * which matters more here than in an app: this is read at a glance, in a
+     * car, often while the engine is running.
+     *
+     * Modelled as a [Row] rather than a second type so a caller can build one
+     * list in one order, and `build` renders it as a label instead of a target.
+     * A section is never pressable, so its `onChosen` is never called.
+     */
+    fun section(title: String): Row = Row(title = title, isSection = true) {}
+
     data class Row(
         val title: String,
         val detail: String? = null,
         val icon: Drawable? = null,
         val selected: Boolean = false,
         val destructive: Boolean = false,
+        /** True for a heading. See [section]. */
+        val isSection: Boolean = false,
         val onChosen: () -> Unit,
     )
 
@@ -108,7 +124,7 @@ class CarSheet(
             chipsTitle?.let { body.addView(sectionLabel(it)) }
             body.addView(chipRow(chips))
         }
-        rows.forEach { body.addView(row(it)) }
+        rows.forEach { body.addView(if (it.isSection) sectionLabel(it.title) else row(it)) }
 
         val scroller = ScrollView(context).apply {
             isFillViewport = true

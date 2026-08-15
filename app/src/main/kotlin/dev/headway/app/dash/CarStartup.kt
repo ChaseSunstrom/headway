@@ -24,11 +24,13 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.view.View
-import android.view.animation.DecelerateInterpolator
+import android.view.animation.LinearInterpolator
 import dev.headway.app.ui.theme.CarMetrics
 import dev.headway.app.ui.theme.Headway
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
 
 /**
  * What the car shows in the first second and a half of a session.
@@ -48,9 +50,16 @@ import kotlin.math.min
  *
  * The launcher icon, becoming itself. Three bars of decreasing width — a road
  * narrowing towards a vanishing point — arrive from the left, staggered, fastest
- * first, and settle onto a horizon line that opens from the centre. The wordmark
- * fades up beneath them. Then the whole thing lifts and dissolves into the
- * dashboard.
+ * first, and *overshoot slightly* before settling onto a horizon line that opens
+ * from the centre. The wordmark fades up beneath them with its letters drawing
+ * in from wide to their resting spacing. A highlight then crosses the settled
+ * bars, which is what keeps the last third of the run from reading as a frozen
+ * frame. Finally the whole composition lifts, swells a few percent and
+ * dissolves, so the dashboard arrives *through* it rather than after it.
+ *
+ * The overshoot and the swell are both deliberately small. This plays on a
+ * dashboard, at arm's length, once per drive: the job is to look alive and
+ * deliberate, not to be noticed as an animation.
  *
  * No frame of it is decorative in the sense of being arbitrary: it is the
  * product's one visual idea (see [Headway]) drawn over time instead of at rest,
@@ -58,9 +67,13 @@ import kotlin.math.min
  *
  * ## Why it is a `View` and a single animator
  *
- * One `ValueAnimator` from 0 to 1, with each element deriving its own phase from
- * the same number. Several animators would need coordinating and would drift
- * against each other on a device that drops frames; one cannot. It is also the
+ * One `ValueAnimator` from 0 to 1, **linear**, with each element deriving its own
+ * phase from the same number and easing itself. Several animators would need
+ * coordinating and would drift against each other on a device that drops frames;
+ * one cannot. The linearity is load-bearing rather than a detail: the phase
+ * fractions below are moments in time, and easing the master animator curved the
+ * timeline itself — every element was eased twice and the stagger was squeezed
+ * into the first third of the run. It is also the
  * cheapest thing that can be encoded at 30 fps while the rest of the session is
  * still being brought up — three rounded rectangles, a line and one text run.
  */
@@ -98,7 +111,14 @@ class CarStartupView(
         if (animator != null) return
         animator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = TOTAL_MILLIS
-            interpolator = DecelerateInterpolator(1.2f)
+            // Linear, and this matters. Every element derives its own phase from
+            // `progress` with hard fractions -- a bar starts at 0.09, the
+            // wordmark at 0.44 -- and those fractions are only the intended
+            // moments if `progress` advances with wall-clock time. Easing here
+            // curved the timeline itself, so each element was eased twice and
+            // the stagger it was meant to have was squeezed into the first third
+            // of the run. Elements ease themselves; the clock does not.
+            interpolator = LinearInterpolator()
             addUpdateListener {
                 progress = it.animatedValue as Float
                 invalidate()
@@ -117,14 +137,19 @@ class CarStartupView(
         val height = height.toFloat()
         if (width <= 0f || height <= 0f) return
 
-        // The whole composition lifts slightly and fades as it hands over.
-        val exit = phase(EXIT_FROM, 1f)
+        // The hand-off: the composition eases up and swells very slightly as it
+        // dissolves, so the dashboard arrives *through* it rather than after it.
+        // A pure fade reads as the picture being switched off; a small scale
+        // reads as it opening out into what comes next.
+        val exit = ease(phase(EXIT_FROM, 1f))
         val alpha = 1f - exit
-        val lift = -exit * metrics.unit * 0.6f
+        val lift = -exit * metrics.unit * 0.55f
+        val swell = 1f + exit * 0.06f
 
         canvas.drawColor(Headway.GROUND)
         canvas.save()
         canvas.translate(0f, lift)
+        canvas.scale(swell, swell, width / 2f, height * 0.44f)
 
         val centreX = width / 2f
         val centreY = height * 0.44f
@@ -134,21 +159,25 @@ class CarStartupView(
         val longest = min(width * 0.42f, unit * 5.5f)
 
         // The horizon: a rule that opens from the centre, under the bars.
-        val horizon = phase(HORIZON_FROM, HORIZON_TO)
+        val horizon = ease(phase(HORIZON_FROM, HORIZON_TO))
+        val horizonY = centreY + gap * 2.4f
         if (horizon > 0f) {
             linePaint.color = withAlpha(Headway.OUTLINE, alpha * 0.9f)
             linePaint.strokeWidth = max(1f, unit * 0.05f)
             val half = longest * 0.62f * horizon
-            val y = centreY + gap * 2.4f
-            canvas.drawLine(centreX - half, y, centreX + half, y, linePaint)
+            canvas.drawLine(centreX - half, horizonY, centreX + half, horizonY, linePaint)
         }
 
         // Three bars, decreasing in width, arriving from the left in sequence.
+        // The sweep is a highlight that crosses them once they have settled --
+        // the one moment of motion after everything has arrived, which is what
+        // keeps the last third from reading as a frozen frame.
+        val sweep = phase(SWEEP_FROM, SWEEP_TO)
         for (index in 0 until BARS) {
             val from = index * STAGGER
             val bar = phase(from, from + BAR_TRAVEL)
             if (bar <= 0f) continue
-            val eased = ease(bar)
+            val eased = settle(bar)
             val barWidth = longest * (1f - index * 0.26f)
             val restX = centreX - longest / 2f
             val startX = restX - longest * 1.4f
@@ -162,19 +191,46 @@ class CarStartupView(
                 1 -> Headway.ACCENT_DIM
                 else -> Headway.OUTLINE
             }
-            barPaint.color = withAlpha(color, alpha * eased)
-            rect.set(left, top, left + barWidth * eased, top + barHeight)
+            val arrival = ease(bar)
+            barPaint.color = withAlpha(color, alpha * arrival)
+            rect.set(left, top, left + barWidth * arrival, top + barHeight)
             canvas.drawRoundRect(rect, barHeight / 2f, barHeight / 2f, barPaint)
+
+            // A short bright segment travelling along the settled bar. Drawn
+            // only while the sweep is running and only over the part of the bar
+            // that exists, so it can never trail off the end.
+            if (sweep > 0f && sweep < 1f && arrival > 0.99f) {
+                val head = rect.left + rect.width() * (sweep * 1.25f - index * 0.08f)
+                val tail = head - barWidth * 0.22f
+                if (head > rect.left && tail < rect.right) {
+                    // Brightest in the middle of its own travel, so it appears
+                    // and leaves rather than switching on and off.
+                    val strength = 1f - abs(sweep - 0.5f) * 2f
+                    barPaint.color = withAlpha(Headway.TEXT, alpha * strength * 0.5f)
+                    rect.set(
+                        max(tail, rect.left),
+                        top,
+                        min(head, rect.right),
+                        top + barHeight,
+                    )
+                    canvas.drawRoundRect(rect, barHeight / 2f, barHeight / 2f, barPaint)
+                }
+            }
         }
 
-        val word = phase(WORD_FROM, WORD_TO)
+        val word = ease(phase(WORD_FROM, WORD_TO))
         if (word > 0f) {
             textPaint.color = withAlpha(Headway.TEXT, alpha * word)
             textPaint.textSize = unit * 0.34f
+            // The letters draw apart and close to their resting spacing as they
+            // fade up. It is the cheapest way to make type look like it is being
+            // *set* rather than switched on, and it costs one float per frame.
+            textPaint.letterSpacing = WORD_SPACING_WIDE +
+                (WORD_SPACING_REST - WORD_SPACING_WIDE) * word
             canvas.drawText(
                 WORDMARK,
                 centreX,
-                centreY + gap * 2.4f + unit * 0.62f + (1f - word) * unit * 0.2f,
+                horizonY + unit * 0.62f + (1f - word) * unit * 0.22f,
                 textPaint,
             )
         }
@@ -203,6 +259,21 @@ class CarStartupView(
         return 1f - inverted * inverted * inverted
     }
 
+    /**
+     * [ease] with a small overshoot, so a bar arrives with weight.
+     *
+     * A rule that decelerates to exactly its resting place looks correct and
+     * dead. Passing it by a few percent and coming back is what makes the
+     * arrival read as a physical object stopping rather than an interpolation
+     * ending. The overshoot is deliberately small: this plays on a dashboard, at
+     * arm's length, once per drive.
+     */
+    private fun settle(value: Float): Float {
+        val eased = ease(value)
+        val back = sin(value.coerceIn(0f, 1f) * Math.PI.toFloat())
+        return eased + back * OVERSHOOT * (1f - value)
+    }
+
     private fun withAlpha(color: Int, fraction: Float): Int = Color.argb(
         (Color.alpha(color) * fraction.coerceIn(0f, 1f)).toInt(),
         Color.red(color),
@@ -229,7 +300,19 @@ class CarStartupView(
         const val HORIZON_TO = 0.62f
         const val WORD_FROM = 0.44f
         const val WORD_TO = 0.76f
+
+        /** The highlight that crosses the settled bars, after they have all landed. */
+        const val SWEEP_FROM = 0.58f
+        const val SWEEP_TO = 0.88f
+
         const val EXIT_FROM = 0.86f
+
+        /** How far a bar passes its resting place before coming back. */
+        const val OVERSHOOT = 0.035f
+
+        /** Letter spacing as the wordmark appears, and where it settles. */
+        const val WORD_SPACING_WIDE = 0.55f
+        const val WORD_SPACING_REST = 0.30f
 
         const val WORDMARK = "HEADWAY"
     }
