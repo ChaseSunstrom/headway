@@ -57,10 +57,11 @@ re-locks.
 |---|---|
 | App | **a real third-party app, rendered into the pane** |
 | Maps | **the navigator's own map**, drawn into the pane's `Surface`; the turn card when no allowed app offers a car interface |
-| Now playing / Music | `MediaSessionManager`, and `MediaBrowserService` for the library |
+| Now playing / Music | `MediaSessionManager`, and `MediaBrowserService` for the library. Music carries now-playing at its foot and the queue one tap from it |
 | Phone | the dialer's own call notification, and `CallLog.Calls` |
 | Car app | `androidx.car.app` templates, drawn by Headway (ADR 0007) |
-| Messages | `NotificationListenerService` + the app's own `RemoteInput` |
+| Notifications | `NotificationListenerService`, everything, newest first |
+| Messages | the same feed filtered to conversations, + the app's own `RemoteInput` |
 | Widget | the app's own `RemoteViews`, through `AppWidgetHost` — **any number, all different apps, all at once** |
 | Car | the head unit's own AAP sensor channel — speed, revs, fuel, range, tyre pressures, outside temperature, odometer |
 | All apps / Clock | Headway's own |
@@ -96,10 +97,26 @@ time. Empty by default. The app picker, the widget picker, the car-app panel, th
 launcher grid and the voice "open X" command all pass through the same gate.
 
 The *asking* happens in two places: on the phone, parked, under *Apps allowed on
-the car screen*, and from the seat, where a Car app panel lists every installed
-car app and asks for the grant on the one the driver taps. Discovery is
-deliberately unfiltered — an app filtered out of a picker is invisible rather
-than blocked, with nothing on the car screen saying why.
+the car screen*, and from the seat, where the Car app and Music panels list every
+installed app of their kind, mark the ones that still need a grant, and ask for
+it on the one the driver taps. Discovery is deliberately unfiltered — an app
+filtered out of a picker is invisible rather than blocked, with nothing on the
+car screen saying why.
+
+**How large everything draws is three numbers, and they are three because they
+correct three different faults.** *Panel size* moves Headway's own drawing in
+every panel at once, by wrapping the context each tile is built with — every size
+in `CarStyle` is a dp or sp literal resolved against it, so one number moves all
+of them with no call site changed. A per-app *size* moves the density a hosted
+car app is given, which moves what the app draws from density. *Map detail*
+enlarges the app's **buffer** and reports a proportionally larger dpi, which is
+the only lever left for an app that sizes something in fixed pixels and ignores
+every density it is handed — a real one does, and its location marker was the
+report that produced this.
+
+**Which tab a session opens on** is a setting rather than "wherever the last
+drive ended", defaulting to whichever tab can show a map — resolved by what the
+tab *contains*, so renaming or rebuilding tabs cannot break it.
 
 Themes are three bases (dark, true black, light) times six accents, one of which
 is *no* accent. Eighteen combinations, composed rather than hand-written, with
