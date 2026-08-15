@@ -440,13 +440,14 @@ class CarAppSession(
                 // small by any measure, and leaving the phone's NORMAL or LARGE
                 // in place is how an app comes to choose a layout built for a
                 // handset and draw it into a strip of dashboard.
-                screenLayout = (screenLayout and Configuration.SCREENLAYOUT_SIZE_MASK.inv()) or
-                    when {
-                        smallestScreenWidthDp >= 720 -> Configuration.SCREENLAYOUT_SIZE_XLARGE
-                        smallestScreenWidthDp >= 600 -> Configuration.SCREENLAYOUT_SIZE_LARGE
-                        smallestScreenWidthDp >= 320 -> Configuration.SCREENLAYOUT_SIZE_NORMAL
-                        else -> Configuration.SCREENLAYOUT_SIZE_SMALL
-                    }
+                val bucket = when {
+                    smallestScreenWidthDp >= 720 -> Configuration.SCREENLAYOUT_SIZE_XLARGE
+                    smallestScreenWidthDp >= 600 -> Configuration.SCREENLAYOUT_SIZE_LARGE
+                    smallestScreenWidthDp >= 320 -> Configuration.SCREENLAYOUT_SIZE_NORMAL
+                    else -> Configuration.SCREENLAYOUT_SIZE_SMALL
+                }
+                screenLayout =
+                    (screenLayout and Configuration.SCREENLAYOUT_SIZE_MASK.inv()) or bucket
             }
             // Car, and dark or not according to the car screen rather than the
             // phone. `UI_MODE_TYPE_CAR` is how an app knows to use its car
@@ -454,10 +455,15 @@ class CarAppSession(
             // white template into a dashboard the driver has set to near-black,
             // and follows the driver's theme rather than being assumed, because
             // one of the themes on offer is a light one for daylight.
-            uiMode = (uiMode and Configuration.UI_MODE_TYPE_MASK.inv() and
-                Configuration.UI_MODE_NIGHT_MASK.inv()) or
-                Configuration.UI_MODE_TYPE_CAR or
-                if (night) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO
+            val nightBits = if (night) {
+                Configuration.UI_MODE_NIGHT_YES
+            } else {
+                Configuration.UI_MODE_NIGHT_NO
+            }
+            val keptUiMode = uiMode and
+                Configuration.UI_MODE_TYPE_MASK.inv() and
+                Configuration.UI_MODE_NIGHT_MASK.inv()
+            uiMode = keptUiMode or Configuration.UI_MODE_TYPE_CAR or nightBits
         }
         onStep(
             "car app: ${app.label} told it is ${configuration.screenWidthDp}x" +

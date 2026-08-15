@@ -20,7 +20,6 @@ import android.content.Intent
 import android.hardware.display.DisplayManager
 import android.provider.Settings
 import android.view.Display
-import android.view.Display.TYPE_OVERLAY
 import dev.headway.app.log.SessionLog
 
 private const val TAG = "HeadwayOverlay"
@@ -62,6 +61,18 @@ data class OverlayDisplayInfo(
      * no flag and no amount of `canRetrieveWindowContent` changes it. A driver
      * reported it as "I cant tap inside of it"; this is why, and it is not
      * fixable from inside an app.
+     *
+     * ## Why this is not read from the display
+     *
+     * `Display.getType()` and `Display.TYPE_OVERLAY` are both `@hide`, so an
+     * unprivileged app cannot ask a display what kind it is without reaching
+     * for a non-SDK API — which is out of bounds here. What it *can* do is
+     * observe that this list exists for one feature, "Simulate secondary
+     * displays", and that every display the feature produces is an overlay
+     * display. So the answer is derived from `system`: a display the system
+     * itself created and offered here is one accessibility will not inject
+     * onto. A genuine external panel would be a false positive, and it would
+     * cost a warning that is wrong rather than a feature that is broken.
      */
     val takesTouch: Boolean = true,
 ) {
@@ -156,8 +167,6 @@ object OverlayDisplay {
             // ours, it is named by us, and launching an app onto it would put
             // the app inside the very sink that is recording it.
             if (name.contains(HEADWAY_DISPLAY_MARKER, ignoreCase = true)) return@mapNotNull null
-            // Kept, but marked. See [OverlayDisplayInfo.takesTouch].
-            val overlay = display.type == TYPE_OVERLAY
             val mode = display.mode
             val metrics = runCatching {
                 context.createDisplayContext(display).resources.displayMetrics
@@ -168,7 +177,9 @@ object OverlayDisplay {
                 width = mode?.physicalWidth?.takeIf { it > 0 } ?: metrics?.widthPixels ?: 0,
                 height = mode?.physicalHeight?.takeIf { it > 0 } ?: metrics?.heightPixels ?: 0,
                 densityDpi = metrics?.densityDpi ?: 0,
-                takesTouch = !overlay,
+                // Kept, but marked. See [OverlayDisplayInfo.takesTouch] --
+                // including why this cannot ask the display directly.
+                takesTouch = false,
             )
         }.filter { it.width > 0 && it.height > 0 }
     }

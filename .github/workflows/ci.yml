@@ -280,3 +280,11 @@ jobs:
       # surfaces -- with no line number.
       - name: Every XML file parses
         run: ./tools/check-xml.sh
+
+      # The Android modules need the SDK to compile, so a mistake in app/ is
+      # otherwise found several minutes into the Android job -- and a duplicate
+      # function signature is found as a page of "overload resolution
+      # ambiguity" at every call site, none of which name the duplicate. This
+      # runs in a second and names it.
+      - name: Kotlin shapes that only the SDK would otherwise catch
+        run: python3 ./tools/check-kotlin-shapes.py

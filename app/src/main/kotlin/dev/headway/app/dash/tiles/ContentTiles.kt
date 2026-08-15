@@ -1632,11 +1632,6 @@ class HeadwayNotificationListener : NotificationListenerService() {
             )
         }
 
-        private fun appLabelOf(context: Context, packageName: String): String = runCatching {
-            val packages = context.packageManager
-            packages.getApplicationLabel(packages.getApplicationInfo(packageName, 0)).toString()
-        }.getOrDefault(packageName)
-
         /**
          * Registers [observer] and immediately hands it the current feed.
          *
@@ -1777,8 +1772,11 @@ class HeadwayNotificationListener : NotificationListenerService() {
          *
          * Resolved here rather than in the tile so the tile has a printable
          * sender in every branch. The lookup needs no permission beyond the
-         * `QUERY_ALL_PACKAGES` the manifest already declares, and it only runs
-         * for notifications that survived [conversationOf]'s filter.
+         * `QUERY_ALL_PACKAGES` the manifest already declares.
+         *
+         * Shared by both feeds. The notice feed briefly had its own copy with
+         * the same signature in the same companion, which is a compile error
+         * and not a subtle one -- there is nothing here worth two of.
          */
         private fun appLabelOf(context: Context, packageName: String): String = runCatching {
             val packages = context.packageManager
