@@ -251,6 +251,36 @@ granted. What follows is the road there and what is still unproven.
   does not, so the omission was invisible to every test. See ADR 0004 and the
   Phase 2 focus test.
 
+### What the 2026-08-16 drive log settled
+
+A capture from a session that connected and projected, reported as "audio isn't
+working anymore with music, and the display feels super delayed". Both were in
+Headway, both are fixed, and the log named them without a theory:
+
+- **The car was silent because the location foreground-service type was
+  refused.** `startForeground` claimed `mediaProjection` and `location` in one
+  call, and `ActiveServices.validateForegroundServiceType` *throws* rather than
+  refusing — so the screen-capture grant the driver had just tapped through was
+  dropped along with the location type it never depended on. Media audio is
+  captured from playback through that projection (ADR 0005), so no grant meant
+  no music. The claim now steps down a ladder of type sets.
+- **The same call killed the process** on an earlier run, from the first
+  statement of `onStartCommand`, when it named `mediaProjection` after Android
+  had ended the projection on lock. Nothing in that path can throw now.
+- **The delay was the now-playing pane's one-second tick.** `Choreographer`
+  logged 100 to 409 skipped frames repeatedly, frames of 1.4 to 3.4 s, on the
+  thread drawing the car screen: the tick ran a full repaint, and a repaint read
+  metadata, artwork and the whole play queue over binder and decoded a
+  `content://` cover per queue row. The session is cached and pushed by its
+  callbacks now; the tick only advances the progress bar.
+- **Voice was unavailable because `libjnidispatch.so` was not in the APK.**
+  vosk-android depends on JNA as a plain jar, whose dispatcher is a resource
+  rather than a packaged native library. CI now asserts the APK carries it.
+
+Still true and still unfixed from the same log: the car app gets no simulated
+display (B-024), a portrait-locked app mirrors into 216 of the car's 800 pixels
+(B-025), and the head unit advertises a microphone service it never answers.
+
 What has changed since that capture, in rough order of how likely each is to be
 the cause:
 
