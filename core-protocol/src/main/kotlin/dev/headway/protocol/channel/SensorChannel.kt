@@ -269,7 +269,7 @@ class SensorChannel(
      * A quirk rather than a constant because a real head unit contradicts the
      * schema by exactly a factor of a hundred. Defaults to the schema.
      */
-    val odometerScale: Int = CarSensors.ODOMETER_SCALE_E1,
+    val odometerScale: Int = CarSensors.ODOMETER_SCALE_METERS,
     /**
      * `SensorRequest.min_update_period`, sent with every request.
      *
@@ -473,7 +473,29 @@ class SensorChannel(
     private fun onBatch(payload: ByteArray): SensorChannelMessage {
         val batch = parse("SensorBatch") { SensorBatch.parseFrom(payload) }
         batchesReceived++
-        val update = decodeBatch(batch)
+        // With the scale, and this argument is the whole of the odometer bug.
+        // It read `decodeBatch(batch)`: the companion's own default won, the
+        // instance's [odometerScale] was threaded from the quirk file into a
+        // property that nothing ever read, and every batch was decoded at the
+        // schema's reading whatever the driver or the default said. Flipping
+        // the default and migrating the quirk file both changed nothing,
+        // because neither touched this line.
+        val update = decodeBatch(batch, odometerScale)
+        // Once per session: the raw value beside the converted one, so a car
+        // that disagrees with the schema is settled from one drive's log rather
+        // than from another round of guessing. This is the line three separate
+        // KDocs have promised since the quirk existed, and which was never
+        // actually written -- so no log ever carried the number that would have
+        // found the bug above.
+        if (!odometerLogged) {
+            batch.odometerDataList.lastOrNull()?.takeIf { it.hasKmsE1() }?.let { raw ->
+                odometerLogged = true
+                onStep(
+                    "sensors: odometer raw kms_e1=${raw.kmsE1} at scale $odometerScale -> " +
+                        "%.2f km".format(CarSensors.odometerKmFromE1(raw.kmsE1, odometerScale)),
+                )
+            }
+        }
         if (!update.any) batchesWithNothingKnown++
         latest = latest.mergedWith(update)
         return SensorChannelMessage.Batch(update, latest)
@@ -529,7 +551,7 @@ class SensorChannel(
             services: List<aap_protobuf.service.ServiceOuterClass.Service>,
             connectionFor: (Int) -> MessageChannel,
             minUpdatePeriod: Long = NO_UPDATE_CAP,
-            odometerScale: Int = CarSensors.ODOMETER_SCALE_E1,
+            odometerScale: Int = CarSensors.ODOMETER_SCALE_METERS,
             onStep: (String) -> Unit = {},
         ): SensorChannel? {
             val service = sensorServiceOf(services) ?: return null
@@ -604,9 +626,12 @@ class SensorChannel(
          * converted one so a drive's log settles it for any other car rather
          * than needing another round of guessing.
          */
+        // No default. A default here is what let `onBatch` call this with one
+        // argument and silently decode at the wrong scale for the life of the
+        // quirk; every caller now has to say which reading it means.
         fun decodeBatch(
             batch: SensorBatch,
-            odometerScale: Int = CarSensors.ODOMETER_SCALE_E1,
+            odometerScale: Int,
         ): CarSensors {
             val speed = batch.speedDataList.lastOrNull()
             val rpm = batch.rpmDataList.lastOrNull()

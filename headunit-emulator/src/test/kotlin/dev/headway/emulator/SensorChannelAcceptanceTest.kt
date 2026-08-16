@@ -270,7 +270,18 @@ class SensorChannelAcceptanceTest {
             // because the phone must read it from the advertisement.
             assertEquals(ChannelId.SENSOR.id, service.id)
 
-            val channel = SensorChannel.of(profile.services, { phoneConnection })!!
+            // The schema's own reading, said explicitly. These fixtures were
+            // written against `kms_e1` meaning kilometres-times-ten, and the
+            // shipped default is now the metres reading a real head unit sends
+            // -- so leaving this implicit would make the test assert whichever
+            // default happened to be current rather than the conversion it is
+            // about. `SensorChannelTest` covers the other direction, and the
+            // wiring that carries a chosen scale into the decode.
+            val channel = SensorChannel.of(
+                services = profile.services,
+                connectionFor = { phoneConnection },
+                odometerScale = CarSensors.ODOMETER_SCALE_E1,
+            )!!
             val source = EmulatedSensorSource(
                 connection = headUnitConnection,
                 channelId = service.id,

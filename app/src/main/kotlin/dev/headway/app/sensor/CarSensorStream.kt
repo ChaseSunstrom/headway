@@ -226,7 +226,7 @@ class CarSensorStream(
             profile: HeadUnitProfile,
             connectionFor: (Int) -> MessageChannel,
             /** See `HeadUnitQuirks.odometerScale`. */
-            odometerScale: Int = CarSensors.ODOMETER_SCALE_E1,
+            odometerScale: Int = CarSensors.ODOMETER_SCALE_METERS,
             onStep: (String) -> Unit = {},
         ): CarSensorStream? {
             val service = sensorServiceOf(profile) ?: return null

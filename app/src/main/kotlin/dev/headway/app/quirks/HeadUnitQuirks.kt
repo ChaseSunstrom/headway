@@ -348,6 +348,7 @@ data class HeadUnitQuirks(
         "mediaAudioOverAap=$mediaAudioOverAap keyframe=$keyframeIntervalFrames " +
         "hiddenSsid=$hiddenSsid pinBssid=${pinBssid ?: "auto"} " +
         "announceWifiChannel=$announceWifiChannel certificate=${certificate ?: "auto"} " +
+        "odometerScale=$odometerScale " +
         "suggestCarNetwork=$suggestCarNetwork videoFocusRequest=$videoFocusRequest " +
         "touch=${if (touch.isIdentity) "identity" else touch.toString()}"
 

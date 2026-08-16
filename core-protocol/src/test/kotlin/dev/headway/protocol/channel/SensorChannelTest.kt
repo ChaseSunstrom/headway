@@ -77,7 +77,10 @@ class SensorChannelTest {
 
     @Test
     fun `a batch of known scaled integers decodes to the right quantities`() {
-        val channel = SensorChannel(NullChannel())
+        val channel = SensorChannel(
+            NullChannel(),
+            odometerScale = CarSensors.ODOMETER_SCALE_E1,
+        )
         val message = channel.handle(
             batchMessage(
                 SensorBatch.newBuilder()
@@ -93,7 +96,10 @@ class SensorChannelTest {
                             .addAllTirePressuresE2(listOf(22_100, 22_000, 21_900, 22_300))
                     )
                     .addEnvironmentData(EnvironmentData.newBuilder().setTemperatureE3(18_500))
-                    // kms_e1 is kilometres in tenths, so this is 200 000 km.
+                    // kms_e1 is kilometres in tenths, so under the *schema's*
+                    // reading this is 200 000 km. The channel below is built
+                    // with that scale explicitly, because the shipped default
+                    // is now the metres reading a real head unit sends.
                     .addOdometerData(OdometerData.newBuilder().setKmsE1(2_000_000))
                     .addParkingBrakeData(ParkingBrakeData.newBuilder().setParkingBrake(false))
                     .addNightModeData(NightModeData.newBuilder().setNightMode(true))
@@ -216,6 +222,35 @@ class SensorChannelTest {
     }
 
     @Test
+    fun `the channel's own odometer scale reaches the decode`() {
+        // The bug this exists for, and the reason two previous "fixes" were
+        // invisible on a real car: the scale was threaded from the quirk file
+        // through `CarSensorStream` into this class's constructor and then
+        // dropped, because `onBatch` called the companion `decodeBatch(batch)`
+        // without it and quietly took the companion's own default. The property
+        // was never read by anything.
+        //
+        // Asserted through `handle()` rather than through `decodeBatch`,
+        // because `decodeBatch` was always right -- it was the wiring that was
+        // not, and only a live path proves the wiring.
+        val channel = SensorChannel(
+            NullChannel(),
+            odometerScale = CarSensors.ODOMETER_SCALE_METERS,
+        )
+        val message = channel.handle(
+            batchMessage(
+                SensorBatch.newBuilder()
+                    // Metres. 140 012.9 km is 87 000 miles, which is the
+                    // reading the driver's own dashboard shows.
+                    .addOdometerData(OdometerData.newBuilder().setKmsE1(140_012_900))
+                    .build()
+            )
+        )
+        val batch = assertBatch(message)
+        assertEquals(140_012.9, batch.accumulated.odometerKm!!, 0.001)
+    }
+
+    @Test
     fun `the last entry wins when a batch repeats a sensor`() {
         // Every field is `repeated` and every reference producer adds exactly
         // one. When there are several the newest is what a gauge wants; see
@@ -224,7 +259,11 @@ class SensorChannelTest {
             SensorBatch.newBuilder()
                 .addSpeedData(SpeedData.newBuilder().setSpeedE3(1_000))
                 .addSpeedData(SpeedData.newBuilder().setSpeedE3(27_778))
-                .build()
+                .build(),
+            // Said explicitly, because the parameter no longer has a default.
+            // It had one, and that is exactly how `onBatch` came to call this
+            // with one argument and decode every real batch at the wrong scale.
+            CarSensors.ODOMETER_SCALE_E1,
         )
         assertEquals(100.0, batch.speedKph!!, 0.01)
     }
