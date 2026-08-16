@@ -793,10 +793,34 @@ class CarVoiceStream(
                 onStep("voice: loaded the speech model at ${modelDirectory.absolutePath}")
                 recognizer
             } catch (t: Throwable) {
-                onStep("voice: this build cannot run the speech model (${t.javaClass.simpleName}: ${t.message})")
+                onStep("voice: this build cannot run the speech model (${describeCause(t)})")
                 null
             }
         }
+
+        /**
+         * Names the failure a reflective construction actually hit.
+         *
+         * `Constructor.newInstance` wraps whatever the constructor threw in an
+         * `InvocationTargetException` whose own message is null, so the log line
+         * from a real drive read, in full, "InvocationTargetException: null" --
+         * which says nothing at all about why voice was unavailable. Walking the
+         * cause chain turns that into the `UnsatisfiedLinkError` naming the
+         * library that would not load, which is a fixable report.
+         */
+        private fun describeCause(thrown: Throwable): String {
+            val chain = generateSequence(thrown) { it.cause?.takeIf { cause -> cause !== it } }
+            return chain
+                .take(MAX_CAUSE_DEPTH)
+                .joinToString(" <- ") { link ->
+                    val message = link.message?.takeIf { it.isNotBlank() }
+                    if (message == null) link.javaClass.simpleName
+                    else "${link.javaClass.simpleName}: $message"
+                }
+        }
+
+        /** Deep enough for a reflective wrapper over a loader error, and bounded. */
+        private const val MAX_CAUSE_DEPTH = 5
 
         /**
          * Every app with a launcher entry, as the command engine's vocabulary.

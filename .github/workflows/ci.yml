@@ -164,6 +164,21 @@ jobs:
             app/build/outputs/apk/host/release/app-host-release.apk \
             app/build/outputs/apk/compat/release/app-compat-release.apk
 
+      # Voice is packaging, not code, and it fails silently at build time.
+      #
+      # vosk-android reaches its decoder through JNA, whose first act is
+      # `System.loadLibrary("jnidispatch")` — a search of the APK's `lib/<abi>/`.
+      # A drive log had it failing there, with `dlopen failed: library
+      # "libjnidispatch.so" not found`, and voice unavailable for the whole
+      # drive. Nothing about the build said so: the dependency resolved, the APK
+      # assembled, and the library simply was not in it.
+      #
+      # So the assertion is on the built artefact. It also guards the exclusion
+      # this needed — a future dependency bump that quietly reinstates the jar
+      # would take the dispatcher back out again.
+      - name: The APK carries JNA's native dispatcher
+        run: ./tools/check-native-libs.sh
+
       # The variants share every line of Kotlin, so running the suite twice
       # would buy nothing; `host` is the default and the one people install.
       - name: Android module unit tests

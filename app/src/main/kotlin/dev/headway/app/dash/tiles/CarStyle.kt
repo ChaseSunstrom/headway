@@ -218,7 +218,34 @@ internal object CarStyle {
  * File-level because two tiles need it: [MessagesTile] draws it beside every
  * conversation, and [NowPlayingTile] falls back to it when a session publishes
  * no album art.
+ *
+ * Memoised, and that is not premature. `getApplicationIcon` is a binder call
+ * into the package manager followed by inflating an adaptive-icon drawable, and
+ * the callers draw *lists* -- one per notification, one per queue row -- on the
+ * thread that draws the car screen, on every repaint. A drive log showed that
+ * thread stalled for seconds at a time. An installed app's icon does not change
+ * during a drive, so the second lookup is pure waste.
+ *
+ * A miss is cached too, as a null, so an uninstalled package named in a stale
+ * notification is not looked up again on every frame.
  */
-internal fun appIcon(context: Context, packageName: String): Drawable? = runCatching {
-    context.packageManager.getApplicationIcon(packageName)
-}.getOrNull()
+internal fun appIcon(context: Context, packageName: String): Drawable? {
+    iconCache[packageName]?.let { return it.orNull }
+    val icon = runCatching {
+        context.applicationContext.packageManager.getApplicationIcon(packageName)
+    }.getOrNull()
+    if (iconCache.size >= MAX_CACHED_ICONS) iconCache.clear()
+    iconCache[packageName] = Cached(icon)
+    return icon
+}
+
+/** Boxes a null so a failed lookup is remembered rather than retried. */
+private class Cached<T>(val orNull: T?)
+
+private val iconCache = java.util.concurrent.ConcurrentHashMap<String, Cached<Drawable>>()
+
+/**
+ * Cleared rather than evicted one by one: this is bounded protection against a
+ * phone with a thousand packages, not a working set worth tracking.
+ */
+private const val MAX_CACHED_ICONS = 128

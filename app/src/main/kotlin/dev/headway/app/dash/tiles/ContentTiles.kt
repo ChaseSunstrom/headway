@@ -214,24 +214,101 @@ class NowPlayingTile(
     private var sessionsListener: MediaSessionManager.OnActiveSessionsChangedListener? = null
 
     /**
-     * Repaints once a second while this tile is running.
+     * Moves the progress bar once a second, and almost nothing else.
      *
-     * Two jobs, and the second is the reason it is unconditional rather than
-     * only while playing. The rule needs a clock at all:
-     * `PlaybackState.getPosition()` is a snapshot, so without a tick the bar
-     * only ever moves when a callback happens to land. And it is the belt to
-     * the callback's braces — a phone with its screen off offers nothing else
-     * that can repaint this pane, and `render()` reads the session live over
-     * binder rather than from anything cached, so a tick is a fresh reading of
-     * the truth and not a redraw of a stale one.
+     * ## Why this is not a repaint any more
+     *
+     * It used to call the whole of [render] every second, and a drive log
+     * showed what that cost: `Choreographer` reporting 100 to 409 skipped
+     * frames, over and over, with individual frames taking 1.4 to 3.4 seconds —
+     * on the thread that draws the car screen. The driver's words were that the
+     * display "feels super delayed when I try to do things", and it was.
+     *
+     * A full render is expensive in ways that are invisible in the source.
+     * `MediaController.getMetadata` is a binder round trip that carries the
+     * album art across the parcel and allocates a fresh `Bitmap` each time;
+     * `getQueue` carries the *entire* queue, which a library player publishes
+     * hundreds of items deep; and the queue redraw then decoded a `content://`
+     * cover per row. Once a second, on the car's drawing thread.
+     *
+     * So the tick now does only the job that genuinely needs a clock:
+     * `PlaybackState.getPosition()` is a snapshot taken at
+     * `getLastPositionUpdateTime()`, so the bar has to be extrapolated between
+     * callbacks. That reads nothing over binder at all.
+     *
+     * The belt-and-braces re-read the old comment was about is kept, at
+     * [RESYNC_TICKS] rather than every tick — a phone with its screen off still
+     * offers nothing else that can notice a callback that never arrived, and
+     * once every ten seconds is as good a safety net at a hundredth of the
+     * cost.
      */
     private val tick = object : Runnable {
         override fun run() {
             if (!running) return
-            runCatching { render() }
+            ticks++
+            runCatching {
+                if (ticks % RESYNC_TICKS == 0L) resync() else advance()
+            }
             handler.postDelayed(this, TICK_MILLIS)
         }
     }
+
+    private var ticks = 0L
+
+    /**
+     * Redraws the bar and the play glyph from what is already known.
+     *
+     * No binder call, no allocation, no layout: the position is arithmetic on
+     * the cached `PlaybackState`, and both views return early when handed a
+     * value they already hold.
+     */
+    private fun advance() {
+        val state = shownState ?: return
+        progress?.set(
+            positionNow(state),
+            shownMetadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L,
+        )
+        playPause?.kind = if (isActive(state.state)) TransportButton.PAUSE else TransportButton.PLAY
+    }
+
+    /**
+     * Re-reads the session, and repaints only if it actually says something new.
+     *
+     * The cost of being wrong here is a pane showing a track that ended, so it
+     * is worth one pair of binder calls every [RESYNC_TICKS] seconds. It is not
+     * worth a repaint: comparing first means a phone playing an album straight
+     * through does the read and then does nothing, which is the common case.
+     */
+    private fun resync() {
+        val session = controller ?: return advance()
+        val state = runCatching { session.playbackState }.getOrNull()
+        val metadata = runCatching { session.metadata }.getOrNull()
+        val changed = describeState(state) != describeState(shownState) ||
+            describeMetadata(metadata) != describeMetadata(shownMetadata)
+        shownState = state
+        shownMetadata = metadata
+        if (changed) render() else advance()
+    }
+
+    /** What the pane draws out of a state, so two states that draw alike compare alike. */
+    private fun describeState(state: PlaybackState?): String =
+        "${state?.state}/${state?.activeQueueItemId}"
+
+    /** Likewise for metadata: the fields drawn, not the bitmap bytes behind them. */
+    private fun describeMetadata(metadata: MediaMetadata?): String =
+        MEDIA_TEXT_KEYS.joinToString("\u001f") { metadata?.getString(it).orEmpty() } +
+            "\u001f${metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)}"
+
+    /**
+     * The session as last read, rather than as read on every repaint.
+     *
+     * Written by [bind], by the controller callbacks, and by [resync]; read by
+     * [render] and [advance]. Holding it is what lets a repaint cost nothing —
+     * see [tick] for what the alternative cost on a real drive.
+     */
+    private var shownState: PlaybackState? = null
+    private var shownMetadata: MediaMetadata? = null
+    private var shownQueue: List<android.media.session.MediaSession.QueueItem> = emptyList()
 
     /**
      * Live updates for the session currently bound.
@@ -246,9 +323,37 @@ class NowPlayingTile(
      * non-null Kotlin signature would turn that into a crash in a car.
      */
     private val controllerCallback = object : MediaController.Callback() {
-        override fun onPlaybackStateChanged(state: PlaybackState?) = render()
+        // Both of these compare before repainting, because a media app decides
+        // how often it pushes and some push a state every second purely to move
+        // their own progress bar. A position that has moved changes nothing this
+        // pane draws except the bar, and [advance] is the cheap way to move it.
+        override fun onPlaybackStateChanged(state: PlaybackState?) {
+            val changed = describeState(state) != describeState(shownState)
+            shownState = state
+            if (changed) render() else advance()
+        }
 
-        override fun onMetadataChanged(metadata: MediaMetadata?) = render()
+        override fun onMetadataChanged(metadata: MediaMetadata?) {
+            val changed = describeMetadata(metadata) != describeMetadata(shownMetadata)
+            shownMetadata = metadata
+            if (changed) render() else advance()
+        }
+
+        /**
+         * The queue, pushed rather than polled.
+         *
+         * This callback is the reason the queue no longer costs anything to
+         * draw. `getQueue` is a binder call carrying every item a player has
+         * lined up — hundreds, for a shuffled library — and the pane used to
+         * make it on every repaint. The session tells us when it changes, so
+         * there is nothing to ask for in between.
+         */
+        override fun onQueueChanged(
+            queue: MutableList<android.media.session.MediaSession.QueueItem>?,
+        ) {
+            shownQueue = queue.orEmpty()
+            render()
+        }
 
         override fun onSessionDestroyed() {
             // The controller is dead, not merely idle: rebind rather than
@@ -501,19 +606,30 @@ class NowPlayingTile(
     private fun renderQueue(session: MediaController?) {
         val list = queueList ?: return
         val context = list.context
-        list.removeAllViews()
-        val items = runCatching { session?.queue }.getOrNull().orEmpty()
-        val active = runCatching { session?.playbackState?.activeQueueItemId }.getOrNull()
+        val items = shownQueue
+        val active = shownState?.activeQueueItemId
         // Everything after the current track. An app that does not say which
         // item is current gets the whole queue, which is better than an empty
         // pane and is what "playing next" means when nothing claims to be now.
         val position = items.indexOfFirst { it.queueId == active }
-        val upcoming = if (position >= 0) items.drop(position + 1) else items
+        val upcoming = (if (position >= 0) items.drop(position + 1) else items).take(MAX_QUEUE)
+        // Nothing to do when the same rows are already on screen, and that is
+        // the usual case: a repaint happens on every playback-state callback,
+        // and a queue changes when the driver changes it. Rebuilding fifty rows
+        // and their artwork to draw exactly what is already drawn is what made
+        // the car screen stall for seconds at a time.
+        val signature = upcoming.joinToString(",") { "${it.queueId}" }
+        if (signature == queueSignature) return
+        queueSignature = signature
+        // Every row about to be replaced. Anything an earlier rebuild is still
+        // decoding for is stale from here, and must not land on a new row.
+        queueGeneration++
+        list.removeAllViews()
         queueHeading?.visibility = if (upcoming.isEmpty()) View.GONE else View.VISIBLE
         if (upcoming.isEmpty()) return
         val gap = CarStyle.gutter(context)
         val size = CarStyle.dp(context, QUEUE_ART_DP)
-        upcoming.take(MAX_QUEUE).forEach { item ->
+        upcoming.forEach { item ->
             val description = item.description
             val row = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -530,7 +646,7 @@ class NowPlayingTile(
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     clipToOutline = true
                     background = Headway.panel(CarStyle.radius(context), Headway.SURFACE_RAISED)
-                    setImageDrawable(queueArt(description, size))
+                    queueArtInto(this, description, size)
                     layoutParams = LinearLayout.LayoutParams(size, size).apply {
                         marginEnd = gap
                     }
@@ -565,16 +681,91 @@ class NowPlayingTile(
         }
     }
 
-    /** A queue row's cover: the description's own bitmap, then its URI, then nothing. */
-    private fun queueArt(
+    /**
+     * Puts a queue row's cover into [view]: its own bitmap, then its URI.
+     *
+     * The URI case is why this hands the view in rather than returning a
+     * drawable. Reading a `content://` cover is an `openInputStream` into
+     * another app's provider followed by a JPEG decode, and there is one per
+     * row — tens of them, on the thread drawing the car screen, every time the
+     * queue was redrawn. So a cover that is not already decoded arrives later:
+     * the row draws immediately without one, a background thread reads it, and
+     * it appears when it is ready.
+     *
+     * [queueGeneration] is the guard. A decode that finishes after the queue
+     * has been rebuilt belongs to a row that no longer exists, and setting it
+     * would put the wrong cover beside the wrong track.
+     */
+    private fun queueArtInto(
+        view: ImageView,
         description: android.media.MediaDescription?,
         size: Int,
-    ): android.graphics.drawable.Drawable? {
-        val bitmap = description?.iconBitmap
-            ?: description?.iconUri?.let { uri -> bitmapFromUri(uri, size) }
-            ?: return null
-        return android.graphics.drawable.BitmapDrawable(appContext.resources, bitmap)
+    ) {
+        description?.iconBitmap?.let {
+            view.setImageBitmap(it)
+            return
+        }
+        val uri = description?.iconUri ?: return
+        val key = "$uri@$size"
+        if (artCache.containsKey(key)) {
+            view.setImageBitmap(artCache[key]?.orNull)
+            return
+        }
+        val generation = queueGeneration
+        decodeOffThread(uri, size, key) { bitmap ->
+            if (running && generation == queueGeneration && bitmap != null) {
+                view.setImageBitmap(bitmap)
+            }
+        }
     }
+
+    /**
+     * Reads and decodes [uri] on a background thread, then answers on the main one.
+     *
+     * One decode per URI in flight at a time, and the result is cached whether
+     * or not it worked — a provider that refuses would otherwise be asked again
+     * on every repaint for the rest of the drive.
+     */
+    private fun decodeOffThread(
+        uri: android.net.Uri,
+        box: Int,
+        key: String,
+        onReady: (android.graphics.Bitmap?) -> Unit,
+    ) {
+        // Waiters rather than a "already in flight, drop it" flag, and the
+        // difference is visible: a queue routinely lists several tracks off one
+        // album, so the same cover is asked for by several rows at once. A flag
+        // served the first row and left the rest permanently blank.
+        //
+        // Only ever touched from the main looper -- every caller renders there
+        // and the completion posts back there -- so no lock is needed.
+        artWaiters[key]?.let {
+            it.add(onReady)
+            return
+        }
+        artWaiters[key] = mutableListOf(onReady)
+        artReaders.execute {
+            val bitmap = bitmapFromUri(uri, box)
+            handler.post {
+                if (artCache.size >= MAX_CACHED_ART) artCache.clear()
+                artCache[key] = Boxed(bitmap)
+                // Every waiter, not only this tile's. The list is shared, so
+                // gating it on *this* tile still running would strand a pane
+                // that happened to ask second. Each callback guards itself
+                // instead, and setting an image on a detached view is a no-op.
+                artWaiters.remove(key).orEmpty().forEach { runCatching { it(bitmap) } }
+            }
+        }
+    }
+
+    /** The rebuild a pending decode belongs to; see [queueArtInto]. */
+    private var queueGeneration = 0
+
+    /** The rows currently drawn, so an identical queue is not redrawn. */
+    private var queueSignature: String? = null
+
+    /** Boxes a null, so "read it and there was nothing" is cached as an answer. */
+    internal class Boxed(val orNull: android.graphics.Bitmap?)
 
     /**
      * The same tile as one row: art, two lines, three controls, a rule.
@@ -912,15 +1103,39 @@ class NowPlayingTile(
         ).firstNotNullOfOrNull { key ->
             metadata?.getString(key)?.takeIf { it.isNotBlank() }
         } ?: return null
-        cachedArtUri?.let { if (it == uri) return cachedArt }
         // `art`, the field -- `artView` is a local inside `render()` and is not
         // in scope here. Falls back to the nominal box before the first layout.
         val box = art?.width?.takeIf { it > 0 } ?: CarStyle.dp(appContext, ART_BOX_DP)
-        val decoded = bitmapFromUri(android.net.Uri.parse(uri), box)
-        cachedArtUri = uri
-        cachedArt = decoded
-        if (decoded == null) SessionLog.shared.info(TAG, "cover art at $uri could not be read")
-        return decoded
+        val key = "$uri@$box"
+        artCache[key]?.let { return it.orNull }
+        // Not on this thread. A cover lives in another app's content provider,
+        // and reading one is an `openInputStream` plus a JPEG decode -- work
+        // with no bound, on the thread drawing the car screen. The caller falls
+        // back to the app's icon in the meantime, and this repaints when the
+        // cover lands, which for a track change is a frame or two later.
+        decodeOffThread(android.net.Uri.parse(uri), box, key) { bitmap ->
+            if (bitmap == null) {
+                SessionLog.shared.info(TAG, "cover art at $uri could not be read")
+            } else if (running && artFromUriKey(shownMetadata, box) == key) {
+                // Still the same track. A decode that lands after the driver
+                // has skipped belongs to the previous one.
+                art?.setImageBitmap(bitmap)
+                art?.setPadding(0, 0, 0, 0)
+            }
+        }
+        return null
+    }
+
+    /** The cache key [artFromUri] would use for [metadata], to check a late decode. */
+    private fun artFromUriKey(metadata: MediaMetadata?, box: Int): String? {
+        val uri = listOf(
+            MediaMetadata.METADATA_KEY_ALBUM_ART_URI,
+            MediaMetadata.METADATA_KEY_ART_URI,
+            MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI,
+        ).firstNotNullOfOrNull { key ->
+            metadata?.getString(key)?.takeIf { it.isNotBlank() }
+        } ?: return null
+        return "$uri@$box"
     }
 
     /**
@@ -951,8 +1166,6 @@ class NowPlayingTile(
             }
         }.getOrNull()
 
-    private var cachedArtUri: String? = null
-    private var cachedArt: android.graphics.Bitmap? = null
 
     /**
      * Points at [next], keeping the callback and the handle together.
@@ -984,6 +1197,14 @@ class NowPlayingTile(
         if (current === next) return
         if (current != null) runCatching { current.unregisterCallback(controllerCallback) }
         controller = next
+        // Primed here, because from now on the callbacks are what keep it
+        // current and there is no first callback for a session already playing.
+        // Three binder calls per bind is the whole cost of the cache; the
+        // repaints they replace were three per second.
+        shownState = next?.let { runCatching { it.playbackState }.getOrNull() }
+        shownMetadata = next?.let { runCatching { it.metadata }.getOrNull() }
+        shownQueue = next?.let { runCatching { it.queue }.getOrNull() }.orEmpty()
+        queueSignature = null
         if (next != null) {
             runCatching { next.registerCallback(controllerCallback, handler) }
         }
@@ -1056,7 +1277,9 @@ class NowPlayingTile(
         // is a mutable field a callback can change between the two reads.
         val session = current ?: return
 
-        val metadata = session.metadata
+        // From the cache, not over binder. See [tick]: reading these here on
+        // every repaint is what froze the car screen for seconds at a time.
+        val metadata = shownMetadata
         titleView.text = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
             ?: "Playing"
@@ -1102,7 +1325,9 @@ class NowPlayingTile(
         if (bitmap == null) {
             // The app's own icon rather than an empty square: a radio stream
             // with no cover art still has a recognisable source, and a hole
-            // where the art goes makes the pane look half-loaded.
+            // where the art goes makes the pane look half-loaded. It is also
+            // what stands in for a cover still being read off disk -- see
+            // [artFromUri], which fills it in when the decode lands.
             artView.setImageDrawable(appIcon(appContext, session.packageName))
             artView.setPadding(
                 CarStyle.gutter(artView.context),
@@ -1115,7 +1340,7 @@ class NowPlayingTile(
             artView.setPadding(0, 0, 0, 0)
         }
 
-        val state = session.playbackState
+        val state = shownState
         progress?.set(
             positionNow(state),
             metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L,
@@ -1200,6 +1425,66 @@ class NowPlayingTile(
          * frame for a bar a few pixels tall.
          */
         private const val TICK_MILLIS = 1_000L
+
+        /**
+         * Ticks between one re-read of the session and the next.
+         *
+         * The safety net for a callback that never arrives, which is the case a
+         * locked phone puts this pane in. Ten seconds because that is the
+         * longest a driver could see a finished track before the pane notices,
+         * and a pair of binder calls at a tenth of a hertz costs nothing.
+         */
+        private const val RESYNC_TICKS = 10L
+
+        /** The metadata fields the pane draws, for comparing one track to the next. */
+        private val MEDIA_TEXT_KEYS = listOf(
+            MediaMetadata.METADATA_KEY_TITLE,
+            MediaMetadata.METADATA_KEY_DISPLAY_TITLE,
+            MediaMetadata.METADATA_KEY_ARTIST,
+            MediaMetadata.METADATA_KEY_ALBUM_ARTIST,
+            MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE,
+            MediaMetadata.METADATA_KEY_ALBUM,
+            MediaMetadata.METADATA_KEY_DISPLAY_DESCRIPTION,
+            MediaMetadata.METADATA_KEY_ALBUM_ART_URI,
+            MediaMetadata.METADATA_KEY_ART_URI,
+            MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI,
+        )
+
+        /**
+         * Covers already read, keyed by URI and the box they were decoded for.
+         *
+         * Process-wide, because the strip in the music pane and the full
+         * Playing pane draw the same album at two sizes and a driver switches
+         * between them constantly. A miss is stored as a null so a provider
+         * that refuses is not asked again every repaint.
+         */
+        private val artCache = java.util.concurrent.ConcurrentHashMap<String, Boxed>()
+
+        /**
+         * Who is waiting on a cover still being read, keyed the same way.
+         *
+         * Process-wide with the cache, so the strip and the Playing pane asking
+         * for the same album at the same moment share one read. Main-looper
+         * only; see [decodeOffThread].
+         */
+        private val artWaiters =
+            mutableMapOf<String, MutableList<(android.graphics.Bitmap?) -> Unit>>()
+
+        /** Cleared wholesale rather than evicted; this is a bound, not a working set. */
+        private const val MAX_CACHED_ART = 96
+
+        /**
+         * Where cover art is read, which is never the thread drawing the car.
+         *
+         * One thread, so a queue of fifty rows reads them in order and finishes
+         * rather than competing with itself for the same provider. Daemon,
+         * because a decode in flight must never be the reason the process
+         * outlives the drive.
+         */
+        private val artReaders: java.util.concurrent.ExecutorService =
+            java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+                Thread(runnable, "headway-art").apply { isDaemon = true }
+            }
 
         /**
          * Artwork size on the pane that has a tab to itself.

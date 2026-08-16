@@ -371,7 +371,34 @@ dependencies {
     // resolvable at runtime on a phone. Without it the reflective load in
     // CarVoiceStream fails and voice degrades to "no on-device speech model",
     // which is exactly what a real drive reported.
-    implementation(libs.vosk.android)
+    implementation(libs.vosk.android) {
+        // The jar half of the fix below. Left in, its classes and the aar's are
+        // the same `com.sun.jna` types twice over and dexing refuses the build.
+        exclude(group = "net.java.dev.jna", module = "jna")
+    }
+
+    // The reason voice did not work on a real phone, and it is packaging, not code.
+    //
+    // vosk-android reaches its decoder through JNA, and JNA's first act is
+    // `System.loadLibrary("jnidispatch")` -- which searches the APK's
+    // `lib/<abi>/`. `vosk-android:0.3.45` depends on `net.java.dev.jna:jna` as
+    // a plain **jar**, whose dispatcher is a *resource* inside the jar rather
+    // than a packaged native library, so nothing ever reached `lib/arm64-v8a/`
+    // and a drive log said exactly that:
+    //
+    //     dlopen failed: library "libjnidispatch.so" not found
+    //
+    // JNA's fallback is to extract the resource and load it from the app's data
+    // directory, which Android has not allowed since 10 -- executable code must
+    // come from the APK. So the fallback cannot work either, and voice failed
+    // with a reflective wrapper whose message was literally null.
+    //
+    // The same version published as an `aar` carries `jni/<abi>/libjnidispatch.so`,
+    // which AGP unpacks into `lib/<abi>/` where `loadLibrary` looks. Identical
+    // Java API -- 4.4.0 is the version vosk-android was compiled against -- so
+    // this changes where one file lands and nothing else. CI asserts the APK
+    // contains it, because the failure mode is silent at build time.
+    implementation(variantOf(libs.jna.aar) { artifactType("aar") })
 
     // :app had no unit-test source set at all until the dashboard's layout tree
     // needed one -- `:app:testDebugUnitTest` reported NO-SOURCE, which reads in

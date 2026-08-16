@@ -638,6 +638,24 @@ class ScreenEncoder(
             )
             setInteger(MediaFormat.KEY_BIT_RATE, configuration.bitRateBitsPerSecond)
             setInteger(MediaFormat.KEY_FRAME_RATE, configuration.frameRate)
+            // Say what the pixels mean, rather than letting the encoder guess.
+            //
+            // Left unset, the codec logs `expected specified color aspects
+            // (0:0:0:0)` -- it has been handed a surface and no statement of
+            // what its colours are -- and then writes whatever it decides into
+            // the VUI. The head unit believes that, so a guess that differs
+            // from the surface's actual encoding shows up in the car as washed
+            // out or over-saturated video, with nothing in the log connecting
+            // the two.
+            //
+            // BT.601 limited range, because that is what an SDR H.264 baseline
+            // stream at this size is and what a decoder assumes when a stream
+            // says nothing. Naming it explicitly means the assumption and the
+            // truth are the same statement rather than two guesses that happen
+            // to agree.
+            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT601_NTSC)
+            setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+            setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, configuration.keyFrameIntervalSeconds)
             // Put SPS/PPS in front of every IDR, not only in the one-off
             // codec-config buffer at the start of the stream.

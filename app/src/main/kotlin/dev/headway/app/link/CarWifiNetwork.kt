@@ -1115,11 +1115,17 @@ class CarWifiNetwork(
                 // socket bound to the car's network that cannot reach an address
                 // on that network, while a VPN is up, is a VPN in lockdown mode
                 // dropping it -- and the timeout says nothing at all.
-                vpnAdvice(appContext)?.let { advice ->
-                    onStep("could not reach the head unit at $host:$port. $advice")
+                if (vpnAdvice(appContext) != null) {
+                    // Named, not explained. The caller retries about once a
+                    // second while the car's access point warms up -- a real
+                    // log shows seven attempts before the head unit accepted --
+                    // and the explanation is a paragraph that the session has
+                    // already logged twice by the time it gets here. Repeating
+                    // it per attempt buried the connect sequence under nine
+                    // thousand characters, and blamed a VPN for a car that was
+                    // simply not listening yet.
                     throw CarWifiException(
-                        "could not reach the head unit at $host:$port while a VPN is active. " +
-                            "$advice",
+                        "could not reach the head unit at $host:$port, and a VPN is active",
                         e,
                     )
                 }

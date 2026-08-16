@@ -1683,20 +1683,29 @@ open class HeadwayService : Service() {
         }
 
         // The type first. See the KDoc above: the order is not a preference.
-        runCatching {
-            ServiceCompat.startForeground(
-                this,
-                NOTIFICATION_ID,
-                buildNotification(getString(R.string.app_name), describe(mutableLinkState.value)),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
-                    locationTypeIfWanted(),
-            )
-        }.onFailure {
-            step("could not claim the mediaProjection foreground type: ${it.message}. " +
+        //
+        // A ladder, and this is the bug a drive log caught. The claim used to
+        // name the location type alongside `mediaProjection` in one call.
+        // Android refused the location type -- as it usually does, see
+        // [claimForeground] -- the whole call threw, and the grant the driver
+        // had just tapped through was dropped on the floor. The car then had no
+        // video and, because `AudioPlaybackCapture` is built from this same
+        // projection, no music at all. Video and music do not depend on
+        // location, so they no longer fall with it.
+        val withProjection = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        val text = describe(mutableLinkState.value)
+        val claimed = claimForeground(
+            text,
+            withProjection or locationTypeIfWanted(),
+            withProjection,
+        )
+        if (claimed == null) {
+            step("could not claim the mediaProjection foreground type. " +
                 "This session will connect without video")
             return
         }
+        reportLostLocation(claimed)
 
         val manager = getSystemService(android.media.projection.MediaProjectionManager::class.java)
         projection = runCatching { manager?.getMediaProjection(resultCode, data) }
@@ -1796,46 +1805,125 @@ open class HeadwayService : Service() {
      * mid-drive. Tapping "uncover my phone" would have killed the video.
      */
     private fun startForegroundNow() {
-        val base = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-            if (projection != null) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0
-        val wanted = base or locationTypeIfWanted()
-        // Tried with the location type, then without. The platform does not
-        // merely refuse a type it will not grant -- `ActiveServices`
-        // *throws* when its policy check fails, and this call is the first
-        // statement of `onStartCommand`, so a throw here kills every session
-        // start rather than costing one feature.
-        //
-        // And the policy is not "is the permission granted". An ordinary
-        // "while using the app" grant is `MODE_FOREGROUND`, which
-        // `ForegroundServiceTypePolicy`'s location policy treats as denied
-        // unless this particular FGS start is while-in-use eligible -- a
-        // property of *how the service was started*, latched at entry, which
-        // no `checkSelfPermission` can report. So the honest test is to try
-        // it and fall back, not to predict it.
-        if (wanted != base) {
-            val claimed = runCatching {
+        val link = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        val projecting = if (projection != null) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        } else {
+            0
+        }
+        // Everything wanted, then each rung the service can still work without.
+        // The last rung is the link on its own, because that is the one type
+        // this service always has a right to and the one it cannot run without.
+        val claimed = claimForeground(
+            notificationText,
+            link or projecting or locationTypeIfWanted(),
+            link or projecting,
+            link,
+        )
+        reportLostLocation(claimed ?: return)
+        if (projecting != 0 && claimed and projecting == 0) {
+            // Android had already ended the projection -- on 15 and later it
+            // does that unconditionally when the phone locks -- and the stale
+            // token is what made the platform throw. Letting go of it here is
+            // what stops the next intent throwing too, and it routes through
+            // the same path a grant loss normally takes, so the audio stream
+            // goes back to waiting and the shade offers sharing again.
+            step("the screen-sharing grant is no longer live, so it has been let go")
+            runCatching { AppPaneHost.onGrantLost?.invoke() }
+            projection = null
+        }
+    }
+
+    /**
+     * Claims the first set of foreground-service types the platform will accept.
+     *
+     * ## Why a ladder, and not one call
+     *
+     * `ActiveServices.validateForegroundServiceType` does not merely *refuse* a
+     * type it will not grant -- it **throws**, and `Service.startForeground`
+     * hands that back as a `SecurityException`. So a single call naming three
+     * types is all-or-nothing, and a refusal of the least important one takes
+     * the other two with it.
+     *
+     * Both halves of that cost the driver a real drive. The screen-capture
+     * grant was thrown away -- no video, and no music either, since
+     * `AudioPlaybackCapture` is built from the same projection -- because the
+     * *location* type was refused in the same call. And a call that named
+     * `mediaProjection` after Android had quietly ended the projection killed
+     * the process outright, from the first statement of `onStartCommand`.
+     *
+     * ## Why it cannot be predicted instead
+     *
+     * The location policy does not ask "is the permission granted". An ordinary
+     * while-using-the-app grant is `MODE_FOREGROUND`, which
+     * `ForegroundServiceTypePolicy`'s location policy treats as denied unless
+     * *this particular* service start was while-in-use eligible -- a property
+     * of how the service was started, latched at entry, that no
+     * `checkSelfPermission` can report. Trying it is the only honest test.
+     *
+     * Returns the set that stuck, or null if every rung was refused -- the one
+     * case where this service genuinely cannot be in the foreground, and the
+     * caller has to decide what to do without one.
+     */
+    private fun claimForeground(text: String, vararg ladder: Int): Int? {
+        var lastRefusal: Throwable? = null
+        // Distinct, because the rungs collapse into each other when the
+        // optional types are not wanted -- with no projection and no location,
+        // all three rungs are "the link on its own" and retrying a refusal
+        // twice more would prove nothing.
+        for (types in ladder.distinct()) {
+            val outcome = runCatching {
                 ServiceCompat.startForeground(
                     this,
                     NOTIFICATION_ID,
-                    buildNotification(getString(R.string.app_name), notificationText),
-                    wanted,
+                    buildNotification(getString(R.string.app_name), text),
+                    types,
                 )
-                true
-            }.getOrElse {
-                step(
-                    "the location foreground type was refused (${it.message}); car apps will " +
-                        "get location only while the phone is unlocked",
-                )
-                false
             }
-            if (claimed) return
+            if (outcome.isSuccess) return types
+            lastRefusal = outcome.exceptionOrNull()
+            // Once per distinct type set. This runs from the first statement of
+            // `onStartCommand`, so every notification button and every car-screen
+            // action reaches it -- reported every time, one refused type would
+            // fill a drive's log with the same paragraph.
+            if (reportedRefusals.add(types)) {
+                step("Android refused the foreground service type(s) " +
+                    "${describeForegroundTypes(types)}: ${lastRefusal?.message}")
+            }
         }
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            buildNotification(getString(R.string.app_name), notificationText),
-            base,
-        )
+        step("Android refused every foreground service type this service can run under. " +
+            "It cannot stay in the foreground, so the car link will not survive the screen " +
+            "going off: ${lastRefusal?.message}")
+        return null
+    }
+
+    /** Says once that hosted car apps lost location, when the type did not stick. */
+    private fun reportLostLocation(claimed: Int) {
+        if (locationTypeIfWanted() == 0) return
+        if (claimed and ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION != 0) return
+        if (!locationLossReported.compareAndSet(false, true)) return
+        step("the location foreground type did not stick, so a hosted car app will get " +
+            "location only while the phone is unlocked. Everything else is unaffected")
+    }
+
+    private val locationLossReported = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** The refusals already explained, so each is explained once per process. */
+    private val reportedRefusals = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<Int, Boolean>(),
+    )
+
+    private fun describeForegroundTypes(types: Int): String {
+        val names = buildList {
+            if (types and ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE != 0) {
+                add("connectedDevice")
+            }
+            if (types and ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION != 0) {
+                add("mediaProjection")
+            }
+            if (types and ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION != 0) add("location")
+        }
+        return if (names.isEmpty()) "none" else names.joinToString("+")
     }
 
     /**

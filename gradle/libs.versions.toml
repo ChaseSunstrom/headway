@@ -6,6 +6,8 @@ protobuf = "3.25.5"
 protobufPlugin = "0.9.4"
 junit = "5.11.3"
 vosk = "0.3.45"
+# Pinned to what vosk-android:0.3.45 declares, deliberately -- see app/build.gradle.kts.
+jna = "4.4.0"
 androidxCore = "1.15.0"
 androidxAppcompat = "1.7.0"
 androidxCarApp = "1.7.0"
@@ -19,6 +21,11 @@ protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.
 protobuf-protoc = { module = "com.google.protobuf:protoc", version.ref = "protobuf" }
 
 vosk = { module = "com.alphacephei:vosk", version.ref = "vosk" }
+# JNA's native dispatcher, as an AAR rather than the plain jar vosk-android's
+# POM asks for. Same coordinates, same version, so nothing about the Java API
+# vosk-android was compiled against changes -- only the packaging. See the
+# comment beside it in app/build.gradle.kts for why that is the whole fix.
+jna-aar = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 # The Android build of the same decoder. It exports the identical org.vosk
 # classes plus an android package, which is what makes core-voice able to
 # compile against the desktop jar and run against this one.
