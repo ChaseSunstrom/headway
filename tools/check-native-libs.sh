@@ -47,11 +47,19 @@ for apk in "${apks[@]}"; do
     fi
     listing=$(unzip -Z1 "$apk")
     for lib in "${required[@]}"; do
+        # A here-string rather than a pipe into `grep -q`, and that is not a
+        # style preference. Under `set -o pipefail` the pipeline reports the
+        # rightmost non-zero status -- and `grep -q` exits the moment it
+        # matches, which sends SIGPIPE to the `printf` still writing. So a
+        # *successful* match returned 141 whenever the listing was long enough
+        # for the write to still be in flight, and this check reported the
+        # libraries missing from an APK that contained them.
+        #
         # Any ABI: the published APKs are arm64-only, but CI's instrumentation
         # job builds x86_64 as well and both are legitimate.
-        if printf '%s\n' "$listing" | grep -qE "^lib/[^/]+/${lib}$"; then
-            found=$(printf '%s\n' "$listing" | grep -E "^lib/[^/]+/${lib}$" | tr '\n' ' ')
-            echo "ok  $(basename "$apk"): ${found% }"
+        found=$(grep -E "^lib/[^/]+/${lib}$" <<<"$listing" || true)
+        if [ -n "$found" ]; then
+            echo "ok  $(basename "$apk"): $(tr '\n' ' ' <<<"$found")"
         else
             echo "FAIL $(basename "$apk"): no lib/*/${lib}" >&2
             status=1

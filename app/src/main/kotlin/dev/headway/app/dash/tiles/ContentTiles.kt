@@ -751,18 +751,25 @@ class NowPlayingTile(
             return
         }
         artWaiters[key] = mutableListOf(onReady)
-        artReaders.execute {
-            val bitmap = bitmapFromUri(uri, box)
-            handler.post {
-                if (artCache.size >= MAX_CACHED_ART) artCache.clear()
-                artCache[key] = Boxed(bitmap)
-                // Every waiter, not only this tile's. The list is shared, so
-                // gating it on *this* tile still running would strand a pane
-                // that happened to ask second. Each callback guards itself
-                // instead, and setting an image on a detached view is a no-op.
-                artWaiters.remove(key).orEmpty().forEach { runCatching { it(bitmap) } }
+        val queued = runCatching {
+            artReaders.execute {
+                val bitmap = bitmapFromUri(uri, box)
+                handler.post {
+                    if (artCache.size >= MAX_CACHED_ART) artCache.clear()
+                    artCache[key] = Boxed(bitmap)
+                    // Every waiter, not only this tile's. The list is shared,
+                    // so gating it on *this* tile still running would strand a
+                    // pane that happened to ask second. Each callback guards
+                    // itself instead, and setting an image on a detached view
+                    // is a no-op.
+                    artWaiters.remove(key).orEmpty().forEach { runCatching { it(bitmap) } }
+                }
             }
         }
+        // The entry above is the "someone is already reading this" claim, so it
+        // has to come back out if nobody is. Left behind, that URI would never
+        // be read again for the life of the process.
+        if (queued.isFailure) artWaiters.remove(key)
     }
 
     /** The rebuild a pending decode belongs to; see [queueArtInto]. */
