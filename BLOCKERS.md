@@ -1261,3 +1261,63 @@ driver's own rotation control puts it back.
 **How to close it:** not closable for a portrait-locked app without a
 privileged API. Freeform is the one untested surface and would need a device
 that supports it to evaluate at all.
+
+---
+
+## B-026 — A hosted car app's location needs a capability Headway must hold first
+
+**Status:** Closed with a shipped, opt-in fix. Recorded because the mechanism
+is not guessable from the symptom and the next person to see it will look in
+the wrong place.
+
+**Where:** `HeadwayService.locationTypeIfWanted`, `CarAppSession` (the bind
+flags), `HeadwaySettings.KEY_CAR_APP_LOCATION`
+
+**What:** A driver reported that a navigation app hosted in a car-app pane
+"doesnt update my triangle unless I am on a route and/or have my phone
+unlocked", with the arrow pointing the wrong way the rest of the time.
+
+**Why, exactly.** There is no host-to-app location push to be missing.
+`androidx.car.app`'s only location API runs the other way:
+`IAppManager.startLocationUpdates` is a call the *host* makes *into* the app,
+which the app answers by subscribing to its own `LocationManager` and pushing
+each fix up via `IAppHost.sendLocation`. `CarContext` never touches
+`LocationManager` at all. So the fix a car app draws is one it got itself.
+
+Getting it itself is what Android denies. Headway binds the app with
+`BIND_AUTO_CREATE` and nothing else, so the app's process has no activity and —
+outside navigation — no foreground service of its own. It is a background
+process, and `AppOpsUidStateTrackerImpl` resolves `OP_FINE_LOCATION` for a uid
+with no `PROCESS_CAPABILITY_FOREGROUND_LOCATION` to `MODE_IGNORED`. The two
+cases that worked are the two cases where the app has standing of its own: a
+nav app runs a foreground service while navigating, and an unlocked phone
+briefly makes the process visible.
+
+**Fix, shipped:** `Context.BIND_INCLUDE_CAPABILITIES` on the binding, which
+`OomAdjuster.computeServiceHostOomAdjLSP` uses to pass the *client's*
+capability to the bound app — plus the `location` foreground-service type on
+Headway's own service, which is where that capability comes from. Both are
+public API and neither is privileged.
+
+**Why it is off by default.** CLAUDE.md enumerates the permissions this project
+asks for and location is not among them. Headway reads no location itself, so
+the permission exists solely to be passed on; it stays behind a setting, nothing
+is requested until a driver turns it on, and a phone that never does behaves
+exactly as before.
+
+**The trap in claiming the type.** `ActiveServices.validateForegroundServiceType`
+*throws* rather than refusing when the policy check fails, and the policy is not
+"is the permission granted": an ordinary while-in-use grant is `MODE_FOREGROUND`,
+which the location policy treats as denied unless that particular FGS start was
+while-in-use eligible — a property of how the service was started, latched at
+entry, that no `checkSelfPermission` can report. `startForegroundNow` is the
+first statement of `onStartCommand`, so a throw there would kill every session
+start rather than costing one feature. It therefore tries with the type and
+falls back to the pair it always claimed, and says so in the log.
+
+**What is not claimed:** that this makes Headway a location source for the car.
+Feeding `CarHardwareLocation` and the compass from the AAP sensor channel is
+separate, unbuilt work — Headway's `CarSensors` models no location or heading
+field at all — and it is unknown whether the target head unit advertises those
+sensor types, since in AAP the phone is normally the GPS source rather than the
+car.

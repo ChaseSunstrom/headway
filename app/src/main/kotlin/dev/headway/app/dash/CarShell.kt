@@ -1530,6 +1530,7 @@ class CarShell(
                 render()
             },
             landscapeRow(),
+            carAppLocationRow(),
         )
         showOverlay(sheet().build("Apps and panels", rows, onClose = ::closeOverlay))
     }
@@ -1543,6 +1544,49 @@ class CarShell(
      * `PhoneRotation` has the whole derivation, including the honest limit —
      * an app that locks itself to portrait wins, and this does nothing for it.
      */
+    /**
+     * Whether a hosted car app may use the phone's location.
+     *
+     * Offered here because the fault it fixes is one you see from the seat: a
+     * navigation app's own marker sitting still, or pointing the wrong way,
+     * except while a route is running. Headway reads no location itself; this
+     * is what lets it pass a while-in-use capability down to the app it is
+     * hosting, which otherwise has none because it is a bound background
+     * service with no screen of its own.
+     */
+    private fun carAppLocationRow(): CarSheet.Row {
+        val on = HeadwaySettings.carAppLocation(context)
+        val granted = runCatching {
+            context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }.getOrDefault(false)
+        return CarSheet.Row(
+            title = "Let car apps use your location",
+            detail = when {
+                on && granted -> "Their own map markers track, from the next session"
+                on -> "On, but the phone has not granted location — finish it on the phone"
+                else -> "Off — a map app's marker only moves while it is navigating"
+            },
+            selected = on && granted,
+        ) {
+            HeadwaySettings.setCarAppLocation(context, !on)
+            closeOverlay()
+            if (on) {
+                showVoiceMessage("Car apps go back to their own location")
+                return@Row
+            }
+            if (granted) {
+                showVoiceMessage("Reconnect for this to take effect")
+                return@Row
+            }
+            // The grant itself has to be asked for from an activity, and there
+            // is none on the car screen. Saying so is the honest thing: a row
+            // that switches on and then silently does nothing is the failure
+            // this whole setting exists to correct.
+            showVoiceMessage("Open Headway on the phone to allow location, then reconnect")
+        }
+    }
+
     private fun landscapeRow(): CarSheet.Row {
         val on = HeadwaySettings.landscapeApps(context)
         val granted = PhoneRotation.granted(context)

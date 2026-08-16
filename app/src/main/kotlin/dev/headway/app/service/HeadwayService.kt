@@ -1689,7 +1689,8 @@ open class HeadwayService : Service() {
                 NOTIFICATION_ID,
                 buildNotification(getString(R.string.app_name), describe(mutableLinkState.value)),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                    locationTypeIfWanted(),
             )
         }.onFailure {
             step("could not claim the mediaProjection foreground type: ${it.message}. " +
@@ -1795,14 +1796,81 @@ open class HeadwayService : Service() {
      * mid-drive. Tapping "uncover my phone" would have killed the video.
      */
     private fun startForegroundNow() {
-        val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+        val base = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
             if (projection != null) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0
+        val wanted = base or locationTypeIfWanted()
+        // Tried with the location type, then without. The platform does not
+        // merely refuse a type it will not grant -- `ActiveServices`
+        // *throws* when its policy check fails, and this call is the first
+        // statement of `onStartCommand`, so a throw here kills every session
+        // start rather than costing one feature.
+        //
+        // And the policy is not "is the permission granted". An ordinary
+        // "while using the app" grant is `MODE_FOREGROUND`, which
+        // `ForegroundServiceTypePolicy`'s location policy treats as denied
+        // unless this particular FGS start is while-in-use eligible -- a
+        // property of *how the service was started*, latched at entry, which
+        // no `checkSelfPermission` can report. So the honest test is to try
+        // it and fall back, not to predict it.
+        if (wanted != base) {
+            val claimed = runCatching {
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    buildNotification(getString(R.string.app_name), notificationText),
+                    wanted,
+                )
+                true
+            }.getOrElse {
+                step(
+                    "the location foreground type was refused (${it.message}); car apps will " +
+                        "get location only while the phone is unlocked",
+                )
+                false
+            }
+            if (claimed) return
+        }
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
             buildNotification(getString(R.string.app_name), notificationText),
-            types,
+            base,
         )
+    }
+
+    /**
+     * The location foreground-service type, when it is worth asking for.
+     *
+     * ## What it buys, and for whom
+     *
+     * Not Headway. Headway never reads a location. It buys it for the *car
+     * app* Headway is hosting: a driver reported that a navigation app's own
+     * marker "doesnt update my triangle unless I am on a route and/or have my
+     * phone unlocked", and that is exactly the shape of Android's while-in-use
+     * rule biting a bound background service.
+     *
+     * A hosted car app has no activity and, outside navigation, no foreground
+     * service of its own, so its process is background and its location is
+     * denied. The route case works because a nav app runs its own foreground
+     * service while navigating; the unlocked case works because the process is
+     * briefly visible. `BIND_INCLUDE_CAPABILITIES` on the binding passes
+     * Headway's own while-in-use capability down to it — which is only worth
+     * anything if Headway holds one, and that is what this type is.
+     *
+     * ## Why it is a setting rather than a default
+     *
+     * CLAUDE.md lists the permissions this project asks for and location is not
+     * among them, deliberately. So it stays off until a driver turns it on,
+     * nothing is requested until then, and a phone that never enables it
+     * behaves exactly as it did before.
+     */
+    private fun locationTypeIfWanted(): Int {
+        if (!HeadwaySettings.carAppLocation(this)) return 0
+        val granted = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        return if (granted) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
     }
 
     private fun buildNotification(title: String, text: String): Notification {

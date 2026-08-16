@@ -122,6 +122,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var notificationStatus: Phone.StatusRow
     private lateinit var speechStatus: Phone.StatusRow
     private lateinit var micStatus: Phone.StatusRow
+    private lateinit var locationStatus: Phone.StatusRow
     private lateinit var pairingStatus: Phone.StatusRow
     private lateinit var phoneStatus: Phone.StatusRow
     private lateinit var appDisplayStatus: Phone.StatusRow
@@ -629,6 +630,28 @@ class MainActivity : AppCompatActivity() {
             }
             .withPersistentAction()
         card.addView(micStatus.view)
+
+        // Optional in the same way, and for a fault a driver reported from a
+        // car: a navigation app's own marker only tracked while a route was
+        // running or the phone was unlocked. Headway reads no location itself.
+        // It holds one so it has a while-in-use capability to pass down the
+        // binding to the car app it is hosting, which as a bound background
+        // service has none of its own. See `HeadwayService.locationTypeIfWanted`.
+        locationStatus = Phone.StatusRow(this, "Location for car apps")
+            .withAction("Grant") {
+                HeadwaySettings.setCarAppLocation(this, true)
+                requestMissingPermissions(
+                    listOf(
+                        PermissionNeed(
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            "Location: so a car app's own map marker can move",
+                        ),
+                    ),
+                    "Car apps can already use your location",
+                )
+            }
+            .withPersistentAction()
+        card.addView(locationStatus.view)
 
         card.addView(Phone.divider(this))
         card.addView(
@@ -1530,6 +1553,7 @@ class MainActivity : AppCompatActivity() {
         refreshAppDisplay()
         refreshPermissions()
         refreshPhonePermissions()
+        refreshCarAppLocation()
         refreshAccessibility()
         refreshGrants()
         refreshInstallFailure()
@@ -1791,6 +1815,34 @@ class MainActivity : AppCompatActivity() {
      * Warning about a missing `ANSWER_PHONE_CALLS` on a phone whose dialer
      * publishes a perfectly good answer action would be crying wolf.
      */
+    /**
+     * Whether a hosted car app can have a location, and whether it is wanted.
+     *
+     * Three states rather than two, because the setting and the grant are
+     * separate and a driver who has one without the other would otherwise see a
+     * green row and a marker that still does not move.
+     */
+    private fun refreshCarAppLocation() {
+        val wanted = HeadwaySettings.carAppLocation(this)
+        val granted = isGranted(Manifest.permission.ACCESS_FINE_LOCATION) ||
+            isGranted(Manifest.permission.ACCESS_COARSE_LOCATION)
+        locationStatus.set(
+            when {
+                wanted && granted -> Phone.Level.GOOD
+                wanted -> Phone.Level.WARN
+                else -> Phone.Level.IDLE
+            },
+            when {
+                wanted && granted ->
+                    "A car app's own map marker tracks, and keeps tracking with the phone locked."
+                wanted -> "Switched on, but the phone has not granted location yet."
+                else ->
+                    "Optional. Without it a map app's marker only moves while it is " +
+                        "navigating, or while the phone is unlocked."
+            },
+        )
+    }
+
     private fun refreshPhonePermissions() {
         val group = phonePermissions()
         val missing = group.filterNot { isGranted(it.permission) }

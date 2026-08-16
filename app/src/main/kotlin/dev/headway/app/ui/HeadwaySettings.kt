@@ -445,6 +445,31 @@ object HeadwaySettings {
     }
 
     /**
+     * Whether a hosted car app may use the phone's location.
+     *
+     * Off by default, and it is the only reason Headway asks for a location
+     * permission at all — Headway itself never reads one. A driver reported
+     * that a navigation app's own marker "doesnt update my triangle unless I am
+     * on a route and/or have my phone unlocked", which is Android's while-in-use
+     * rule biting a bound background service: the hosted app has no activity and
+     * no foreground service of its own, so its location is denied. Headway can
+     * pass its own capability down the binding, but only if it holds one.
+     *
+     * CLAUDE.md names the permissions this project asks for and location is not
+     * among them, deliberately. So this stays off, nothing is requested until it
+     * is switched on, and a phone that never enables it behaves exactly as it
+     * did before. See `HeadwayService.locationTypeIfWanted`.
+     */
+    const val KEY_CAR_APP_LOCATION: String = "car_app_location"
+
+    fun carAppLocation(context: Context): Boolean =
+        runCatching { of(context).getBoolean(KEY_CAR_APP_LOCATION, false) }.getOrDefault(false)
+
+    fun setCarAppLocation(context: Context, on: Boolean) {
+        runCatching { of(context).edit().putBoolean(KEY_CAR_APP_LOCATION, on).apply() }
+    }
+
+    /**
      * Which units the car pane shows, as a `CarUnits` name.
      *
      * Unset means [CarUnits.AUTOMATIC] — follow the phone's region. Stored

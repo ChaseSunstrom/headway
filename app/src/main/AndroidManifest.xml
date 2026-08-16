@@ -143,6 +143,26 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
 
     <!--
+      Location, and Headway never reads one.
+
+      It exists so a hosted car app can. A navigation app running under this
+      host has no activity and, outside navigation, no foreground service of
+      its own, so Android's while-in-use rule denies its own location outright,
+      which a driver saw as their map marker tracking only on a route or with
+      the phone unlocked. `BIND_INCLUDE_CAPABILITIES` passes Headway's
+      while-in-use capability down the binding, and the location
+      foregroundServiceType below is what makes there be one to pass.
+
+      Off by default and behind a setting: CLAUDE.md names the permissions this
+      project asks for and location is not among them. Nothing is requested
+      until the driver turns it on, and the foreground type is claimed with a
+      fallback, because the platform *throws* rather than refusing when its
+      policy check fails. See HeadwayService.locationTypeIfWanted.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!--
       The car-app template host claims two global names, and both of them live
       in src/host/AndroidManifest.xml rather than here.
 
@@ -253,7 +273,7 @@
         <service
             android:name=".service.HeadwayService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection|connectedDevice" />
+            android:foregroundServiceType="mediaProjection|connectedDevice|location" />
 
         <!--
           Shares the exported log.

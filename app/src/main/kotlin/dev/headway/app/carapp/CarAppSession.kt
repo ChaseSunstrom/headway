@@ -287,7 +287,25 @@ class CarAppSession(
         connection = binding
 
         val started = runCatching {
-            appContext.bindService(intent, binding, Context.BIND_AUTO_CREATE)
+            appContext.bindService(
+                intent,
+                binding,
+                // The capability flag is the line that moves a navigation app's
+                // own location marker. A hosted car app has no activity and,
+                // outside navigation, no foreground service of its own, so its
+                // process is background and Android's while-in-use rule denies
+                // it location outright -- which is why a driver saw their
+                // triangle track only on a route or with the phone unlocked.
+                //
+                // `BIND_INCLUDE_CAPABILITIES` passes *Headway's* while-in-use
+                // capability down the binding for as long as it is held, which
+                // is exactly the projection session. It costs nothing when
+                // Headway has no such capability to pass -- which is the
+                // default, since the location foreground type is behind a
+                // setting the driver has to turn on. See
+                // `HeadwayService.locationTypeIfWanted`.
+                Context.BIND_AUTO_CREATE or Context.BIND_INCLUDE_CAPABILITIES,
+            )
         }
         if (started.getOrDefault(false) != true) {
             // Unbind even though the bind "failed". ContextImpl registers the
