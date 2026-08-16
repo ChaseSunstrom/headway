@@ -51,7 +51,9 @@ import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.LongMessageTemplate
 import androidx.car.app.model.MessageTemplate
+import androidx.car.app.model.OnCheckedChangeDelegate
 import androidx.car.app.model.OnClickDelegate
+import androidx.car.app.model.OnSelectedDelegate
 import androidx.car.app.model.Pane
 import androidx.car.app.model.PaneTemplate
 import androidx.car.app.model.PlaceListMapTemplate
@@ -92,9 +94,15 @@ private const val TAG = "HeadwayTemplates"
  * the common set: lists, grids, panes, messages, search, sections, tabs, and the
  * five navigation templates. The parts deliberately left out are named where
  * they occur, and each is a case where drawing something would be worse than
- * drawing nothing: lane guidance needs a renderer of its own, and a `Toggle`
- * inside a row needs a state round trip that the row's own click already covers
- * for every app that has been looked at.
+ * drawing nothing: lane guidance needs a renderer of its own.
+ *
+ * A `Toggle` used to be on that list, on the stated grounds that "the row's own
+ * click already covers" it. That was false against the library, not merely
+ * optimistic: `Row.Builder.build()` throws if a row carries both a toggle and a
+ * click listener, so a toggle row *never* has a click to cover it, and every
+ * settings switch in every car app drew as inert text. The same is true of a
+ * selectable list, whose selection lives on the `ItemList` because its items
+ * are forbidden clicks of their own. Both are rendered and dispatched now.
  *
  * ## Loading is a state, not an empty screen
  *
@@ -176,6 +184,10 @@ class TemplateRenderer(
     fun render(state: HostState, template: Template?) {
         root.removeAllViews()
         target = root
+        // Cleared with the view tree it describes. The delegates in it belong
+        // to the template being replaced, and keeping them would grow a map of
+        // dead references for the life of the session.
+        selectedByDelegate.clear()
         mapWanted = false
         val context = root.context
 
@@ -869,11 +881,26 @@ class TemplateRenderer(
             )
             return
         }
-        items.forEach { item -> into.addView(itemView(context, item)) }
+        // A selectable list is a radio group: the selection lives on the *list*,
+        // not on its rows, because `ItemList.Builder.build()` refuses a row
+        // click on any item of one. Without this every settings choice a car app
+        // offers -- route type, avoidances, units -- drew as inert text.
+        val selection = runCatching { list.onSelectedDelegate }.getOrNull()
+        selection?.let {
+            selectedByDelegate[it] = runCatching { list.selectedIndex }.getOrDefault(-1)
+        }
+        items.forEachIndexed { index, item ->
+            into.addView(itemView(context, item, selection, index))
+        }
     }
 
-    private fun itemView(context: Context, item: Item): View = when (item) {
-        is Row -> rowView(context, item)
+    private fun itemView(
+        context: Context,
+        item: Item,
+        selection: OnSelectedDelegate? = null,
+        index: Int = -1,
+    ): View = when (item) {
+        is Row -> rowView(context, item, selection, index)
         is GridItem -> gridItemView(context, item)
         else -> CarStyle.label(context, 15f, CarStyle.DIM).apply {
             text = item.javaClass.simpleName
@@ -888,21 +915,88 @@ class TemplateRenderer(
      * next. Capped, because a row that grows to five lines pushes everything
      * below it off a 480-pixel screen.
      */
-    private fun rowView(context: Context, row: Row): View {
+    private fun rowView(context: Context, row: Row): View = rowView(context, row, null, -1)
+
+    /**
+     * One row, including the two shapes a settings screen is built from.
+     *
+     * ## Why a click delegate was never enough
+     *
+     * A driver reported that HERE WeGo's route settings "arent actually
+     * editable like they are in the app". They were not, and could not have
+     * been: this drew only `Row.getOnClickDelegate()`, and the library
+     * *guarantees* that is null on exactly the two rows a settings screen uses.
+     *
+     *  - `Row.Builder.build()` throws "If a row contains a toggle, it must not
+     *    have an onClickListener set". So every switch in every car app was
+     *    drawn as inert text, with no background, no listener and no focus.
+     *  - `ItemList.Builder.build()` throws "Items that belong to selectable
+     *    lists can't have an onClickListener". So a radio group -- "Route type:
+     *    Fastest / Shortest / Eco" -- was a list of inert rows too, because the
+     *    selection lives on the *list* via `getOnSelectedDelegate()`.
+     *
+     * The old KDoc claimed a toggle was safe to skip because "the row's own
+     * click already covers" it. Against the library that is not merely a
+     * judgement call, it is false: a toggle row cannot have a row click.
+     *
+     * @param selection the list's selection delegate, when this row is one of a
+     *   selectable group; null otherwise.
+     * @param index this row's position in that group, or -1.
+     */
+    private fun rowView(
+        context: Context,
+        row: Row,
+        selection: OnSelectedDelegate?,
+        index: Int,
+    ): View {
         val gap = CarStyle.gutter(context)
         val target = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
         val title = row.title.plain() ?: ""
         val delegate = row.onClickDelegate
+        // Read under runCatching for the reason `tabStrip` gives: these getters
+        // are `@NonNull` and implemented as `requireNonNull` of fields the
+        // library's own `Bundler` leaves null, and a host receives reflected
+        // objects rather than constructed ones.
+        val toggle = runCatching { row.toggle }.getOrNull()
+        val checked = toggle?.let { runCatching { it.isChecked }.getOrDefault(false) } ?: false
+        val onChecked = toggle?.let { runCatching { it.onCheckedChangeDelegate }.getOrNull() }
+        val enabled = runCatching { row.isEnabled }.getOrDefault(true) &&
+            (toggle == null || runCatching { toggle.isEnabled }.getOrDefault(true))
+        val knob = toggle?.let { switchView(context, checked) }
+        val selectable = selection != null && index >= 0 && enabled
 
         val line = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             minimumHeight = target
             setPadding(gap, gap / 2, gap, gap / 2)
-            isFocusable = delegate != null
+            isFocusable = delegate != null || (onChecked != null && enabled) || selectable
             contentDescription = title
-            if (delegate != null) {
-                Headway.pressable(this, CarStyle.radius(context)) { click(delegate, title) }
+            when {
+                delegate != null ->
+                    Headway.pressable(this, CarStyle.radius(context)) { click(delegate, title) }
+
+                onChecked != null && enabled ->
+                    // The whole row, not just the switch. A 64 dp control at the
+                    // far right of an 800-pixel panel is the hardest target on
+                    // the car screen; the row is the easiest.
+                    Headway.pressable(this, CarStyle.radius(context)) {
+                        // Painted before the send, deliberately. The app answers
+                        // a checked-change by invalidating -- a oneway binder
+                        // send, the app's own main-thread hop, a doorbell back
+                        // and a getTemplate pull -- which is far longer than the
+                        // press animation. A switch that does not move under the
+                        // finger reads as a switch that did not work, which is
+                        // the report being fixed here.
+                        val next = !checked
+                        knob?.let { paintSwitch(it, next) }
+                        sendChecked(onChecked, next, title)
+                    }
+
+                selectable ->
+                    Headway.pressable(this, CarStyle.radius(context)) {
+                        sendSelected(selection, index, title)
+                    }
             }
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
                 bottomMargin = gap / 4
@@ -942,12 +1036,132 @@ class TemplateRenderer(
                 },
             )
         }
-        if (!row.isEnabled) {
+        knob?.let { line.addView(it) }
+        // The mark on the chosen row of a selectable list. A ring rather than a
+        // filled dot when unselected, so the group reads as a group even at a
+        // glance -- every row shows where its mark would go.
+        if (selection != null && index >= 0) {
+            line.addView(
+                CarStyle.label(context, 20f, CarStyle.ACCENT).apply {
+                    this.text = if (index == selectedIndexOf(selection)) "\u25cf" else "\u25cb"
+                    gravity = Gravity.CENTER
+                    val pad = CarStyle.gutter(context) / 2
+                    setPadding(pad, 0, pad, 0)
+                },
+            )
+        }
+        if (!enabled) {
             line.alpha = DISABLED_ALPHA
             line.isClickable = false
         }
         return line
     }
+
+    /**
+     * A switch, drawn rather than inflated.
+     *
+     * `android.widget.Switch` would carry the phone's theme, its own text sizes
+     * and a ripple sized for a finger held six inches from the eye. Everything
+     * else on this screen is drawn from `CarStyle` at the car's density, and a
+     * control that is not would be the one thing on the panel that looks
+     * borrowed.
+     */
+    private fun switchView(context: Context, checked: Boolean): View {
+        val height = CarStyle.dp(context, SWITCH_HEIGHT_DP)
+        val width = (height * SWITCH_ASPECT).toInt()
+        val track = FrameLayout(context).apply {
+            layoutParams = LinearLayout.LayoutParams(width, height).apply {
+                marginStart = CarStyle.gutter(context)
+            }
+        }
+        val thumb = View(context).apply {
+            layoutParams = FrameLayout.LayoutParams(height, height)
+        }
+        track.addView(thumb)
+        paintSwitch(track, checked)
+        return track
+    }
+
+    /** Moves and recolours a [switchView] to [checked]. */
+    private fun paintSwitch(view: View, checked: Boolean) {
+        val track = view as? FrameLayout ?: return
+        val context = track.context
+        val height = CarStyle.dp(context, SWITCH_HEIGHT_DP)
+        val width = (height * SWITCH_ASPECT).toInt()
+        track.background = Headway.panel(
+            radiusPx = height / 2f,
+            fill = if (checked) Headway.ACCENT else Headway.SURFACE_RAISED,
+            stroke = Headway.OUTLINE,
+        )
+        val thumb = track.getChildAt(0) ?: return
+        val inset = CarStyle.dp(context, SWITCH_INSET_DP)
+        thumb.background = Headway.panel(
+            radiusPx = (height - inset * 2) / 2f,
+            fill = Headway.GROUND,
+            stroke = null,
+        )
+        thumb.layoutParams = FrameLayout.LayoutParams(height - inset * 2, height - inset * 2).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            marginStart = if (checked) width - height + inset else inset
+        }
+        thumb.requestLayout()
+    }
+
+    /** Tells the app a toggle moved. */
+    private fun sendChecked(delegate: OnCheckedChangeDelegate, checked: Boolean, label: String) {
+        runCatching {
+            delegate.sendCheckedChange(
+                checked,
+                object : androidx.car.app.OnDoneCallback {
+                    override fun onSuccess(
+                        response: androidx.car.app.serialization.Bundleable?,
+                    ) = Unit
+
+                    override fun onFailure(
+                        response: androidx.car.app.serialization.Bundleable,
+                    ) {
+                        onStep("car app: ${session.app.label} refused '$label'")
+                    }
+                },
+            )
+        }.onFailure {
+            onStep("car app: could not toggle '$label' in ${session.app.label}: $it")
+        }
+    }
+
+    /** Tells the app a row of a selectable list was chosen. */
+    private fun sendSelected(delegate: OnSelectedDelegate, index: Int, label: String) {
+        runCatching {
+            delegate.sendSelected(
+                index,
+                object : androidx.car.app.OnDoneCallback {
+                    override fun onSuccess(
+                        response: androidx.car.app.serialization.Bundleable?,
+                    ) = Unit
+
+                    override fun onFailure(
+                        response: androidx.car.app.serialization.Bundleable,
+                    ) {
+                        onStep("car app: ${session.app.label} refused '$label'")
+                    }
+                },
+            )
+        }.onFailure {
+            onStep("car app: could not select '$label' in ${session.app.label}: $it")
+        }
+    }
+
+    /**
+     * Which row of the group is marked.
+     *
+     * Kept beside the delegate rather than looked up from the list, because
+     * [rowView] is handed one row at a time and the list it came from is not in
+     * scope by then. Set by [fillItems] before it draws any of them.
+     */
+    private val selectedByDelegate: MutableMap<OnSelectedDelegate, Int> = mutableMapOf()
+
+    private fun selectedIndexOf(delegate: OnSelectedDelegate): Int =
+        selectedByDelegate[delegate] ?: -1
 
     private fun gridOf(context: Context, list: ItemList?): View {
         val grid = GridLayout(context).apply {
@@ -1384,6 +1598,15 @@ class TemplateRenderer(
 
         /** How far an unselected tab fades. Enough to read, not enough to pick. */
         const val INACTIVE_TAB_ALPHA = 0.55f
+
+        /** A drawn switch's track height. Its width follows [SWITCH_ASPECT]. */
+        const val SWITCH_HEIGHT_DP = 30f
+
+        /** How much wider than tall a switch track is. */
+        const val SWITCH_ASPECT = 1.8f
+
+        /** The gap between a switch's track and its thumb. */
+        const val SWITCH_INSET_DP = 3f
 
         const val ROW_IMAGE_FRACTION = 0.72f
         const val ICON_LARGE_DP = 56f
