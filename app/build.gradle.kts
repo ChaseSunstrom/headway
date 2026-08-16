@@ -281,11 +281,16 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        // JNA arrives with vosk-android and carries its dispatcher for every
-        // platform it has ever supported — AIX on PowerPC, macOS, both Windows
-        // architectures. On Android the dispatcher comes from the AAR's own
-        // jniLibs, so these are 1.7 MB that can never be loaded. The Android
-        // and Linux entries are deliberately not excluded.
+        // JNA's jar carries its dispatcher for every platform it has ever
+        // supported — AIX on PowerPC, macOS, both Windows architectures — as
+        // ordinary resources, none of which Android can load. These excludes
+        // drop 1.7 MB of them.
+        //
+        // Belt and braces now rather than the whole story: the dependency block
+        // below takes JNA as an `aar`, whose `classes.jar` does not carry the
+        // resource copies at all. That is the point of it — the Android
+        // dispatcher has to arrive as a *packaged native library* under
+        // `lib/<abi>/`, and as a resource it never did.
         resources.excludes += "com/sun/jna/aix-*/**"
         resources.excludes += "com/sun/jna/darwin*/**"
         resources.excludes += "com/sun/jna/win32-*/**"
@@ -398,7 +403,15 @@ dependencies {
     // Java API -- 4.4.0 is the version vosk-android was compiled against -- so
     // this changes where one file lands and nothing else. CI asserts the APK
     // contains it, because the failure mode is silent at build time.
-    implementation(variantOf(libs.jna.aar) { artifactType("aar") })
+    // Spelled out with `@aar` rather than through `variantOf`. JNA's POM says
+    // `packaging=jar` and publishes the aar beside it, so this is Maven's
+    // artifact-only form -- "the same module, the file with this extension" --
+    // which is what AGP's aar transform needs to see in order to unpack
+    // `jni/` into `lib/`. The version still lives in the catalog.
+    val jna = libs.jna.aar.get()
+    implementation(
+        "${jna.module.group}:${jna.module.name}:${jna.versionConstraint.requiredVersion}@aar",
+    )
 
     // :app had no unit-test source set at all until the dashboard's layout tree
     // needed one -- `:app:testDebugUnitTest` reported NO-SOURCE, which reads in

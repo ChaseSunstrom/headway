@@ -283,10 +283,17 @@ class NowPlayingTile(
         val session = controller ?: return advance()
         val state = runCatching { session.playbackState }.getOrNull()
         val metadata = runCatching { session.metadata }.getOrNull()
-        val changed = describeState(state) != describeState(shownState) ||
-            describeMetadata(metadata) != describeMetadata(shownMetadata)
+        val track = describeMetadata(metadata) != describeMetadata(shownMetadata)
+        val changed = track || describeState(state) != describeState(shownState)
         shownState = state
         shownMetadata = metadata
+        // The queue, but only when the track moved on. `onQueueChanged` is what
+        // normally keeps it current and this is only the net under an app that
+        // does not send it -- and `getQueue` is the expensive read of the three,
+        // so it is worth once a track rather than once a resync.
+        if (track && full) {
+            shownQueue = runCatching { session.queue }.getOrNull().orEmpty()
+        }
         if (changed) render() else advance()
     }
 
