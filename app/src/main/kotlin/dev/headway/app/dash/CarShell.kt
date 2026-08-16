@@ -41,6 +41,7 @@ import dev.headway.app.carapp.CarHostCapability
 import dev.headway.app.carapp.TemplateApps
 import dev.headway.app.dash.tiles.AppPaneTile
 import dev.headway.app.dash.tiles.CarAppTile
+import dev.headway.app.dash.tiles.CarStyle
 import dev.headway.app.dash.tiles.ClockTile
 import dev.headway.app.dash.tiles.LauncherTile
 import dev.headway.app.dash.tiles.MapsTile

@@ -18,7 +18,12 @@
 #      this is always an error -- and it reports as a pile of "unresolved
 #      reference" on the lines *after* it, none of which mention the string.
 #
-#   3. `import` of an android name that is @hide and so absent from the public
+#   3. A project singleton used as `Name.member` from another package without
+#      an import. CI reports that as "unresolved reference" on the *member*
+#      access, plus a cascade of inference failures under it, none of which
+#      names the missing import.
+#
+#   4. `import` of an android name that is @hide and so absent from the public
 #      SDK. Only the ones this project has actually tripped over are listed,
 #      because a real answer needs android.jar and this has to run anywhere.
 #
@@ -198,6 +203,158 @@ def unterminated_strings(path: Path) -> list:
     return found
 
 
+# Project singletons that are used as `Name.member` and must be imported when
+# they live in another package. Curated rather than inferred: an inferred list
+# produces false positives on every local variable that happens to start with a
+# capital, and a false positive in a build gate is worse than a miss.
+SINGLETONS = {
+    "CarStyle": "dev.headway.app.dash.tiles",
+    "CarSheet": "dev.headway.app.dash",
+    "CarGlyph": "dev.headway.app.dash",
+    "CarShell": "dev.headway.app.dash",
+    "Headway": "dev.headway.app.ui.theme",
+    "Phone": "dev.headway.app.ui.theme",
+    "HeadwaySettings": "dev.headway.app.ui",
+    "HeadwayTheme": "dev.headway.app.ui.theme",
+    "SessionLog": "dev.headway.app.log",
+    "AllowedApps": "dev.headway.dash",
+    "CarUiScale": "dev.headway.dash",
+    "CarUnits": "dev.headway.dash",
+    "CornerStyle": "dev.headway.dash",
+    "OverlaySpot": "dev.headway.dash",
+    "PaneKind": "dev.headway.dash",
+    "TabIcon": "dev.headway.dash",
+    "CarSensors": "dev.headway.protocol.channel",
+}
+
+
+def unimported(path: Path) -> list:
+    """Every project singleton used as `Name.member` without being reachable.
+
+    "Unresolved reference 'CarStyle'" from CI is a whole page of cascading
+    errors -- every member access under it fails too, and every lambda whose
+    type depended on it -- none of which name the missing import. This names it.
+
+    Only the curated `SINGLETONS` are checked, and only when the file's own
+    package differs from theirs, so a same-package use needs nothing.
+    """
+    text = path.read_text(encoding="utf-8")
+    package = ""
+    for line in text.split("\n"):
+        if line.startswith("package "):
+            package = line[len("package "):].strip()
+            break
+    # Comments and string bodies blanked first. Prose in this codebase is full
+    # of sentences that end "... over Headway." and a naive match reported every
+    # one of them -- which is how a check gets deleted rather than fixed.
+    code = code_only(text)
+    found = []
+    for name, home in SINGLETONS.items():
+        if package == home:
+            continue
+        if f"import {home}.{name}" in text:
+            continue
+        # Word-boundary, followed by a dot: `CarStyle.panel`, not `MyCarStyle`.
+        for number, line in enumerate(code.split("\n"), start=1):
+            if re.search(rf"(?<![A-Za-z0-9_.]){name}\.", line):
+                found.append(
+                    f"{path}:{number}: {name} is used but not imported "
+                    f"(it lives in {home})"
+                )
+                break
+    return found
+
+
+def code_only(text: str) -> str:
+    """The same text with comments and string bodies blanked, newlines kept.
+
+    Line numbers survive, so a finding still points at the right line. Uses the
+    same mode stack as [unterminated_strings] because the same three things --
+    nested block comments, escapes, and `${...}` inside a string -- defeat
+    anything simpler.
+    """
+    out = []
+    stack = [["code", 0]]
+    index = 0
+    while index < len(text):
+        kind, braces = stack[-1]
+        char = text[index]
+        two, three = text[index:index + 2], text[index:index + 3]
+
+        if char == "\n":
+            if kind in ("line_comment", "str"):
+                stack.pop()
+            out.append("\n")
+            index += 1
+            continue
+
+        if kind in ("line_comment", "block_comment", "str", "raw"):
+            if kind == "block_comment" and two == "/*":
+                stack.append(["block_comment", 0])
+                out.append("  ")
+                index += 2
+                continue
+            if kind == "block_comment" and two == "*/":
+                stack.pop()
+                out.append("  ")
+                index += 2
+                continue
+            if kind == "str" and char == "\\":
+                out.append("  ")
+                index += 2
+                continue
+            if kind in ("str", "raw") and two == "${":
+                stack.append(["code", 0])
+                out.append("  ")
+                index += 2
+                continue
+            if kind == "raw" and three == '\"\"\"':
+                stack.pop()
+                out.append("   ")
+                index += 3
+                continue
+            if kind == "str" and char == '"':
+                stack.pop()
+                out.append(" ")
+                index += 1
+                continue
+            out.append(" ")
+            index += 1
+            continue
+
+        # kind == "code"
+        if two == "//":
+            stack.append(["line_comment", 0])
+            out.append("  ")
+            index += 2
+            continue
+        if two == "/*":
+            stack.append(["block_comment", 0])
+            out.append("  ")
+            index += 2
+            continue
+        if three == '\"\"\"':
+            stack.append(["raw", 0])
+            out.append("   ")
+            index += 3
+            continue
+        if char == '"':
+            stack.append(["str", 0])
+            out.append(" ")
+            index += 1
+            continue
+        if char == "{":
+            stack[-1][1] = braces + 1
+        elif char == "}":
+            if braces == 0 and len(stack) > 1:
+                stack.pop()
+            else:
+                stack[-1][1] = braces - 1
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def conflicts(path: Path) -> list:
     """Every function this file declares twice in one scope."""
     found, seen, stack, depth, pending = [], {}, [], 0, None
@@ -248,6 +405,7 @@ def main() -> int:
         for path in sorted(Path(module).rglob("*.kt")):
             problems += conflicts(path)
             problems += unterminated_strings(path)
+            problems += unimported(path)
             text = path.read_text(encoding="utf-8")
             for line in text.split("\n"):
                 if not line.startswith("import "):

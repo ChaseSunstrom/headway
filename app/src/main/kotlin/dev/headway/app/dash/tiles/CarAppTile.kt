@@ -93,7 +93,6 @@ class CarAppTile(
      * resolves a navigator itself and passes it in, so there is nothing there
      * for a picker to record.
      */
-    private val onChosen: (ComponentName) -> Unit = {},
     /**
      * Whether this pane was *pointed at* an app rather than choosing one.
      *
@@ -102,8 +101,13 @@ class CarAppTile(
      * template chrome's "Apps" button leads somewhere the driver never came
      * from and its label names an app they never picked — which a driver
      * reported as clutter laid over their map. The chrome is not drawn.
+     *
+     * Declared *before* [onChosen] on purpose: [onChosen] is the parameter
+     * callers pass as a trailing lambda, and a `Boolean` after it silently
+     * captured that lambda instead.
      */
     private val pinned: Boolean = false,
+    private val onChosen: (ComponentName) -> Unit = {},
 ) : DashTile {
 
     private val appContext: Context = context.applicationContext
