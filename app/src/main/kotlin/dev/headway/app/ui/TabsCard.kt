@@ -37,6 +37,7 @@ import dev.headway.dash.AllowedApps
 import dev.headway.dash.DashLayout
 import dev.headway.dash.DashNode
 import dev.headway.dash.PaneKind
+import dev.headway.dash.TabIcon
 
 /**
  * Tab management, on the phone, where there is a keyboard.
@@ -207,6 +208,9 @@ internal class TabsCard(
         val kinds = PaneKind.ALL
         val current = (tab.root as? DashNode.Leaf)?.kind
         var chosen = kinds.indexOf(current).takeIf { it >= 0 } ?: -1
+        // Held rather than saved on pick, so choosing an icon and then
+        // cancelling the dialog changes nothing -- which is what Cancel means.
+        var icon: TabIcon? = tab.icon
 
         val column = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
@@ -225,6 +229,17 @@ internal class TabsCard(
                 ),
             )
         }
+        // The other half of a driver's report that there was no way to set a
+        // layout's icon. There was, on the car screen -- but not here, which is
+        // where a layout gets set up in the first place.
+        lateinit var iconButton: android.widget.TextView
+        iconButton = Phone.inlineButton(activity, iconCaption(icon)) {
+            TabIconPicker.show(activity, icon) { picked ->
+                icon = picked
+                iconButton.text = iconCaption(picked)
+            }
+        }
+        column.addView(iconButton)
 
         AlertDialog.Builder(activity)
             .setTitle(tab.name)
@@ -265,7 +280,7 @@ internal class TabsCard(
                 // `copy`, not a fresh DashLayout: a rename must not throw away
                 // the icon the driver chose on the car screen, nor the locked
                 // flag. Constructing a new one silently reset both.
-                val renamed = tab.copy(name = name, root = root)
+                val renamed = tab.copy(name = name, root = root, iconName = icon?.name)
                 if (index >= 0) updated[index] = renamed else updated += renamed
                 store.replaceAll(updated)
                 if (wasActive) store.setActive(name)
@@ -481,6 +496,12 @@ internal class TabsCard(
     }
 
     // --- plumbing ----------------------------------------------------------------
+
+    /** What the icon button says, given what is chosen. */
+    private fun iconCaption(icon: TabIcon?): String =
+        icon?.name?.lowercase()?.replaceFirstChar { it.uppercase() }
+            ?.let { "Icon: $it" }
+            ?: "Icon: none, shows the name"
 
     private fun nameField(initial: String): EditText = EditText(activity).apply {
         setText(initial)
