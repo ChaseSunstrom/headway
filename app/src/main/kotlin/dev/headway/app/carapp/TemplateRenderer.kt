@@ -154,15 +154,35 @@ class TemplateRenderer(
 
     val view: View get() = root
 
+    /**
+     * Where [chrome], [header], [body] and [actions] put what they build.
+     *
+     * Normally [root] itself. The tab branch points it at the content half of
+     * a split for the duration of the nested draw, which is the whole reason a
+     * side strip can sit *beside* the app's screen rather than above it: a
+     * `LinearLayout` cannot be half-horizontal, so the nested template has to
+     * be drawn into a child rather than into the same column as the strip.
+     *
+     * Reset in [render] on both the success and the failure path -- a draw that
+     * threw part way through the tab branch would otherwise leave this aimed at
+     * a detached holder and render the error state into nothing.
+     *
+     * Named `target` rather than `column` because several draw helpers build a
+     * local `column` of their own and a field of that name would be shadowed by
+     * exactly the ones that must not use it.
+     */
+    private var target: LinearLayout = root
+
     fun render(state: HostState, template: Template?) {
         root.removeAllViews()
+        target = root
         mapWanted = false
         val context = root.context
 
         if (state != HostState.RUNNING || template == null) {
             root.gravity = Gravity.TOP
-            root.addView(chrome(context))
-            root.addView(
+            target.addView(chrome(context))
+            target.addView(
                 CarStyle.emptyState(context, messageFor(state)),
                 LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f),
             )
@@ -175,12 +195,13 @@ class TemplateRenderer(
             .onFailure { error ->
                 SessionLog.shared.warn(TAG, "could not draw ${template.javaClass.simpleName}: $error")
                 root.removeAllViews()
+                target = root
                 root.gravity = Gravity.TOP
                 // Chrome first, for the reason the fallback branch gives: the
                 // one state where the driver most needs a way out is the one
                 // where Headway has just admitted it cannot draw the screen.
-                root.addView(chrome(context))
-                root.addView(
+                target.addView(chrome(context))
+                target.addView(
                     CarStyle.emptyState(
                         context,
                         "${session.app.label} sent a screen Headway could not draw " +
@@ -333,7 +354,7 @@ class TemplateRenderer(
                 // Chrome first, because the nested content template supplies
                 // the only other exit and in the loading state there is no
                 // nested template at all.
-                root.addView(chrome(context))
+                target.addView(chrome(context))
                 // `getTabContents()` is annotated @NonNull and is null in
                 // exactly this state: Builder.build() rejects a loading
                 // template that *has* tabs, so a loading one has neither
@@ -344,18 +365,30 @@ class TemplateRenderer(
                 if (template.isLoading) {
                     body(context, loading(context))
                 } else {
-                    // The app's own tabs, above Headway's. Nested tabs read
-                    // badly but the alternative is losing half the app's
-                    // navigation, and the row is drawn small and tight so the
-                    // hierarchy is obvious.
-                    root.addView(tabStrip(context, template))
                     val contents = runCatching { template.tabContents }.getOrNull()
                     val nested = contents?.template
+                    // The split takes the rest of the pane and measures itself.
+                    // It is the only thing here that knows the panel's shape,
+                    // and it learns it in onMeasure rather than by asking a view
+                    // for a width it has not been given yet.
+                    val split = TabSplit(context)
+                    val holder = LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                    }
+                    split.addView(tabStrip(context, template))
+                    split.addView(holder)
+                    target.addView(split, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+                    // The nested template draws into the content half. Restored
+                    // afterwards, or everything that follows this branch lands
+                    // in a holder inside a split.
+                    val outer = target
+                    target = holder
                     if (nested == null) {
                         body(context, loading(context))
                     } else {
                         draw(context, nested)
                     }
+                    target = outer
                 }
             }
 
@@ -373,16 +406,16 @@ class TemplateRenderer(
                     body(context, scrolling(context, column))
                 }
                 template.mapController?.mapActionStrip?.let {
-                    root.addView(actionStripView(context, it))
+                    target.addView(actionStripView(context, it))
                 }
             }
 
             is MapWithContentTemplate -> {
                 attachMap(context)
-                template.actionStrip?.let { root.addView(actionStripView(context, it)) }
+                template.actionStrip?.let { target.addView(actionStripView(context, it)) }
                 draw(context, template.contentTemplate)
                 template.mapController?.mapActionStrip?.let {
-                    root.addView(actionStripView(context, it))
+                    target.addView(actionStripView(context, it))
                 }
             }
 
@@ -440,7 +473,7 @@ class TemplateRenderer(
                 // that crashes, because the driver has no reason to think
                 // switching tabs would help. Two shipping templates land here
                 // today: SignInTemplate and MediaPlaybackTemplate.
-                root.addView(chrome(context))
+                target.addView(chrome(context))
                 body(
                     context,
                     CarStyle.emptyState(
@@ -477,7 +510,7 @@ class TemplateRenderer(
         attachMap(context)
         // A navigation template carries no header of its own — it is meant to
         // be the whole screen — so the way out has to be added explicitly.
-        root.addView(chrome(context))
+        target.addView(chrome(context))
 
         val info = template.navigationInfo
         val guidance = LinearLayout(context).apply {
@@ -562,12 +595,12 @@ class TemplateRenderer(
             }
         }
 
-        root.addView(guidance)
+        target.addView(guidance)
         // A spacer, so the map shows through between the guidance card and the
         // action strip rather than the two meeting in the middle of the screen.
-        root.addView(View(context), LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-        template.mapActionStrip?.let { root.addView(actionStripView(context, it)) }
-        template.actionStrip?.let { root.addView(actionStripView(context, it)) }
+        target.addView(View(context), LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        template.mapActionStrip?.let { target.addView(actionStripView(context, it)) }
+        template.actionStrip?.let { target.addView(actionStripView(context, it)) }
     }
 
     // --- the map surface --------------------------------------------------------
@@ -665,7 +698,7 @@ class TemplateRenderer(
         )
         end.forEach { bar.addView(actionView(context, it, compact = true)) }
         strip?.actions?.forEach { bar.addView(actionView(context, it, compact = true)) }
-        root.addView(bar)
+        target.addView(bar)
     }
 
     /**
@@ -698,7 +731,7 @@ class TemplateRenderer(
     }
 
     private fun body(context: Context, content: View) {
-        root.addView(content, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        target.addView(content, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
     }
 
     private fun actions(context: Context, actions: List<Action>) {
@@ -711,7 +744,7 @@ class TemplateRenderer(
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
         }
         actions.forEach { bar.addView(actionView(context, it, compact = false)) }
-        root.addView(bar)
+        target.addView(bar)
     }
 
     private fun actionStripView(context: Context, strip: ActionStrip): View =
@@ -980,35 +1013,225 @@ class TemplateRenderer(
         return cell
     }
 
-    private fun tabStrip(context: Context, template: TabTemplate): View =
+    /**
+     * The app's own tabs, as icons.
+     *
+     * Icons and nothing else, because this strip floats *over* the app's map
+     * rather than beside it -- the map surface is a full-pane sibling behind
+     * the whole template column, so nothing the renderer draws can take space
+     * from it, only cover it. The old strip gave every tab an equal weighted
+     * share of a full-width row, which on HERE WeGo's home screen laid a 44 dp
+     * band across the entire top of the map on every screen the app drew, and a
+     * driver reported exactly that. An icon carries the same information in a
+     * square, and squares fit down a side.
+     *
+     * Every accessor is read under `runCatching`, for the reason the
+     * `getTabContents()` comment in [draw] gives at length: these getters are
+     * annotated `@NonNull` and implemented as `requireNonNull` of fields the
+     * library's own `Bundler` leaves null when the bundle does not carry them.
+     * A host does not receive constructed objects; it receives reflected ones,
+     * and a throw here was being reported to the driver as "Headway could not
+     * draw TabTemplate" -- the wrong message for a template it supports.
+     */
+    private fun tabStrip(context: Context, template: TabTemplate): LinearLayout =
         LinearLayout(context).apply {
+            // A starting value; TabSplit.onMeasure sets the real one, because
+            // it is the only thing that knows the panel's shape.
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
             val gap = CarStyle.gutter(context) / 2
-            setPadding(gap, gap, gap, 0)
-            template.tabs.forEach { tab ->
-                val active = tab.contentId == template.activeTabContentId
+            setPadding(gap, gap, gap, gap)
+            // A ground for the glyphs. The old strip painted nothing, and
+            // unbacked content over a moving map is unreadable in both
+            // directions. One small opaque panel costs a corner of the map
+            // instead of a band of it.
+            background = Headway.panel(
+                radiusPx = CarStyle.radius(context),
+                fill = Headway.SURFACE,
+                stroke = Headway.OUTLINE,
+            )
+            val activeId = runCatching { template.activeTabContentId }.getOrNull()
+            runCatching { template.tabs }.getOrDefault(emptyList()).forEach { tab ->
+                val contentId = runCatching { tab.contentId }.getOrNull()
+                val title = runCatching { tab.title }.getOrNull().plain()
+                val icon = runCatching { tab.icon }.getOrNull()
                 addView(
-                    CarStyle.label(
-                        context,
-                        14f,
-                        if (active) CarStyle.ACCENT else CarStyle.DIM,
-                        bold = active,
-                    ).apply {
-                        text = tab.title.plain() ?: tab.contentId
-                        gravity = Gravity.CENTER
-                        minHeight = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP * 0.6f)
-                        layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
-                        // No click handler. Switching an app's tab needs
-                        // TabCallbackDelegate, which is a one-way send with no
-                        // acknowledgement, and an app that ignores it leaves the
-                        // strip highlighting a tab that never opened. Better to
-                        // show where the app *is* than to offer a control that
-                        // may do nothing.
-                    },
+                    tabCell(
+                        context = context,
+                        title = title,
+                        icon = icon,
+                        active = contentId != null && contentId == activeId,
+                        onTap = contentId?.let { id -> ({ selectTab(template, id) }) },
+                    ),
                 )
             }
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
         }
+
+    /**
+     * One tab: a square, its icon, and a ring when it is the open one.
+     *
+     * The active tab is marked by its border and its opacity rather than by
+     * filling the square with the accent or tinting the glyph. An app supplies
+     * its own already-coloured artwork; filling behind it can hide it outright
+     * when the two colours are close, and tinting flattens a full-colour icon
+     * to a silhouette.
+     */
+    private fun tabCell(
+        context: Context,
+        title: String?,
+        icon: CarIcon?,
+        active: Boolean,
+        onTap: (() -> Unit)?,
+    ): View {
+        val side = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
+        val inset = CarStyle.gutter(context) / 2
+        val cell = FrameLayout(context).apply {
+            background = Headway.panel(
+                radiusPx = side / 2f,
+                fill = Headway.SURFACE_RAISED,
+                stroke = if (active) Headway.ACCENT else Headway.OUTLINE,
+            )
+            alpha = if (active) 1f else INACTIVE_TAB_ALPHA
+            // The strip carries no text now, so the title is the only name this
+            // control has left -- for a screen reader, and for the log.
+            contentDescription = title
+            isFocusable = onTap != null
+            onTap?.let { tap -> setOnClickListener { tap() } }
+            layoutParams = LinearLayout.LayoutParams(side, side).apply {
+                val gap = CarStyle.gutter(context) / 4
+                setMargins(gap, gap, gap, gap)
+            }
+        }
+        // A null from `drawable()` is not the same as the tab having no icon.
+        // `Tab.Builder` refuses to build one without an icon, but every standard
+        // `CarIcon` -- ALERT, APP_ICON, BACK, COMPOSE_MESSAGE, ERROR, PAN --
+        // carries no `IconCompat` at all, so a perfectly legal tab can yield
+        // nothing to draw.
+        val glyph = icon?.let { drawable(it) }
+            ?: icon?.takeIf { runCatching { it.type }.getOrNull() == CarIcon.TYPE_APP_ICON }
+                ?.let { session.app.icon(appContext) }
+        if (glyph != null) {
+            runCatching { icon?.tint }.getOrNull()?.let { tint ->
+                resolve(tint)?.let { glyph.setTint(it) }
+            }
+            cell.addView(
+                ImageView(context).apply {
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    setImageDrawable(glyph)
+                    layoutParams = FrameLayout.LayoutParams(
+                        side - inset * 2,
+                        side - inset * 2,
+                    ).apply { gravity = Gravity.CENTER }
+                },
+            )
+        } else {
+            // A blank square reads as a broken tab; the title's first letter
+            // reads as a tab. The title is present in the model even when the
+            // icon resolves to nothing.
+            cell.addView(
+                CarStyle.label(context, 22f, CarStyle.TEXT, bold = true).apply {
+                    text = (title ?: "\u2022").take(1).uppercase()
+                    gravity = Gravity.CENTER
+                    layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+                },
+            )
+        }
+        return cell
+    }
+
+    /**
+     * Asks the app to switch tabs.
+     *
+     * The strip used to carry no click handler at all, on the stated grounds
+     * that `TabCallbackDelegate` is "a one-way send with no acknowledgement".
+     * That is not what the library declares: `sendTabSelected(String,
+     * OnDoneCallback)` takes a callback, the same shape as every other click
+     * here.
+     *
+     * The sound half of the old objection is kept. The highlight is *not* moved
+     * locally -- the app answers by invalidating, and the next template carries
+     * the new `activeTabContentId`. So the strip keeps showing where the app
+     * *is* rather than where it was asked to go, and an app that ignores the
+     * request simply leaves the strip alone.
+     */
+    private fun selectTab(template: TabTemplate, contentId: String) {
+        runCatching {
+            template.tabCallbackDelegate.sendTabSelected(
+                contentId,
+                object : androidx.car.app.OnDoneCallback {
+                    override fun onSuccess(
+                        response: androidx.car.app.serialization.Bundleable?,
+                    ) = Unit
+
+                    override fun onFailure(
+                        response: androidx.car.app.serialization.Bundleable,
+                    ) {
+                        onStep("car app: ${session.app.label} refused tab '$contentId'")
+                    }
+                },
+            )
+        }.onFailure {
+            onStep("car app: could not switch ${session.app.label} to '$contentId': $it")
+        }
+    }
+
+    /**
+     * The tab strip and the app's screen, split whichever way the panel is shaped.
+     *
+     * `onMeasure` is the only place this decision can honestly be made. It is
+     * handed the exact space this container has been given -- the pane minus
+     * the chrome bar, which is the area the strip and the app's screen actually
+     * share -- and it runs before the first child is measured, so the first
+     * frame is already right. Reading a width at draw time is not an option:
+     * the first template can arrive before `root` has ever been laid out, which
+     * is the same race `CarAppTile` defers around for the session geometry.
+     *
+     * The guard matters. `setOrientation` and `setLayoutParams` both call
+     * `requestLayout`, and calling that from inside a measure pass costs an
+     * extra traversal. With the guard it happens at most once per shape, and
+     * the `super.onMeasure` below runs in the same pass with the new params, so
+     * nothing flashes.
+     */
+    private class TabSplit(context: Context) : LinearLayout(context) {
+
+        private var sideways: Boolean? = null
+
+        override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+            val width = MeasureSpec.getSize(widthSpec)
+            val height = MeasureSpec.getSize(heightSpec)
+            // Down the side once the panel is meaningfully taller than it is
+            // wide. A square-ish panel keeps the top row: that is where the
+            // driver's eye already is, and a side column on a wide panel would
+            // eat the dimension the app's own content has least of.
+            val wanted = width > 0 && height > width * SIDE_STRIP_RATIO
+            if (sideways != wanted) {
+                sideways = wanted
+                orientation = if (wanted) HORIZONTAL else VERTICAL
+                (getChildAt(STRIP) as? LinearLayout)?.orientation =
+                    if (wanted) VERTICAL else HORIZONTAL
+                getChildAt(CONTENT)?.layoutParams = if (wanted) {
+                    LayoutParams(0, MATCH_PARENT, 1f)
+                } else {
+                    LayoutParams(MATCH_PARENT, 0, 1f)
+                }
+            }
+            super.onMeasure(widthSpec, heightSpec)
+        }
+
+        private companion object {
+            const val STRIP = 0
+            const val CONTENT = 1
+
+            /**
+             * How much taller than wide before the strip moves to the side.
+             *
+             * Not 1.0: a panel within a few pixels of square would otherwise
+             * flip arrangement back and forth across a divider drag.
+             */
+            const val SIDE_STRIP_RATIO = 1.15f
+        }
+    }
 
     private fun sectionHeading(context: Context, text: String): View =
         CarStyle.label(context, 13f, CarStyle.ACCENT, bold = true).apply {
@@ -1141,9 +1364,12 @@ class TemplateRenderer(
      * here would be theatre.
      */
     private fun click(delegate: OnClickDelegate?, label: String) {
-        val target = delegate ?: return
+        // Not `target`: that is now a field naming the column being drawn into,
+        // and a local of the same name here would shadow it for anyone who
+        // later needed both.
+        val sink = delegate ?: return
         runCatching {
-            target.sendClick(object : androidx.car.app.OnDoneCallback {
+            sink.sendClick(object : androidx.car.app.OnDoneCallback {
                 override fun onSuccess(response: androidx.car.app.serialization.Bundleable?) = Unit
                 override fun onFailure(response: androidx.car.app.serialization.Bundleable) {
                     onStep("car app: ${session.app.label} refused '$label'")
@@ -1155,6 +1381,10 @@ class TemplateRenderer(
     }
 
     private companion object {
+
+        /** How far an unselected tab fades. Enough to read, not enough to pick. */
+        const val INACTIVE_TAB_ALPHA = 0.55f
+
         const val ROW_IMAGE_FRACTION = 0.72f
         const val ICON_LARGE_DP = 56f
 
