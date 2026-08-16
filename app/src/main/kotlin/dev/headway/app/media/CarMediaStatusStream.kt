@@ -28,7 +28,11 @@ import dev.headway.app.log.SessionLog
 import dev.headway.protocol.channel.MediaPlaybackChannel
 import dev.headway.protocol.io.MessageChannel
 import dev.headway.protocol.session.HeadUnitProfile
+import java.io.EOFException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 
@@ -97,6 +101,9 @@ class CarMediaStatusStream(
     private val outgoing = Channel<dev.headway.protocol.framing.AapMessage>(Channel.CONFLATED)
 
     private var pump: kotlinx.coroutines.Job? = null
+
+    /** Drains the channel so a head-unit frame is never silently evicted. */
+    private var reader: kotlinx.coroutines.Job? = null
     private var sessionsListener: MediaSessionManager.OnActiveSessionsChangedListener? = null
 
     /** What was last put on the wire, so an unchanged track is not resent. */
@@ -157,6 +164,7 @@ class CarMediaStatusStream(
                     .onFailure { SessionLog.shared.warn(TAG, "could not send a frame: $it") }
             }
         }
+        reader = scope.launch { readFromCar() }
         rebind()
         main.postDelayed(tick, TICK_MILLIS)
     }
@@ -180,14 +188,86 @@ class CarMediaStatusStream(
         runCatching { send(MediaPlaybackChannel.Playback.STOPPED, null) }
         pump?.cancel()
         pump = null
+        reader?.cancel()
+        reader = null
         outgoing.close()
     }
 
     fun describe(): String {
-        val open = controller ?: return "media status: nothing bound, $sent frame(s) sent"
-        return "media status: ${open.packageName}, ${lastState?.name?.lowercase() ?: "unknown"}, " +
-            "$sent frame(s) sent"
+        // Always stated, including the zero. "The car sent nothing on this
+        // channel" is the finding when a skip button did nothing, and a line
+        // that only appears when the count is non-zero cannot report it.
+        val heard = ", $framesRead frame(s) received from the car"
+        val open = controller
+            ?: return "media status: nothing bound, $sent frame(s) sent$heard"
+        return "media status: ${appLabel(open.packageName)}, " +
+            "${lastState?.name?.lowercase() ?: "unknown"}, $sent frame(s) sent$heard"
     }
+
+    /**
+     * Reads the channel, so that what the head unit sends here is not thrown away.
+     *
+     * ## Why this exists even though nothing acts on the result
+     *
+     * This stream used to only write. The channel's queue still existed --
+     * `ChannelDemultiplexer` makes one per channel Headway opens -- so anything
+     * the head unit put on it went into a buffer nobody drained, was evicted
+     * when the buffer filled, and was counted in a `droppedMessages` field that
+     * was reported nowhere. A frame arriving here left no trace at all.
+     *
+     * That matters for one open question in particular. A driver reports that
+     * the car's physical skip buttons do nothing, and the input channel shows
+     * the head unit binding all six keycodes it advertised and then sending
+     * none of them. `MEDIA_PLAYBACK_INPUT` (32770) is the other way a head unit
+     * could deliver those presses -- `docs/protocol-notes.md` records it as
+     * "HU -> phone, instrument-cluster input" -- and with this channel unread,
+     * a log could not distinguish "the car sent nothing" from "Headway dropped
+     * it". Now it can.
+     *
+     * ## Why it logs rather than acts
+     *
+     * No reference this project has read decodes `MediaPlaybackInput`, and
+     * there is no `.proto` for it in the schema tree -- only the message id.
+     * CLAUDE.md forbids guessing a protocol constant, and a wrong guess here
+     * would be a skip button that does something other than skip. So the bytes
+     * go in the log, and a single drive with a button press in it is enough to
+     * write the decoder from.
+     */
+    private suspend fun readFromCar() {
+        while (currentCoroutineContext().isActive) {
+            val message = try {
+                connection.receive()
+            } catch (closed: EOFException) {
+                return
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failed: Exception) {
+                SessionLog.shared.warn(TAG, "media status: could not read the channel: $failed")
+                return
+            }
+            val name = when (message.messageId) {
+                MediaPlaybackChannel.MediaPlaybackMessageId.MEDIA_PLAYBACK_INPUT ->
+                    "MEDIA_PLAYBACK_INPUT"
+                else -> "unnamed"
+            }
+            // Bounded, because this is a diagnostic and not a firehose: a head
+            // unit that chatters here must not be able to fill a log export.
+            if (framesRead < MAX_LOGGED_INBOUND) {
+                onStep(
+                    "media status: the car sent $name (0x%04x), %d byte(s): %s"
+                        .format(message.messageId, message.payload.size, hex(message.payload))
+                )
+            }
+            framesRead++
+        }
+    }
+
+    /** Head-unit frames seen on this channel; reported by [describe]. */
+    private var framesRead: Long = 0L
+
+    private fun hex(bytes: ByteArray): String =
+        bytes.take(MAX_LOGGED_BYTES).joinToString(" ") { "%02x".format(it) } +
+            if (bytes.size > MAX_LOGGED_BYTES) " ..." else ""
 
     // --- session plumbing ------------------------------------------------------
 
@@ -320,6 +400,12 @@ class CarMediaStatusStream(
          * link that is also carrying video for no visible gain.
          */
         const val TICK_MILLIS: Long = 1_000L
+
+        /** Inbound frames logged in full before the channel goes quiet in the log. */
+        private const val MAX_LOGGED_INBOUND = 20L
+
+        /** Bytes of an inbound frame shown; these payloads are small. */
+        private const val MAX_LOGGED_BYTES = 64
 
         /** The advertised service, or null when the head unit offers none. */
         fun serviceOf(profile: HeadUnitProfile): ServiceOuterClass.Service? =

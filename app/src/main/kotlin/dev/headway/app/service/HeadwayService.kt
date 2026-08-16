@@ -1444,6 +1444,21 @@ open class HeadwayService : Service() {
             voice?.let { runCatching { step(it.describe()) } }
             sensors?.let { runCatching { step(it.describe()) } }
             mediaStatus?.let { runCatching { step(it.describe()) } }
+            // Both counters were kept and neither was ever printed. A frame the
+            // session had nowhere to put, or evicted from a full queue, is
+            // exactly the kind of thing a driver's log has to be able to show --
+            // "the car never sent it" and "Headway threw it away" look identical
+            // from the cabin.
+            runCatching {
+                val unroutable = demux.unroutableMessages
+                val dropped = demux.droppedMessages
+                if (unroutable > 0L || dropped > 0L) {
+                    step(
+                        "frames: $unroutable arrived for a channel this session never opened, " +
+                            "$dropped were evicted from a full channel queue"
+                    )
+                }
+            }
             runCatching { CarShell.onVoiceRequested = null }
             runCatching { AppPaneHost.onSharingKnown = null }
             runCatching { AppPaneHost.onGrantLost = null }
