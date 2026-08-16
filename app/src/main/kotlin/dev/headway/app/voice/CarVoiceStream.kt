@@ -22,8 +22,9 @@ import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaC
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import dev.headway.app.dash.tiles.MapsTile
 import dev.headway.app.dash.CarShell
+import dev.headway.app.dash.tiles.MapsTile
+import dev.headway.app.phone.CarPhone
 import dev.headway.protocol.channel.MicrophoneChannel
 import dev.headway.protocol.channel.MicrophoneChannelException
 import dev.headway.protocol.channel.MicrophoneFormat
@@ -275,6 +276,23 @@ class CarVoiceStream(
      * down: a mis-heard command is not worth losing video over.
      */
     fun requestListening() {
+        // Never while a call is live. `startCapture` asks the head unit to hand
+        // its cabin microphone to Headway, and during a call that microphone is
+        // the *call's* -- routed there natively over Bluetooth HFP by the
+        // phone's own telephony stack, which is how a driver talks to whoever
+        // rang. Taking it for a voice command would cut the caller off, and
+        // nothing else in this app would report why.
+        //
+        // Headway cannot supply the call's audio itself at any grant a user can
+        // give; see BLOCKERS.md B-027. So the correct behaviour is to leave the
+        // microphone alone and say so.
+        CarPhone.call?.let { live ->
+            onStep("voice: not listening while a call is up; the car's mic belongs to the call")
+            CarShell.active()?.showVoiceMessage(
+                if (live.ringing) "Answer or decline first" else "The car's mic is on your call",
+            )
+            return
+        }
         val scope = scope
         if (scope == null) {
             // Says so *on the car screen*, not only in the log. The hook the rail

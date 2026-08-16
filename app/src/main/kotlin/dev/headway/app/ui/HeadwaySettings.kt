@@ -23,6 +23,7 @@ import dev.headway.app.carapp.CarAppSurfaceView
 import dev.headway.dash.AllowedApps
 import dev.headway.dash.CarUiScale
 import dev.headway.dash.CarUnits
+import dev.headway.dash.OverlaySpot
 import dev.headway.dash.RailStyle
 
 /**
@@ -467,6 +468,27 @@ object HeadwaySettings {
 
     fun setCarAppLocation(context: Context, on: Boolean) {
         runCatching { of(context).edit().putBoolean(KEY_CAR_APP_LOCATION, on).apply() }
+    }
+
+    /**
+     * Where a floating card sits on the car screen, as `OverlaySpot` JSON.
+     *
+     * One preference rather than one per layout: a call arrives over whichever
+     * tab happens to be showing, so where it lands cannot be a property of the
+     * tab the driver was looking at. Stored in the same file as the layouts and
+     * the rail, so "clear app data" takes the whole car screen together.
+     */
+    const val KEY_OVERLAY_SPOT: String = "overlay_spot"
+
+    fun overlaySpot(context: Context): OverlaySpot =
+        OverlaySpot.decode(
+            runCatching { of(context).getString(KEY_OVERLAY_SPOT, null) }.getOrNull(),
+        )
+
+    fun setOverlaySpot(context: Context, spot: OverlaySpot) {
+        runCatching {
+            of(context).edit().putString(KEY_OVERLAY_SPOT, OverlaySpot.encode(spot)).apply()
+        }
     }
 
     /**

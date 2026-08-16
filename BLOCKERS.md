@@ -1321,3 +1321,57 @@ separate, unbuilt work — Headway's `CarSensors` models no location or heading
 field at all — and it is unknown whether the target head unit advertises those
 sensor types, since in AAP the phone is normally the GPS source rather than the
 car.
+
+---
+
+## B-027 — Car-mic audio cannot reach a phone call's uplink, and does not need to
+
+**Status:** Closed as impossible, and closed as unnecessary. The capability the
+driver asked for already exists; it just does not go through Headway.
+
+**Where:** `CarShell.showCall`, `CarVoiceStream.requestListening`,
+`CarAudioStream` (telephony's absence from `DRIVEN_STREAMS`), ADR 0005
+
+**What:** A driver asked for an overlay panel for incoming calls "and my Mic
+should work to talk to them from my CAR".
+
+**The overlay ships.** A floating, driver-positioned card over the panes, with
+the dialer's own Answer and Hang up actions.
+
+**The microphone half is already true, and Headway is not in it.** The phone is
+paired to the car by ordinary OS pairing, so while a call is up the phone's
+telephony stack routes it to the Bluetooth HFP headset — which is the car. The
+car's own cabin microphone is the call's microphone, in hardware, with the car's
+own echo cancellation, and it never passes through this app. That is also what
+real Android Auto does: ADR 0005 records a capture of Gearhead tearing A2DP
+down while projecting and deliberately *keeping* `STATE_HFP_CONNECTED`.
+
+**Why routing it through Headway is impossible rather than merely hard.** The
+API that injects into the uplink exists and is
+`AudioManager.getCallUplinkInjectionAudioTrack`, which is `@hide`, `@SystemApi`
+and `@RequiresPermission(CALL_AUDIO_INTERCEPTION)` — `signature|privileged|role`.
+All three of CLAUDE.md's hard bans fire at once. Nor is there a way round it:
+
+- `AudioTrack` cannot reach the modem's Tx path at all. `USAGE_VOICE_COMMUNICATION`
+  plays into the cabin, which is the downlink side — precisely why the
+  privileged injection API had to be added separately.
+- `VOICE_UPLINK`, `VOICE_DOWNLINK`, `VOICE_CALL` and `REMOTE_SUBMIX` all require
+  `CAPTURE_AUDIO_OUTPUT`, which their own documentation says is "reserved for
+  use by system components and is not available to third-party applications".
+- `VOICE_COMMUNICATION` is a *microphone* source and capture-only; it has
+  nothing to do with telephony Tx.
+- An `InCallService`, even as default dialer, gets mute and route selection and
+  not one sample of audio in either direction.
+
+**What was actually broken, and is fixed:** Headway could *steal* the car's
+microphone from a live call. `CarVoiceStream.requestListening` had no call-state
+guard, and both the rail's mic button and the steering-wheel voice key route
+straight into it — so a driver pressing either mid-call would have asked the
+head unit to hand its cabin mic to the voice recogniser and cut the caller off,
+with nothing anywhere reporting why. It now refuses while a call is live and
+says so on the car screen.
+
+**How to close it further:** nothing to close. The correct behaviour here is
+deliberate inaction: AOSP documents that a third-party `startBluetoothSco` is
+ignored during a call, and that `setCommunicationDevice` gives priority to the
+app owning the audio mode — the dialer. Headway calls neither, and should not.

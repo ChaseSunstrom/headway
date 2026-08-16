@@ -60,6 +60,8 @@ import dev.headway.app.ui.theme.Headway
 import dev.headway.app.ui.theme.HeadwayTheme
 import dev.headway.app.video.AppPaneHost
 import dev.headway.app.video.CarAppDisplay
+import dev.headway.app.phone.CarPhone
+import dev.headway.app.phone.LiveCall
 import dev.headway.app.video.OverlayDisplay
 import dev.headway.app.video.PhoneRotation
 import dev.headway.dash.CarUiScale
@@ -67,6 +69,7 @@ import dev.headway.dash.CarUnits
 import dev.headway.dash.DashLayout
 import dev.headway.dash.DashNode
 import dev.headway.dash.DashPath
+import dev.headway.dash.OverlaySpot
 import dev.headway.dash.PaneKind
 import dev.headway.dash.PaneRect
 import dev.headway.dash.Rail
@@ -131,6 +134,9 @@ class CarShell(
     private lateinit var railItems: LinearLayout
     private lateinit var stage: FrameLayout
     private lateinit var overlayHost: FrameLayout
+
+    /** Where a floating card lives. See its construction in [onCreate]. */
+    private lateinit var floats: FrameLayout
     private lateinit var banners: FrameLayout
     private lateinit var micButton: CarGlyphButton
 
@@ -171,6 +177,21 @@ class CarShell(
             visibility = View.GONE
         }
         root.addView(column)
+        // Between the panes and the sheets, and non-modal on purpose.
+        //
+        // Not `overlayHost`: that one is modal by contract -- `claimsAppTouch`
+        // returns false outright while it is visible, so every car touch goes
+        // to Headway and the live app pane stops receiving any. A call card
+        // floating over a map while the driver keeps using the map must not
+        // take that away. `showOverlay` also begins by emptying it, and forty
+        // call sites would evict a card mid-ring.
+        floats = FrameLayout(context).apply {
+            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+            isClickable = false
+            isFocusable = false
+            visibility = View.GONE
+        }
+        root.addView(floats)
         // Banners last, above the sheets. They used to be added *below*
         // `overlayHost`, so any message raised while a sheet was open -- which
         // is exactly when the app picker calls back into `openApp` -- was
@@ -221,6 +242,10 @@ class CarShell(
         DashLayoutStore.observeChanges(layoutsChanged)
         HeadwayTheme.observe(themeChanged)
         AppPaneHost.observe(appPaneChanged)
+        // The call card follows the phone for the whole session, not just while
+        // a Phone pane happens to be on screen -- a call arrives over whatever
+        // tab the driver is looking at, which is the point of it floating.
+        CarPhone.observe(callWatcher)
         shown = this
         startClockTicks()
         live.forEach { runCatching { it.start() } }
@@ -275,6 +300,7 @@ class CarShell(
         }
         if (tornDown) return
         tornDown = true
+        runCatching { CarPhone.unobserve(callWatcher) }
         DashLayoutStore.unobserveChanges(layoutsChanged)
         HeadwayTheme.unobserve(themeChanged)
         AppPaneHost.unobserve(appPaneChanged)
@@ -1195,6 +1221,162 @@ class CarShell(
     /** Closes whatever [showSheet] opened. */
     fun closeSheet() = closeOverlay()
 
+    // --- the floating card ----------------------------------------------------
+
+    private val callWatcher = CarPhone.Listener { call -> main.post { showCall(call) } }
+
+    /**
+     * Raises or drops the call card.
+     *
+     * A card rather than a pane, and floating rather than in the tree, because
+     * a call is not something a driver arranged their screen around -- it
+     * arrives over whatever tab happens to be showing, and it has to leave
+     * again without taking a pane's place. The panes underneath keep working
+     * and keep taking touches, which is the whole reason this is not a sheet.
+     *
+     * The car's own microphone is the call's microphone and Headway is not in
+     * that path at all: the phone is paired to the car over Bluetooth, and
+     * telephony routes a live call to the HFP headset natively, with the car's
+     * own echo cancellation. That is what real Android Auto does, and it is why
+     * this card carries no audio of its own. See `BLOCKERS.md` B-027 for the
+     * privileged API that would be needed to do anything else.
+     */
+    private fun showCall(call: LiveCall?) {
+        if (call == null) {
+            hideFloat()
+            return
+        }
+        val spot = HeadwaySettings.overlaySpot(context)
+        val card = CarStyle.panel(context).apply {
+            background = Headway.panel(
+                radiusPx = CarStyle.radius(context) * 2f,
+                fill = Headway.SURFACE,
+                stroke = Headway.ACCENT,
+            )
+            // Takes its own touches so a tap on Answer does not fall through to
+            // whatever pane is behind it; everything outside it still does.
+            isClickable = true
+        }
+        card.addView(
+            CarStyle.label(context, 13f, CarStyle.ACCENT).apply {
+                letterSpacing = 0.06f
+                text = if (call.ringing) "INCOMING CALL" else "ON A CALL"
+            },
+        )
+        card.addView(
+            CarStyle.label(context, 24f, CarStyle.TEXT, bold = true).apply {
+                text = call.who
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            },
+        )
+        card.addView(
+            CarStyle.label(context, 13f, CarStyle.DIM).apply { text = call.source },
+        )
+        card.addView(
+            View(context),
+            LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f),
+        )
+        val buttons = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        }
+        // The dialer's own actions, fired as the dialer published them. Headway
+        // is not a phone and does not want to be -- the `InCallService` a car
+        // wants needs a privileged role, and becoming the default dialer would
+        // mean owning emergency calling. See `CarPhone`.
+        call.answer?.takeIf { call.ringing }?.let { intent ->
+            buttons.addView(
+                CarStyle.button(context, "Answer", emphasised = true) {
+                    runCatching { intent.send() }
+                        .onFailure { onStep("phone: the dialer refused Answer: $it") }
+                }.apply {
+                    layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
+                        marginEnd = CarStyle.gutter(context) / 2
+                    }
+                },
+            )
+        }
+        call.hangUp?.let { intent ->
+            buttons.addView(
+                CarStyle.button(context, if (call.ringing) "Decline" else "Hang up") {
+                    runCatching { intent.send() }
+                        .onFailure { onStep("phone: the dialer refused Hang up: $it") }
+                }.apply {
+                    layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+                },
+            )
+        }
+        if (buttons.childCount > 0) card.addView(buttons)
+        showFloat(card, spot)
+        onStep("car screen: ${if (call.ringing) "a call is ringing" else "a call is up"}")
+    }
+
+    /** Puts [view] on the floating layer at [spot]. */
+    private fun showFloat(view: View, spot: OverlaySpot) {
+        val width = root.width.takeIf { it > 0 } ?: metrics.widthPx
+        val height = root.height.takeIf { it > 0 } ?: metrics.heightPx
+        floats.removeAllViews()
+        floats.addView(
+            view,
+            FrameLayout.LayoutParams(spot.widthPx(width), spot.heightPx(height)).apply {
+                gravity = Gravity.TOP or Gravity.START
+                leftMargin = spot.leftPx(width)
+                topMargin = spot.topPx(height)
+            },
+        )
+        floats.visibility = View.VISIBLE
+        Headway.revealIn(view)
+    }
+
+    private fun hideFloat() {
+        floats.removeAllViews()
+        floats.visibility = View.GONE
+    }
+
+    /** Where a floating card sits, and how big. */
+    private fun showOverlaySpot() {
+        val spot = HeadwaySettings.overlaySpot(context)
+        val rows = mutableListOf<CarSheet.Row>()
+        rows += CarSheet.section("Size")
+        OverlaySpot.SIZES.forEach { (label, width, height) ->
+            rows += CarSheet.Row(
+                title = label,
+                selected = kotlin.math.abs(spot.effectiveWidth - width) < 0.01f &&
+                    kotlin.math.abs(spot.effectiveHeight - height) < 0.01f,
+            ) {
+                // The corner is kept and re-clamped rather than reset: a driver
+                // resizing a card meant to resize it, not to move it.
+                applyOverlaySpot(spot.copy(width = width, height = height))
+            }
+        }
+        rows += CarSheet.section("Where")
+        OverlaySpot.corners(spot.effectiveWidth, spot.effectiveHeight)
+            .forEach { (label, x, y) ->
+                rows += CarSheet.Row(
+                    title = label,
+                    selected = kotlin.math.abs(spot.effectiveX - x) < 0.01f &&
+                        kotlin.math.abs(spot.effectiveY - y) < 0.01f,
+                ) { applyOverlaySpot(spot.copy(x = x, y = y)) }
+            }
+        showOverlay(
+            sheet().build(
+                title = "The call card",
+                rows = rows,
+                onClose = ::closeOverlay,
+            ),
+        )
+    }
+
+    private fun applyOverlaySpot(spot: OverlaySpot) {
+        HeadwaySettings.setOverlaySpot(context, spot)
+        closeOverlay()
+        onStep("car screen: the call card is ${spot.describe()}")
+        // Redrawn where it now belongs, if one is up. A driver moving it while
+        // a call is live is the likeliest time to be moving it at all.
+        runCatching { CarPhone.call?.let { showCall(it) } }
+    }
+
     private fun showOverlay(view: View) {
         overlayHost.removeAllViews()
         overlayHost.addView(view)
@@ -1247,6 +1429,11 @@ class CarShell(
         rows += CarSheet.Row("The rail", railStyle.describe()) { showRailStyle() }
         rows += CarSheet.Row("Pinned", "What sits on the rail, and in what order") { showRailEditor() }
         rows += CarSheet.Row("Units", unitsSummary()) { showUnits() }
+        rows += CarSheet.Row(
+            title = "The call card",
+            detail = "Where a call floats over your panels — " +
+                HeadwaySettings.overlaySpot(context).describe(),
+        ) { showOverlaySpot() }
         rows += CarSheet.Row(
             title = "Panel size",
             detail = "How large everything inside the panels draws — " +
