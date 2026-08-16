@@ -28,6 +28,9 @@ import dev.headway.app.log.SessionLog
 import dev.headway.protocol.channel.MediaPlaybackChannel
 import dev.headway.protocol.io.MessageChannel
 import dev.headway.protocol.session.HeadUnitProfile
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 
 private const val TAG = "HeadwayMediaStatus"
 
@@ -80,6 +83,20 @@ class CarMediaStatusStream(
 
     private var running = false
     private var controller: MediaController? = null
+
+    /**
+     * Frames waiting to go out.
+     *
+     * `MessageChannel.send` suspends and every producer here is a
+     * `MediaController.Callback` or a `Handler` tick on the main looper, which
+     * is not a coroutine and must not block. A conflated queue drained by one
+     * coroutine is the whole of the bridge -- and conflated on purpose: if the
+     * link is slow, the *newest* status is the one worth sending, not a backlog
+     * of stale positions arriving a second apart.
+     */
+    private val outgoing = Channel<dev.headway.protocol.framing.AapMessage>(Channel.CONFLATED)
+
+    private var pump: kotlinx.coroutines.Job? = null
     private var sessionsListener: MediaSessionManager.OnActiveSessionsChangedListener? = null
 
     /** What was last put on the wire, so an unchanged track is not resent. */
@@ -104,7 +121,7 @@ class CarMediaStatusStream(
         }
     }
 
-    fun start() {
+    fun start(scope: CoroutineScope) {
         if (running) return
         val manager = appContext.getSystemService(MediaSessionManager::class.java)
         if (manager == null) {
@@ -132,6 +149,14 @@ class CarMediaStatusStream(
         }
         running = true
         sessionsListener = listener
+        // One writer, off the main thread. Started before the first rebind so
+        // no frame produced during bring-up is dropped on the floor.
+        pump = scope.launch {
+            for (message in outgoing) {
+                runCatching { connection.send(message) }
+                    .onFailure { SessionLog.shared.warn(TAG, "could not send a frame: $it") }
+            }
+        }
         rebind()
         main.postDelayed(tick, TICK_MILLIS)
     }
@@ -149,8 +174,13 @@ class CarMediaStatusStream(
         sessionsListener = null
         bind(null)
         // One last frame, so a head unit does not keep offering transport for a
-        // session that has gone with the drive.
+        // session that has gone with the drive. Sent before the pump is
+        // cancelled, and conflated like every other -- if the link is already
+        // gone it simply never leaves, which is the same outcome as not trying.
         runCatching { send(MediaPlaybackChannel.Playback.STOPPED, null) }
+        pump?.cancel()
+        pump = null
+        outgoing.close()
     }
 
     fun describe(): String {
@@ -187,10 +217,7 @@ class CarMediaStatusStream(
         val metadata = metadataOf(open)
         if (metadata != lastMetadata) {
             lastMetadata = metadata
-            runCatching {
-                connection.send(MediaPlaybackChannel.metadata(channelId, metadata))
-                sent++
-            }.onFailure { SessionLog.shared.warn(TAG, "could not send metadata: $it") }
+            offer(MediaPlaybackChannel.metadata(channelId, metadata))
         }
         publishStatus()
     }
@@ -214,14 +241,16 @@ class CarMediaStatusStream(
             source = open?.packageName?.let { appLabel(it) },
             positionSeconds = position,
         )
-        runCatching {
-            connection.send(MediaPlaybackChannel.status(channelId, status))
-            sent++
-        }.onFailure { SessionLog.shared.warn(TAG, "could not send playback status: $it") }
+        offer(MediaPlaybackChannel.status(channelId, status))
         if (lastState != state) {
             lastState = state
             onStep("media status: told the car ${state.name.lowercase()}")
         }
+    }
+
+    /** Queues a frame from whatever thread produced it. Never blocks. */
+    private fun offer(message: dev.headway.protocol.framing.AapMessage) {
+        if (outgoing.trySend(message).isSuccess) sent++
     }
 
     /**

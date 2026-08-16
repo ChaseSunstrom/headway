@@ -1422,7 +1422,7 @@ open class HeadwayService : Service() {
             // whose complete absence costs the driver nothing but a pane that
             // says the car is quiet.
             startSubsystem("sensors") { sensors?.start(this) }
-            startSubsystem("media status") { mediaStatus?.start() }
+            startSubsystem("media status") { mediaStatus?.start(this) }
 
             pump.join()
         } catch (t: Throwable) {
