@@ -399,13 +399,63 @@ def conflicts(path: Path) -> list:
     return found
 
 
+# Top-level `object` names, by the file that declares them. Built at run time
+# rather than curated, because it is only ever used to answer "is this name a
+# *top-level* declaration", and a name missing from it simply means no check.
+def top_level_objects() -> dict:
+    found = {}
+    for module in MODULES:
+        for path in Path(module).rglob("*.kt"):
+            for raw in code_only(path.read_text(encoding="utf-8")).split("\n"):
+                match = TOP_LEVEL_OBJECT.match(raw)
+                if match:
+                    found[match.group(1)] = path
+    return found
+
+
+TOP_LEVEL_OBJECT = re.compile(r"^(?:internal |public )?object ([A-Z]\w*)\b")
+
+# `Outer.Inner.MEMBER` where both names are top-level objects.
+NESTED_USE = re.compile(r"\b([A-Z]\w*)\.([A-Z]\w*)\.[A-Za-z_]")
+
+
+def misnested(path: Path, objects: dict) -> list:
+    """Every `A.B.C` that reads B as nested in A when B is top-level.
+
+    Kotlin reports this as "unresolved reference", which names the member and
+    not the reason -- and the reason is invisible at the call site, because
+    `MediaPlaybackChannel.MediaPlaybackMessageId.MEDIA_PLAYBACK_INPUT` looks
+    exactly like a legal nested access. It only fails because those two objects
+    are siblings in one file rather than one inside the other. That shape cost
+    a CI round, so it is worth a rule.
+
+    Conservative on purpose: it fires only when *both* names are top-level
+    `object` declarations somewhere in this project. Same-file pairs are *not*
+    exempt -- the pattern above anchors at column 0, so anything it matched is
+    top-level by construction and cannot be nested inside anything, and the
+    case that cost the CI round was exactly two siblings in one file.
+    """
+    problems = []
+    for number, raw in enumerate(code_only(path.read_text(encoding="utf-8")).split("\n"), 1):
+        for outer, inner in NESTED_USE.findall(raw):
+            if outer not in objects or inner not in objects:
+                continue
+            problems.append(
+                f"{path}:{number}: {outer}.{inner} reads as nested, but {inner} is a "
+                f"top-level object in {objects[inner]} -- import and use it directly"
+            )
+    return problems
+
+
 def main() -> int:
     problems = []
+    objects = top_level_objects()
     for module in MODULES:
         for path in sorted(Path(module).rglob("*.kt")):
             problems += conflicts(path)
             problems += unterminated_strings(path)
             problems += unimported(path)
+            problems += misnested(path, objects)
             text = path.read_text(encoding="utf-8")
             for line in text.split("\n"):
                 if not line.startswith("import "):

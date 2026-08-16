@@ -26,14 +26,15 @@ import android.os.Looper
 import dev.headway.app.dash.tiles.NowPlayingTile
 import dev.headway.app.log.SessionLog
 import dev.headway.protocol.channel.MediaPlaybackChannel
+import dev.headway.protocol.channel.MediaPlaybackMessageId
 import dev.headway.protocol.io.MessageChannel
 import dev.headway.protocol.session.HeadUnitProfile
 import java.io.EOFException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 
 private const val TAG = "HeadwayMediaStatus"
@@ -246,7 +247,7 @@ class CarMediaStatusStream(
                 return
             }
             val name = when (message.messageId) {
-                MediaPlaybackChannel.MediaPlaybackMessageId.MEDIA_PLAYBACK_INPUT ->
+                MediaPlaybackMessageId.MEDIA_PLAYBACK_INPUT ->
                     "MEDIA_PLAYBACK_INPUT"
                 else -> "unnamed"
             }
