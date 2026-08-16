@@ -262,7 +262,10 @@ internal class TabsCard(
                 val wasActive = store.active().name == tab.name
                 val index = existing.indexOfFirst { it.name == tab.name }
                 val updated = existing.toMutableList()
-                val renamed = DashLayout(name, root)
+                // `copy`, not a fresh DashLayout: a rename must not throw away
+                // the icon the driver chose on the car screen, nor the locked
+                // flag. Constructing a new one silently reset both.
+                val renamed = tab.copy(name = name, root = root)
                 if (index >= 0) updated[index] = renamed else updated += renamed
                 store.replaceAll(updated)
                 if (wasActive) store.setActive(name)
@@ -335,7 +338,14 @@ internal class TabsCard(
             .setSingleChoiceItems(labels.toTypedArray(), selected) { dialog, which ->
                 val argument = apps.getOrNull(which - 1)?.service?.flattenToString()
                 materialise()
-                store.save(DashLayout(name, DashNode.Leaf(PaneKind.CAR_APP, argument)))
+                // Same reason as the rename above: this used to replace the
+                // layout wholesale, dropping its icon and its locked flag on
+                // the floor every time the driver picked a car app for it.
+                val existing = store.list().firstOrNull { it.name == name }
+                store.save(
+                    existing?.copy(root = DashNode.Leaf(PaneKind.CAR_APP, argument))
+                        ?: DashLayout(name, DashNode.Leaf(PaneKind.CAR_APP, argument)),
+                )
                 changed()
                 dialog.dismiss()
             }

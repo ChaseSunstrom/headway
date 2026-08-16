@@ -2459,7 +2459,18 @@ class CarShell(
     private fun showTabIconPicker(name: String) {
         val layoutFor = tabs.firstOrNull { it.name == name } ?: return
         fun apply(icon: TabIcon?) {
-            runCatching { store.save(layoutFor.copy(iconName = icon?.name)) }
+            runCatching {
+                // The same guard `saveLayout`, `addLayout` and `deleteLayout`
+                // all carry, and this was the one mutator without it.
+                // `list()` substitutes the shipped tabs while nothing is
+                // stored, and `save()` writes into what *is* stored -- so
+                // setting an icon on a fresh install wrote a one-element array,
+                // the substitution stopped, and Drive, Media, Phone and App
+                // silently vanished.
+                if (!store.hasSaved()) store.replaceAll(tabs)
+                store.save(layoutFor.copy(iconName = icon?.name))
+                DashLayoutStore.announceChanged(this)
+            }
             tabs = runCatching { store.list() }.getOrDefault(tabs)
             if (layout.name == name) layout = tabs.firstOrNull { it.name == name } ?: layout
             closeOverlay()
