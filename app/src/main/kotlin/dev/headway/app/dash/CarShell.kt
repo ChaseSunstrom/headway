@@ -65,6 +65,7 @@ import dev.headway.app.phone.LiveCall
 import dev.headway.app.video.OverlayDisplay
 import dev.headway.app.video.PhoneRotation
 import dev.headway.dash.CarUiScale
+import dev.headway.dash.CornerStyle
 import dev.headway.dash.CarUnits
 import dev.headway.dash.DashLayout
 import dev.headway.dash.DashNode
@@ -214,6 +215,10 @@ class CarShell(
         setCancelable(false)
         setCanceledOnTouchOutside(false)
 
+        // Before anything is drawn: every shape below bakes the radius into a
+        // `GradientDrawable` at construction, so a style applied afterwards
+        // would leave this session's first screen at the previous one.
+        Headway.corners = HeadwaySettings.cornerStyle(context)
         tabs = store.list()
         layout = openingLayout()
         // The active pointer means "what is on the car screen", and `reload()`
@@ -1427,6 +1432,12 @@ class CarShell(
         rows += CarSheet.section("Appearance")
         rows += CarSheet.Row("Theme", themeSummary()) { showThemes() }
         rows += CarSheet.Row("The rail", railStyle.describe()) { showRailStyle() }
+        rows += CarSheet.Row(
+            title = "Corners",
+            detail = HeadwaySettings.cornerStyle(context).let {
+                "${it.displayName} — ${it.explanation}"
+            },
+        ) { showCornerStyle() }
         rows += CarSheet.Row("Pinned", "What sits on the rail, and in what order") { showRailEditor() }
         rows += CarSheet.Row("Units", unitsSummary()) { showUnits() }
         rows += CarSheet.Row(
@@ -1595,6 +1606,36 @@ class CarShell(
         HeadwaySettings.setStartLayout(context, value)
         closeOverlay()
         onStep("car screen: the next drive opens on $said")
+    }
+
+    /**
+     * How rounded everything on the car screen is.
+     *
+     * A rebuild rather than a re-render, because a shape is baked into the
+     * `GradientDrawable` each view was built with -- the same reason panel size
+     * rebuilds -- and the price of one setting moving every corner at once is
+     * that changing it builds them again.
+     */
+    private fun showCornerStyle() {
+        val current = HeadwaySettings.cornerStyle(context)
+        val rows = CornerStyle.ALL.map { style ->
+            CarSheet.Row(
+                title = style.displayName,
+                detail = style.explanation,
+                selected = style == current,
+            ) {
+                HeadwaySettings.setCornerStyle(context, style)
+                Headway.corners = style
+                closeOverlay()
+                onStep("car screen: corners are now ${style.displayName.lowercase()}")
+                // The rail's own shapes were built with the old radius too.
+                layOutRailAndStage()
+                render()
+            }
+        }
+        showOverlay(
+            sheet().build(title = "Corners", rows = rows, onClose = ::closeOverlay),
+        )
     }
 
     private fun showUnits() {
@@ -2212,7 +2253,16 @@ class CarShell(
                 ?: navigators.firstOrNull { it.packageName == argument }
         }
         val app = wanted ?: navigators.first()
-        return CarAppTile(context, app.service.flattenToString(), onStep)
+        // `pinned`: this pane resolved its own navigator, so the template's
+        // "Apps" button would lead to a picker the driver never came from and
+        // its label would name an app they never picked. Both are drawn over
+        // the map, which is the pane's whole content.
+        return CarAppTile(
+            context = context,
+            argument = app.service.flattenToString(),
+            onStep = onStep,
+            pinned = true,
+        )
     }
 
     /**

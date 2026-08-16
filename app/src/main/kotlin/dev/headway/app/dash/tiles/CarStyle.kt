@@ -89,7 +89,19 @@ internal object CarStyle {
     /** The outer padding and inter-row gap; one number so panes stay aligned. */
     fun gutter(context: Context): Int = dp(context, 12f)
 
-    fun radius(context: Context): Float = dp(context, 14f).toFloat()
+    /**
+     * How rounded a corner is, everywhere in the car UI.
+     *
+     * One function, so one setting moves every pane, card, button, chip and
+     * switch together — a driver who asks for square corners means the whole
+     * screen, not the panes and not the buttons.
+     *
+     * Read per call rather than cached: the choice is applied by re-rendering,
+     * and a cached value would leave whatever was already built at the old
+     * shape until the next reconnect.
+     */
+    fun radius(context: Context): Float =
+        dp(context, 14f).toFloat() * Headway.corners.scale
 
     /**
      * A tile's own root.

@@ -23,6 +23,7 @@ import dev.headway.app.carapp.CarAppSurfaceView
 import dev.headway.dash.AllowedApps
 import dev.headway.dash.CarUiScale
 import dev.headway.dash.CarUnits
+import dev.headway.dash.CornerStyle
 import dev.headway.dash.OverlaySpot
 import dev.headway.dash.RailStyle
 
@@ -484,6 +485,21 @@ object HeadwaySettings {
         OverlaySpot.decode(
             runCatching { of(context).getString(KEY_OVERLAY_SPOT, null) }.getOrNull(),
         )
+
+    /**
+     * How rounded the car screen's corners are, as a `CornerStyle` name.
+     *
+     * A driver asked for square, which is the one shape a multiplier of the
+     * touch target cannot reach by accident. See `CornerStyle`.
+     */
+    const val KEY_CORNER_STYLE: String = "corner_style"
+
+    fun cornerStyle(context: Context): CornerStyle =
+        CornerStyle.of(runCatching { of(context).getString(KEY_CORNER_STYLE, null) }.getOrNull())
+
+    fun setCornerStyle(context: Context, style: CornerStyle) {
+        runCatching { of(context).edit().putString(KEY_CORNER_STYLE, style.name).apply() }
+    }
 
     fun setOverlaySpot(context: Context, spot: OverlaySpot) {
         runCatching {

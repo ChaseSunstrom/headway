@@ -94,6 +94,16 @@ class CarAppTile(
      * for a picker to record.
      */
     private val onChosen: (ComponentName) -> Unit = {},
+    /**
+     * Whether this pane was *pointed at* an app rather than choosing one.
+     *
+     * True for a Maps pane, where `CarShell.mapsTileFor` resolves the navigator
+     * and hands it over. Such a pane has no picker to go back to, so the
+     * template chrome's "Apps" button leads somewhere the driver never came
+     * from and its label names an app they never picked — which a driver
+     * reported as clutter laid over their map. The chrome is not drawn.
+     */
+    private val pinned: Boolean = false,
 ) : DashTile {
 
     private val appContext: Context = context.applicationContext
@@ -348,6 +358,7 @@ class CarAppTile(
             onStep = onStep,
             onLeave = { leave() },
             mapPixelScale = detail,
+            showChrome = !pinned,
         )
         session = next
         renderer = drawing

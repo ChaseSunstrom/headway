@@ -34,6 +34,7 @@ import android.view.ViewGroup
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.LinearLayout
 import android.widget.TextView
+import dev.headway.dash.CornerStyle
 
 /**
  * The one place Headway's colours, spacing and motion are defined.
@@ -73,6 +74,22 @@ import android.widget.TextView
  * `CarMetrics.touchTargetPx` — and everything is a multiple of it.
  */
 object Headway {
+
+    /**
+     * How rounded every corner in the car UI is.
+     *
+     * Held here rather than read from `SharedPreferences` at each use, because
+     * every drawn shape asks — a pane, a card, a button, a chip, a switch — and
+     * a preferences read per corner per frame is a file read on the thread
+     * drawing the car screen. `CarShell` sets it when a session comes up and
+     * whenever the driver changes it; the default stands until then, which is
+     * what an unset preference means anyway.
+     *
+     * A multiplier rather than a pixel count, so a pane's corner stays
+     * proportional to a button's and to the touch target on every head unit.
+     */
+    @Volatile
+    var corners: CornerStyle = CornerStyle.DEFAULT
 
     // --- colour ---------------------------------------------------------------
     //
@@ -375,7 +392,14 @@ data class CarMetrics(
 
     val gutter: Int get() = (unit * GUTTER).toInt().coerceAtLeast(4)
 
-    val radius: Float get() = unit * RADIUS
+    /**
+     * How rounded a corner is, in pixels, at the driver's chosen style.
+     *
+     * The style is a multiplier rather than a pixel count so that a pane's
+     * corner, a button's and a card's stay proportional to each other and to
+     * the touch target on every head unit. See `CornerStyle`.
+     */
+    val radius: Float get() = unit * RADIUS * Headway.corners.scale
 
     /** True for a panel wide enough to put two columns of content side by side. */
     val wide: Boolean get() = widthPx >= unit * WIDE_UNITS

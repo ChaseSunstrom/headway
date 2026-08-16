@@ -125,6 +125,21 @@ class TemplateRenderer(
      * per-app setting the pane already reads for the density.
      */
     private val mapPixelScale: Float = 1f,
+    /**
+     * Whether to draw the bar carrying "Apps" and the app's name.
+     *
+     * False when the pane was pointed at this app rather than choosing it — a
+     * Maps pane, which resolves its own navigator — because then the button
+     * leads to a picker the driver did not come from and the label names an app
+     * they did not pick. A driver reported both, over their map: "theres a
+     * 'Back' button, really called 'Apps' and then the name of it ... instead
+     * of just not displaying those in the panel".
+     *
+     * It is the pane's only in-pane exit, so this is only false where there is
+     * somewhere else to go: the rail switches tabs, and the pane's own menu
+     * changes what it shows.
+     */
+    private val showChrome: Boolean = true,
 ) {
 
     private val appContext: Context = context.applicationContext
@@ -720,7 +735,14 @@ class TemplateRenderer(
      * templates, and every non-running state. A driver looking at "Organic Maps
      * did not answer" with no exit is stuck until they think to switch tabs.
      */
-    private fun chrome(context: Context): View = LinearLayout(context).apply {
+    private fun chrome(context: Context): View = if (!showChrome) {
+        // A zero-height nothing rather than a skipped `addView`, because the
+        // bar is added from six branches and each one would need the same
+        // conditional. See [showChrome].
+        View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0)
+        }
+    } else LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.START or Gravity.CENTER_VERTICAL
         val gap = CarStyle.gutter(context)
