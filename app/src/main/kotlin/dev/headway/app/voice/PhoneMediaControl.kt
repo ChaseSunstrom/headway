@@ -102,6 +102,39 @@ class PhoneMediaControl(
     }.getOrNull()
 
     /**
+     * Whether [session] says it can take [action].
+     *
+     * `PlaybackState.getActions()` is the session's own declaration, and the
+     * gate exists so the media-key fallback below stays reachable: a transport
+     * call to a session that does not support the action fails silently, so
+     * without this the fallback would be dead code.
+     *
+     * Deliberately permissive in one direction. An `actions` of zero means the
+     * session declared nothing at all, which is common enough that treating it
+     * as "supports nothing" would send every key down the fallback and undo the
+     * fix; it is treated as "no opinion", and the key is used. This pane's own
+     * on-screen transport is *not* gated the same way, on purpose -- there the
+     * driver is looking at the app they chose, and apps under-declare this
+     * bitmask routinely.
+     */
+    private fun declares(session: MediaController, action: MediaAction): Boolean {
+        val actions = session.playbackState?.actions ?: return false
+        if (actions == 0L) return false
+        val wanted = when (action) {
+            MediaAction.PLAY -> PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PLAY_PAUSE
+            MediaAction.PAUSE -> PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE
+            MediaAction.PLAY_PAUSE ->
+                PlaybackState.ACTION_PLAY_PAUSE or
+                    PlaybackState.ACTION_PLAY or
+                    PlaybackState.ACTION_PAUSE
+            MediaAction.NEXT -> PlaybackState.ACTION_SKIP_TO_NEXT
+            MediaAction.PREVIOUS -> PlaybackState.ACTION_SKIP_TO_PREVIOUS
+            MediaAction.STOP -> PlaybackState.ACTION_STOP
+        }
+        return (actions and wanted) != 0L
+    }
+
+    /**
      * Sends the media key for [action].
      *
      * @return false only when this device has no `AudioManager` or the platform
@@ -109,9 +142,17 @@ class PhoneMediaControl(
      *   see the class KDoc.
      */
     fun perform(action: MediaAction): Boolean {
-        boundSession()?.let { session ->
+        val session = boundSession()?.takeIf { declares(it, action) }
+        if (session != null) {
             val controls = session.transportControls
-            val sent = runCatching {
+            // `runCatching` here would be a lie about success. A transport call
+            // is `mSessionBinder.next(...)` and rethrows only `RemoteException`
+            // -- a session that does not support the action does not throw, it
+            // silently does nothing. So this returns true for *any* live
+            // session and the key fallback below became unreachable the moment
+            // notification access was granted. The declared-actions test above
+            // is what keeps the fallback a fallback.
+            runCatching {
                 when (action) {
                     MediaAction.PLAY -> controls.play()
                     MediaAction.PAUSE -> controls.pause()
@@ -125,11 +166,20 @@ class PhoneMediaControl(
                     MediaAction.PREVIOUS -> controls.skipToPrevious()
                     MediaAction.STOP -> controls.stop()
                 }
-            }.isSuccess
-            if (sent) {
                 onStep("media: ${action.name} sent to ${session.packageName}")
                 return true
+            }.onFailure {
+                onStep("media: ${session.packageName} could not take ${action.name}: $it")
             }
+        }
+        // Said once per key, because it is the line that settles where a car's
+        // transport button actually went. The platform routes a media key to
+        // whichever session last held audio focus, which is not always the one
+        // on the car screen, and only these two names side by side show it.
+        runCatching {
+            val holder = appContext.getSystemService(MediaSessionManager::class.java)
+                ?.mediaKeyEventSessionPackageName
+            onStep("media: falling back to the media key; the key goes to ${holder ?: "nobody"}")
         }
         val keyCode = when (action) {
             MediaAction.PLAY -> KeyEvent.KEYCODE_MEDIA_PLAY
