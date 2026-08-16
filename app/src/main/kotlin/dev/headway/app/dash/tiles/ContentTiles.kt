@@ -32,6 +32,7 @@ import android.media.session.PlaybackState
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
@@ -211,6 +212,26 @@ class NowPlayingTile(
 
     /** Null while [running] is false; held so [stop] can unregister exactly it. */
     private var sessionsListener: MediaSessionManager.OnActiveSessionsChangedListener? = null
+
+    /**
+     * Repaints once a second while this tile is running.
+     *
+     * Two jobs, and the second is the reason it is unconditional rather than
+     * only while playing. The rule needs a clock at all:
+     * `PlaybackState.getPosition()` is a snapshot, so without a tick the bar
+     * only ever moves when a callback happens to land. And it is the belt to
+     * the callback's braces — a phone with its screen off offers nothing else
+     * that can repaint this pane, and `render()` reads the session live over
+     * binder rather than from anything cached, so a tick is a fresh reading of
+     * the truth and not a redraw of a stale one.
+     */
+    private val tick = object : Runnable {
+        override fun run() {
+            if (!running) return
+            runCatching { render() }
+            handler.postDelayed(this, TICK_MILLIS)
+        }
+    }
 
     /**
      * Live updates for the session currently bound.
@@ -740,6 +761,7 @@ class NowPlayingTile(
         }
         sessionsListener = listener
         refresh()
+        handler.postDelayed(tick, TICK_MILLIS)
     }
 
     /**
@@ -807,6 +829,7 @@ class NowPlayingTile(
         stopWatchingForGrant()
         if (!running) return
         running = false
+        handler.removeCallbacks(tick)
 
         sessionsListener?.let { listener ->
             val manager = appContext.getSystemService(MediaSessionManager::class.java)
@@ -931,14 +954,34 @@ class NowPlayingTile(
     private var cachedArtUri: String? = null
     private var cachedArt: android.graphics.Bitmap? = null
 
+    /**
+     * Points at [next], keeping the callback and the handle together.
+     *
+     * ## Identity, not token, and this is the "same song forever" bug
+     *
+     * `MediaSessionManager.getActiveSessions` mints a **brand-new**
+     * `MediaController` on every call, while `MediaSession.Token` compares by
+     * value — so a token compare matched on the second refresh and every one
+     * after it. The old branch then kept the *new* handle, which has no
+     * callback registered on it, and dropped the *old* one, which was the only
+     * object carrying the registration.
+     *
+     * That is worse than it sounds, because a callback is registered on the
+     * instance and the framework's `CallbackStub` holds its controller through
+     * a `WeakReference`. So the orphaned handle stayed subscribed only until the
+     * next collection, and then every dispatch found a null referent and
+     * returned. The pane went permanently deaf, with no error anywhere — which
+     * is exactly what a driver reported: the right song playing, the wrong one
+     * on screen, forever.
+     *
+     * The old comment's worry — that rebinding "would briefly blank the tile" —
+     * was unfounded. `refresh()` calls `render()` immediately after this, and
+     * `render()` reads `metadata` and `playbackState` live over binder rather
+     * than from anything a callback cached, so there is no blank frame to avoid.
+     */
     private fun bind(next: MediaController?) {
         val current = controller
-        if (current?.sessionToken == next?.sessionToken) {
-            // Same session, new handle. Rebinding would drop and re-add the
-            // callback for no reason and briefly blank the tile.
-            if (next != null) controller = next
-            return
-        }
+        if (current === next) return
         if (current != null) runCatching { current.unregisterCallback(controllerCallback) }
         controller = next
         if (next != null) {
@@ -1074,13 +1117,32 @@ class NowPlayingTile(
 
         val state = session.playbackState
         progress?.set(
-            state?.position ?: 0L,
+            positionNow(state),
             metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L,
         )
 
         val playing = isActive(state?.state)
         playPause?.kind = if (playing) TransportButton.PAUSE else TransportButton.PLAY
         if (full) renderQueue(session)
+    }
+
+    /**
+     * Where the track actually is, rather than where it was last announced.
+     *
+     * `PlaybackState.getPosition()` is a snapshot taken at
+     * `getLastPositionUpdateTime()`, and a session playing normally emits no
+     * callback between tracks — so drawing the raw value leaves the bar frozen
+     * wherever the last callback happened to land, whether or not the phone is
+     * locked. The honest reading adds the elapsed wall time times the playback
+     * speed, which is what [tick] repaints once a second.
+     */
+    private fun positionNow(state: PlaybackState?): Long {
+        val base = state?.position ?: return 0L
+        if (base < 0) return 0L
+        val since = state.lastPositionUpdateTime
+        if (since <= 0L || !isActive(state.state)) return base
+        val elapsed = ((SystemClock.elapsedRealtime() - since) * state.playbackSpeed).toLong()
+        return (base + elapsed).coerceAtLeast(0L)
     }
 
     /** The posting app's display name, or its package when it has none. */
@@ -1129,6 +1191,15 @@ class NowPlayingTile(
          * the side of their screen reported exactly that crush.
          */
         private const val STACK_BELOW_DP = 260f
+
+        /**
+         * How often the pane repaints itself.
+         *
+         * One second, because that is the resolution the progress rule and the
+         * elapsed time are drawn at, and anything faster would be a wake-up per
+         * frame for a bar a few pixels tall.
+         */
+        private const val TICK_MILLIS = 1_000L
 
         /**
          * Artwork size on the pane that has a tab to itself.

@@ -220,10 +220,14 @@ class TransportButton(
  * a way to lose your place in a podcast, and `MediaController.seekTo` is one
  * unhandled `PlaybackState.ACTION_SEEK_TO` away from doing nothing anyway.
  *
- * [set] takes the position rather than animating from a clock. `PlaybackState`
- * publishes a position and the timestamp it was measured at, and the tile
- * already re-renders on every state change; extrapolating between those would
- * mean a second timer per pane for a bar three pixels tall.
+ * [set] takes the position rather than animating from a clock, and the caller
+ * decides how often to say so. That used to be justified by "the tile already
+ * re-renders on every state change" — which is not true of a session playing
+ * normally, because it emits no callback between tracks. The bar sat frozen
+ * wherever the last callback landed, and a driver reported it. `NowPlayingTile`
+ * now extrapolates the position from `getLastPositionUpdateTime` and repaints
+ * on a one-second tick, which is the timer this comment was avoiding and which
+ * turned out to be the price of a bar that moves.
  */
 class ProgressRule(context: Context) : View(context) {
 
