@@ -622,7 +622,7 @@ class QuirkStore(
         const val FILE_NAME: String = "head-unit-quirks.json"
 
         /** Schema version, so a future format change can be detected rather than misread. */
-        const val SCHEMA_VERSION: Int = 2
+        const val SCHEMA_VERSION: Int = 3
 
         /**
          * The version in which `mediaAudioOverAap` still defaulted to false.
@@ -638,6 +638,25 @@ class QuirkStore(
          * applies. Every other key is a real choice and is honoured.
          */
         const val MEDIA_ROUTE_DEFAULT_CHANGED_IN: Int = 2
+
+        /**
+         * The version in which [HeadUnitQuirks.odometerScale]'s default changed.
+         *
+         * Same shape of problem as [MEDIA_ROUTE_DEFAULT_CHANGED_IN], and found
+         * the same way -- by a driver, in a car, reporting that a fix had not
+         * arrived. [serialize] writes *every* key, so the settings screen and
+         * `writeTemplateIfAbsent` both bake the current defaults into the file;
+         * a file written before this change therefore carries
+         * `"odometerScale": 1` explicitly and pins it forever, whatever the
+         * build's default becomes. The driver saw their odometer a hundred
+         * times high across two builds that both "fixed" it.
+         *
+         * So on a file older than this, that one key is ignored and the new
+         * default applies. A driver who genuinely wants the schema's reading
+         * writes it again on a current file and it is honoured, because the
+         * file is rewritten at version 3 the first time anything saves.
+         */
+        const val ODOMETER_DEFAULT_CHANGED_IN: Int = 3
 
         private const val KEY_VERSION = "version"
         private const val KEY_PROFILES = "profiles"
@@ -724,6 +743,11 @@ class QuirkStore(
                 warnings += "file predates ADR 0005; ignoring its '$KEY_MEDIA_AUDIO_OVER_AAP' " +
                     "so media audio takes this build's default (${HeadUnitQuirks.DEFAULT.mediaAudioOverAap})"
             }
+            if (version < ODOMETER_DEFAULT_CHANGED_IN) {
+                warnings += "file predates the odometer scale correction; ignoring its " +
+                    "'$KEY_ODOMETER_SCALE' so the odometer takes this build's default " +
+                    "(${HeadUnitQuirks.DEFAULT.odometerScale})"
+            }
             if (version != SCHEMA_VERSION) {
                 // Parsed anyway: refusing outright would strand a user whose file
                 // is fine apart from a number they typed from an old README.
@@ -739,6 +763,7 @@ class QuirkStore(
                 ?: return QuirkLoad(emptyList(), warnings + "no '$KEY_PROFILES' array")
 
             val honourMediaRoute = version >= MEDIA_ROUTE_DEFAULT_CHANGED_IN
+            val honourOdometer = version >= ODOMETER_DEFAULT_CHANGED_IN
             val profiles = mutableListOf<QuirkProfile>()
             for (index in 0 until array.length()) {
                 val entry = array.optJSONObject(index)
@@ -746,7 +771,7 @@ class QuirkStore(
                     warnings += "profile #$index is not an object"
                     continue
                 }
-                profiles += parseProfile(entry, index, warnings, honourMediaRoute)
+                profiles += parseProfile(entry, index, warnings, honourMediaRoute, honourOdometer)
             }
             return QuirkLoad(profiles, warnings)
         }
@@ -806,6 +831,7 @@ class QuirkStore(
             index: Int,
             warnings: MutableList<String>,
             honourMediaRoute: Boolean = true,
+            honourOdometer: Boolean = true,
         ): QuirkProfile {
             for (key in json.keys()) {
                 if (key !in PROFILE_KEYS) warnings += "profile #$index: ignored unknown key '$key'"
@@ -895,9 +921,15 @@ class QuirkStore(
                     videoFocusRequest = json.optBoolean(
                         KEY_VIDEO_FOCUS_REQUEST, defaults.videoFocusRequest,
                     ),
-                    odometerScale = json.optIntChecked(
-                        KEY_ODOMETER_SCALE, defaults.odometerScale, index, warnings,
-                    ).coerceAtLeast(1),
+                    odometerScale =
+                        if (honourOdometer) {
+                            json.optIntChecked(
+                                KEY_ODOMETER_SCALE, defaults.odometerScale, index, warnings,
+                            ).coerceAtLeast(1)
+                        } else {
+                            // See ODOMETER_DEFAULT_CHANGED_IN.
+                            defaults.odometerScale
+                        },
                     touch = touch,
                 ),
             )

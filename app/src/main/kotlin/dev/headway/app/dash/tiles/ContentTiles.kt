@@ -401,6 +401,55 @@ class NowPlayingTile(
             addView(progressView)
         }
 
+        // The strip is one row when there is width for one and two when there
+        // is not. A driver put a music panel down the side of their car screen
+        // and got cover, title, artist and three transport buttons crushed into
+        // a single line about a hundred pixels wide -- so below [STACK_BELOW_DP]
+        // the controls move under the art and the text instead, which is the
+        // same content in the shape the space actually has.
+        //
+        // Measured rather than assumed: the panel is a pane in a tree the
+        // driver can re-split and drag at any moment, so this has to answer on
+        // every layout pass and not once at build time.
+        strip.addOnLayoutChangeListener { _, left, _, right, _, _, _, _, _ ->
+            val widthDp = (right - left) / context.resources.displayMetrics.density
+            val stacked = widthDp > 0 && widthDp < STACK_BELOW_DP
+            val wanted = if (stacked) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            if (row.orientation == wanted) return@addOnLayoutChangeListener
+            // Posted: this runs during layout, and re-parenting a child from
+            // inside a layout pass is the classic requestLayout-during-layout
+            // loop.
+            strip.post {
+                if (row.orientation == wanted) return@post
+                row.orientation = wanted
+                row.gravity = if (stacked) Gravity.CENTER_HORIZONTAL else Gravity.CENTER_VERTICAL
+                textColumn.layoutParams = if (stacked) {
+                    LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+                } else {
+                    LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+                }
+                artView.layoutParams = LinearLayout.LayoutParams(artSize, artSize).apply {
+                    if (stacked) {
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        bottomMargin = gap / 2
+                    } else {
+                        marginEnd = gap
+                    }
+                }
+                controls.layoutParams = if (stacked) {
+                    LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                        topMargin = gap / 2
+                    }
+                } else {
+                    LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
+                }
+                controls.gravity = Gravity.CENTER
+                textColumn.gravity = if (stacked) Gravity.CENTER_HORIZONTAL else Gravity.NO_GRAVITY
+                titleView.gravity = textColumn.gravity
+                artistView.gravity = textColumn.gravity
+            }
+        }
+
         art = artView
         titleText = titleView
         artistText = artistView
@@ -811,6 +860,17 @@ class NowPlayingTile(
         private const val NOTHING_PLAYING_HINT = "Nothing is playing."
 
         /**
+         * Below this width, the compact strip stacks instead of crowding.
+         *
+         * 260 dp is about where a 52 dp cover, a transport row of three touch
+         * targets and any readable amount of title stop fitting on one line --
+         * three 48 dp buttons plus the art is already 200 of it, which leaves a
+         * title column narrower than a word. A driver with a music panel down
+         * the side of their screen reported exactly that crush.
+         */
+        private const val STACK_BELOW_DP = 260f
+
+        /**
          * The component whose enablement is the grant.
          *
          * `getActiveSessions` does not ask for a permission string; it asks for
@@ -876,6 +936,18 @@ data class CarNotice(
     val postedAtMillis: Long,
     /** True for something still happening -- a download, a timer, a nav route. */
     val ongoing: Boolean,
+    /**
+     * The notification's own small icon, already resolved to a drawable.
+     *
+     * Resolved in the listener rather than in the tile, because
+     * `Icon.loadDrawable` on a cross-package icon needs the *posting* package's
+     * resources and the listener is the one place that still has the
+     * `StatusBarNotification` to ask. Null falls back to the app's launcher
+     * icon, which is always available and is what a driver recognises anyway.
+     */
+    val icon: android.graphics.drawable.Drawable? = null,
+    /** The colour the app asked its icon be tinted, or 0 for none. */
+    val accent: Int = 0,
 )
 
 /**
@@ -1081,14 +1153,41 @@ class NotificationsTile(context: Context) : DashTile {
     private fun row(context: Context, notice: CarNotice): View {
         val gap = CarStyle.gutter(context)
         val card = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
+            // Horizontal now: the icon beside the words rather than above them,
+            // which is the shape every notification shade uses and the one a
+            // driver reads without stopping to work out what they are seeing.
+            orientation = LinearLayout.HORIZONTAL
             background = Headway.panel(CarStyle.radius(context), CarStyle.SURFACE)
             setPadding(gap, gap / 2, gap, gap / 2)
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
                 bottomMargin = gap / 3
             }
         }
+        val size = CarStyle.dp(context, NOTICE_ICON_DP)
         card.addView(
+            ImageView(context).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                // The notification's own icon, or the posting app's. A small
+                // icon is a monochrome glyph the platform expects to be tinted,
+                // so it is tinted with the colour the app asked for and left
+                // alone otherwise -- an untinted white glyph is legible on this
+                // screen and a black one would not be.
+                val drawable = notice.icon ?: appIcon(appContext, notice.packageName)
+                setImageDrawable(drawable)
+                if (notice.icon != null && notice.accent != 0) {
+                    runCatching { setColorFilter(notice.accent) }
+                }
+                layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                    marginEnd = gap
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+            },
+        )
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        }
+        column.addView(
             CarStyle.label(context, 13f, CarStyle.DIM).apply {
                 // App and time on one line: which app it came from is how a
                 // driver decides whether it matters before reading the words.
@@ -1098,13 +1197,14 @@ class NotificationsTile(context: Context) : DashTile {
             },
         )
         notice.title.takeIf { it.isNotBlank() }?.let { title ->
-            card.addView(
+            column.addView(
                 CarStyle.label(context, 17f, CarStyle.TEXT, bold = true).apply { text = title },
             )
         }
         notice.text.takeIf { it.isNotBlank() }?.let { body ->
-            card.addView(CarStyle.label(context, 15f, CarStyle.TEXT).apply { text = body })
+            column.addView(CarStyle.label(context, 15f, CarStyle.TEXT).apply { text = body })
         }
+        card.addView(column)
         return card
     }
 
@@ -1118,6 +1218,16 @@ class NotificationsTile(context: Context) : DashTile {
         const val GRANT_HINT: String =
             "Headway needs notification access to show what the phone is showing.\n" +
                 "Turn it on in Headway on the phone, under Now playing and messages."
+
+        /**
+         * How large a notification's icon is drawn.
+         *
+         * Below a touch target on purpose -- the row is not a button, so the
+         * icon is identification rather than something to hit, and a 48 dp
+         * square beside two lines of text would push the text into a column too
+         * narrow to read on a panel this wide.
+         */
+        const val NOTICE_ICON_DP: Float = 32f
     }
 }
 
@@ -1660,8 +1770,32 @@ class HeadwayNotificationListener : NotificationListenerService() {
                 text = text.orEmpty(),
                 postedAtMillis = sbn.postTime,
                 ongoing = (notification.flags and Notification.FLAG_ONGOING_EVENT) != 0,
+                icon = iconOf(context, notification),
+                // Only when the app said it means it. `color` is 0 unless set,
+                // and tinting a monochrome small icon with 0 paints it black on
+                // a black car screen.
+                accent = if (notification.color != 0) notification.color else 0,
             )
         }
+
+        /**
+         * The small icon a notification posted, as something a car pane can draw.
+         *
+         * `Notification.getSmallIcon()` is an `Icon`, not a drawable, and
+         * loading it is a cross-package resource lookup that can fail for an app
+         * that has since been updated or uninstalled -- so every failure is a
+         * null and the pane falls back to the launcher icon.
+         *
+         * The large icon is preferred where there is one: for a message it is
+         * the sender's photo, which is more use at a glance than the app's
+         * glyph, and it is already the right shape.
+         */
+        private fun iconOf(
+            context: Context,
+            notification: Notification,
+        ): android.graphics.drawable.Drawable? = runCatching {
+            (notification.getLargeIcon() ?: notification.smallIcon)?.loadDrawable(context)
+        }.getOrNull()
 
         /**
          * Registers [observer] and immediately hands it the current feed.

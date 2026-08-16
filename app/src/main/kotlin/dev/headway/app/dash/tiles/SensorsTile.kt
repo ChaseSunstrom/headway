@@ -274,7 +274,12 @@ class SensorsTile(context: Context) : DashTile {
             addRow(
                 list,
                 "Odometer",
-                "%,.0f %s".format(
+                // Two decimals, because a dashboard has them and a driver
+                // reads this against theirs. Rounded to whole units it read
+                // "87,000" beside a dash saying 87,000.00 and there was no way
+                // to tell a correct reading from one that is out by a factor
+                // the decimal point would have made obvious.
+                "%,.2f %s".format(
                     CarUnitConversion.distance(it, imperial),
                     CarUnitConversion.distanceUnit(imperial),
                 ),

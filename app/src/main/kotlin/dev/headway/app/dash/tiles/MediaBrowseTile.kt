@@ -29,7 +29,6 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import dev.headway.app.dash.CarShell
 import dev.headway.app.dash.DashTile
 import dev.headway.app.media.BrowseState
 import dev.headway.app.media.CarMediaBrowser
@@ -37,7 +36,6 @@ import dev.headway.app.media.MediaApp
 import dev.headway.app.media.MediaApps
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.Headway
-import dev.headway.dash.AllowedApps
 import dev.headway.dash.PaneKind
 
 /**
@@ -336,6 +334,10 @@ class MediaBrowseTile(
             current.back()
             return
         }
+        if (!canLeaveApp()) {
+            onStep("media: ${current.app.label} is the only allowed music app; staying in it")
+            return
+        }
         current.close()
         session = null
         lastState = BrowseState.UNKNOWN
@@ -355,19 +357,33 @@ class MediaBrowseTile(
         // Nothing to go back to from the top of the tree.
         backTarget?.visibility = View.GONE
 
-        if (apps.isEmpty() && pending.isEmpty()) {
+        if (apps.isEmpty()) {
             list.gravity = Gravity.CENTER
+            // Two different sentences, because they are two different
+            // situations and the wrong one sends the driver looking for a fault
+            // that is not there. [pending] exists only to tell them apart.
             list.addView(
                 CarStyle.emptyState(
                     context,
-                    "No app on this phone publishes a media library.\n" +
-                        "Install one, or use the Now playing pane to control whatever is " +
-                        "already playing.",
+                    if (pending.isEmpty()) {
+                        "No app on this phone publishes a media library.\n" +
+                            "Install one, or use the Now playing pane to control whatever " +
+                            "is already playing."
+                    } else {
+                        "None of your ${pending.size} music app(s) is allowed on the car " +
+                            "screen yet.\nOpen Headway on the phone, then Apps allowed on " +
+                            "the car screen."
+                    },
                 )
             )
             return
         }
         list.gravity = Gravity.TOP
+        // Only what the driver allowed. An app they have not allowed is not
+        // listed at all -- not listed-and-marked, which is what this did and
+        // which a driver objected to in exactly those terms: "I didnt give
+        // permission to view them in that list, and it shouldnt even have that
+        // as an option". Allowing one is a parked decision, made on the phone.
         apps.forEach { app ->
             list.addView(
                 row(
@@ -379,64 +395,27 @@ class MediaBrowseTile(
                 ) { openApp(app) }
             )
         }
-        // Below the allowed ones, marked, never hidden. Filtering the list was
-        // the fix a driver asked for; hiding the way to un-filter it would have
-        // turned their own allow-list into a wall with no door, on a screen
-        // they cannot leave.
-        pending.forEach { app ->
-            list.addView(
-                row(
-                    context = context,
-                    icon = app.icon(context),
-                    title = app.label,
-                    subtitle = "Tap to allow on the car screen",
-                    browsable = true,
-                ) { askToAllow(app) }
-            )
-        }
     }
 
     /**
-     * Asks, from the seat, before an app the driver has not allowed is opened.
+     * Whether leaving the open app has anywhere to go.
      *
-     * The same ceremony the car-app pane uses and for the same reason: choosing
-     * an app in a picker is itself a deliberate act, so one confirmation is the
-     * whole of it, and a grant that can only be given on the phone is a grant
-     * nobody gives while driving.
+     * False with one allowed app, and then Back stops at that app's own root
+     * rather than dropping into a list of one. The driver who reported this had
+     * exactly one music app allowed and could still back out of it into a
+     * chooser, which is a screen with nothing on it they are permitted to pick.
      */
-    private fun askToAllow(app: MediaApp) {
-        val shell = CarShell.active()
-        if (shell == null) {
-            onStep("media: ${app.label} is not allowed and there is no screen to ask on")
-            return
-        }
-        shell.confirm(
-            title = "Allow ${app.label}?",
-            detail = "Its library will be browsable on the car screen. You can " +
-                "change this in Headway on the phone.",
-            confirmLabel = "Allow",
-        ) {
-            HeadwaySettings.setAllowedApps(
-                appContext,
-                AllowedApps.allow(HeadwaySettings.allowedApps(appContext), app.packageName),
-            )
-            onStep("media: ${app.label} allowed from the car screen")
-            // The sheet outlives the tile -- any render() stops every tile and
-            // builds new ones -- so a grant given after this pane went away is
-            // still recorded and still read by whatever replaced it.
-            if (!running) return@confirm
-            apps = MediaApps.allowed(appContext)
-            pending = pending.filterNot { it.packageName == app.packageName }
-            openApp(app)
-        }
-    }
+    private fun canLeaveApp(): Boolean = apps.size > 1
 
     private fun renderBrowse(state: BrowseState, items: List<MediaBrowser.MediaItem>) {
         val list = rows ?: return
         val current = session ?: return
         val context = list.context
         list.removeAllViews()
-        backTarget?.visibility = View.VISIBLE
+        // Only when Back means something: inside the tree, or out to a list
+        // with more than this one app in it.
+        backTarget?.visibility =
+            if (current.canGoBack() || canLeaveApp()) View.VISIBLE else View.GONE
         headerLabel?.text = current.breadcrumb().ifBlank { current.app.label }
 
         val message = when (state) {

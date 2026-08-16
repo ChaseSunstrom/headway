@@ -22,6 +22,7 @@ import aap_protobuf.service.control.message.ServiceDiscoveryResponseOuterClass.S
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.headway.protocol.channel.CarPoint
+import dev.headway.protocol.channel.CarSensors
 import java.io.File
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -120,6 +121,65 @@ class HeadUnitQuirksTest {
         assertTrue(
             "the override must be reported",
             loaded.warnings.any { it.contains("media audio", ignoreCase = true) },
+        )
+    }
+
+    /**
+     * The same trap, the same shape, found the same way — by a driver.
+     *
+     * `serialize` writes every key, so `writeTemplateIfAbsent` and the settings
+     * screen both bake the *current* defaults into the file. A phone that had
+     * ever written one carried `"odometerScale": 1` explicitly, so flipping the
+     * default in code changed nothing for it and the odometer stayed a hundred
+     * times high across two builds that each claimed to fix it.
+     *
+     * Below [QuirkStore.ODOMETER_DEFAULT_CHANGED_IN] the key is ignored; at or
+     * above it, the file is authoritative, because a file at that version could
+     * only have got its value from somebody choosing it.
+     */
+    @Test
+    fun aPreVersionThreeFileDoesNotPinTheOldOdometerDefault() {
+        file.writeText(
+            """
+            {
+              "version": 2,
+              "profiles": [
+                { "make": "*", "model": "*", "odometerScale": 1 }
+              ]
+            }
+            """.trimIndent(),
+        )
+        val loaded = QuirkStore(file).load()
+        val quirks = QuirkStore.resolve(loaded.profiles, HeadUnitIdentity(make = "Chevrolet"))
+        assertEquals(
+            "a version-2 file must not hold the odometer on the old default",
+            CarSensors.ODOMETER_SCALE_METERS,
+            quirks.odometerScale,
+        )
+        assertTrue(
+            "the override must be reported",
+            loaded.warnings.any { it.contains("odometer", ignoreCase = true) },
+        )
+    }
+
+    /** At the current schema version the file wins, because somebody chose it. */
+    @Test
+    fun aCurrentVersionFileCanStillAskForTheSchemaOdometerReading() {
+        file.writeText(
+            """
+            {
+              "version": ${QuirkStore.SCHEMA_VERSION},
+              "profiles": [
+                { "make": "*", "model": "*", "odometerScale": 1 }
+              ]
+            }
+            """.trimIndent(),
+        )
+        val quirks = QuirkStore(file).quirksFor(HeadUnitIdentity(make = "Chevrolet"))
+        assertEquals(
+            "a current-version file is a deliberate choice and must be honoured",
+            CarSensors.ODOMETER_SCALE_E1,
+            quirks.odometerScale,
         )
     }
 
