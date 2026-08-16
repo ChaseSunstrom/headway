@@ -925,6 +925,7 @@ class CarShell(
     private fun tileFor(leaf: DashNode.Leaf, path: DashPath): DashTile? =
         when (PaneKind.canonical(leaf.kind)) {
             PaneKind.NOW_PLAYING -> NowPlayingTile(paneContext)
+            PaneKind.PLAYING -> NowPlayingTile(paneContext, full = true)
             PaneKind.BROWSE -> MediaBrowseTile(paneContext, onStep)
             // A real map when one of the driver's allowed apps offers a car
             // interface -- the app draws its own map into the pane's surface and
@@ -1223,6 +1224,16 @@ class CarShell(
             unlockOrLock()
         }
         rows += CarSheet.Row("Layouts", "Switch, add or delete a layout") { showLayouts() }
+        // Where a driver actually looks for it. The picker already existed but
+        // only behind a tap on a *pinned* rail item, so a driver whose layout
+        // was not pinned -- or who simply did not think to tap the rail -- had
+        // no way to reach it, and reported that there was none: "theres no way
+        // for me to set the icon of layouts, only the name".
+        rows += CarSheet.Row(
+            title = "Icon for ${layout.name}",
+            detail = layout.icon?.name?.lowercase()?.replaceFirstChar { it.uppercase() }
+                ?: "Showing its name in words",
+        ) { showTabIconPicker(layout.name) }
         rows += CarSheet.Row("Opens on", startLayoutSummary()) { showStartLayout() }
 
         rows += CarSheet.section("Apps")

@@ -84,6 +84,17 @@ object PaneKind {
      */
     const val NOTIFICATIONS = "notifications"
 
+    /**
+     * What is playing, at full size, with the queue under it.
+     *
+     * Distinct from [NOW_PLAYING], which is a compact readout meant to sit
+     * beside something else. This one is the pane a driver gives a whole tab
+     * to: large artwork, title, artist and album, the transport, and every
+     * track queued behind the current one as its own row. A driver described
+     * the shape they wanted as "similar to how spotify does".
+     */
+    const val PLAYING = "playing"
+
     /** An app's own `RemoteViews`, hosted with `AppWidgetHost`. */
     const val WIDGET = "widget"
 
@@ -125,8 +136,8 @@ object PaneKind {
 
     /** Everything, in the order a picker should offer them. */
     val ALL: List<String> = listOf(
-        APP, MAPS, NOW_PLAYING, BROWSE, PHONE, NOTIFICATIONS, MESSAGES, CAR_APP, WIDGET,
-        LAUNCHER, SENSORS, CLOCK,
+        APP, MAPS, PLAYING, NOW_PLAYING, BROWSE, PHONE, NOTIFICATIONS, MESSAGES, CAR_APP,
+        WIDGET, LAUNCHER, SENSORS, CLOCK,
     )
 
     /**
@@ -145,6 +156,7 @@ object PaneKind {
         NOW_PLAYING -> "Now playing"
         BROWSE -> "Music and podcasts"
         MAPS -> "Maps"
+        PLAYING -> "Playing"
         PHONE -> "Phone"
         CAR_APP -> "Car app"
         MESSAGES -> "Messages"
@@ -162,6 +174,7 @@ object PaneKind {
         NOW_PLAYING -> "Whatever is playing, with transport controls"
         BROWSE -> "Walk a media app's library and start something"
         MAPS -> "The next turn, from the app that is navigating"
+        PLAYING -> "The cover, the track and the queue behind it"
         PHONE -> "Recent calls, and the call in progress"
         CAR_APP -> "An app's own car interface — several of these can run at once"
         MESSAGES -> "Incoming messages, with replies"

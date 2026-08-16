@@ -162,12 +162,33 @@ class NowPlayingTile(
      * transport row cannot express.
      */
     private val onOpen: ((MediaController) -> Unit)? = null,
+    /**
+     * Draw the whole pane: large artwork, album, and the queue underneath.
+     *
+     * The third of three shapes this tile has, and the one a driver asked for
+     * by name — "add a dedicated 'Playing' tab, that shows the Cover, artist,
+     * title, album, similar to how spotify does, with a queue underneath".
+     *
+     * A mode rather than a class because everything that is hard here is the
+     * session plumbing — finding the right controller, surviving a grant that
+     * has not been given, reading artwork an app publishes four different ways
+     * — and all of it is identical whatever size the result is drawn at. Only
+     * the view tree differs.
+     */
+    private val full: Boolean = false,
 ) : DashTile {
 
     private val appContext: Context = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
 
-    override val kind: String = PaneKind.NOW_PLAYING
+    override val kind: String = if (full) PaneKind.PLAYING else PaneKind.NOW_PLAYING
+
+    /** The album line, which only the [full] pane has room for. */
+    private var albumText: TextView? = null
+
+    /** Where the queue is drawn, in [full] mode. */
+    private var queueList: LinearLayout? = null
+    private var queueHeading: TextView? = null
 
     /** The whole tile, so [compact] can collapse it when nothing is playing. */
     private var rootView: View? = null
@@ -225,6 +246,7 @@ class NowPlayingTile(
      */
     override fun createView(context: Context): View {
         if (compact) return createStrip(context)
+        if (full) return createFull(context)
         val root = FrameLayout(context)
         val panel = CarStyle.panel(context)
         val gap = CarStyle.gutter(context)
@@ -316,6 +338,221 @@ class NowPlayingTile(
 
         render()
         return root
+    }
+
+    /**
+     * The whole pane: cover, track, album, transport, and the queue behind it.
+     *
+     * Laid out for a pane that has been given a tab of its own, so the artwork
+     * is large enough to identify from a metre away and the queue is a real
+     * list rather than a hint that one exists. Every row in it carries its own
+     * cover, title and artist -- horizontally, because a car screen is wide and
+     * a driver glancing at "what is next" wants three of them visible, not one.
+     */
+    private fun createFull(context: Context): View {
+        val root = FrameLayout(context)
+        val panel = CarStyle.panel(context)
+        val gap = CarStyle.gutter(context)
+
+        val artSize = CarStyle.dp(context, FULL_ART_DP)
+        val artView = ImageView(context).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            clipToOutline = true
+            background = Headway.panel(CarStyle.radius(context), Headway.SURFACE_RAISED)
+            layoutParams = LinearLayout.LayoutParams(artSize, artSize).apply { marginEnd = gap }
+        }
+        val sourceView = CarStyle.label(context, 13f, CarStyle.ACCENT).apply {
+            letterSpacing = 0.06f
+        }
+        val titleView = CarStyle.label(context, 24f, CarStyle.TEXT, bold = true).apply {
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        val artistView = CarStyle.label(context, 17f, CarStyle.DIM).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        // Its own line here, where the artist line does not have to carry both.
+        // The compact forms join them with a separator because they have one
+        // line between them; this pane has two.
+        val albumView = CarStyle.label(context, 15f, CarStyle.DIM).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        val textColumn = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(sourceView)
+            addView(titleView)
+            addView(artistView)
+            addView(albumView)
+        }
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(artView)
+            addView(textColumn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        }
+
+        val progressView = ProgressRule(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                MATCH_PARENT,
+                CarStyle.dp(context, 4f),
+            ).apply { topMargin = gap }
+        }
+
+        val controlSize = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
+        fun control(kindOf: Int, emphasis: Boolean, onPress: () -> Unit) =
+            TransportButton(context, kindOf, onPress).apply {
+                emphasised = emphasis
+                layoutParams = LinearLayout.LayoutParams(controlSize, controlSize).apply {
+                    marginStart = gap / 2
+                    marginEnd = gap / 2
+                }
+            }
+        val controls = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                topMargin = gap
+            }
+            addView(control(TransportButton.PREVIOUS, false) { command { it.skipToPrevious() } })
+        }
+        val playPauseView = control(TransportButton.PLAY, true) { togglePlayback() }
+        controls.addView(playPauseView)
+        controls.addView(control(TransportButton.NEXT, false) { command { it.skipToNext() } })
+
+        val heading = CarStyle.label(context, 13f, CarStyle.ACCENT).apply {
+            letterSpacing = 0.06f
+            text = "PLAYING NEXT"
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                topMargin = gap
+            }
+        }
+        val queue = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+
+        panel.addView(header)
+        panel.addView(progressView)
+        panel.addView(controls)
+        panel.addView(heading)
+        panel.addView(
+            ScrollView(context).apply {
+                isFillViewport = true
+                addView(queue, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            },
+            LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f),
+        )
+
+        val emptyView = CarStyle.emptyState(context, NO_ACCESS_HINT)
+        emptyView.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+        panel.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+        root.addView(panel)
+        root.addView(emptyView)
+
+        art = artView
+        titleText = titleView
+        artistText = artistView
+        albumText = albumView
+        sourceText = sourceView
+        progress = progressView
+        transport = controls
+        playPause = playPauseView
+        queueList = queue
+        queueHeading = heading
+        content = panel
+        empty = emptyView
+        emptyMessage = (emptyView as? LinearLayout)?.getChildAt(1) as? TextView
+        rootView = root
+
+        render()
+        return root
+    }
+
+    /**
+     * Draws whatever the session says is queued behind the current track.
+     *
+     * Rebuilt rather than diffed: a queue is tens of rows, it changes when the
+     * driver changes it, and a diff would be more code than the redraw costs.
+     * Bounded, because a shuffled library can publish thousands and every row
+     * here decodes a bitmap on the thread drawing the car screen.
+     */
+    private fun renderQueue(session: MediaController?) {
+        val list = queueList ?: return
+        val context = list.context
+        list.removeAllViews()
+        val items = runCatching { session?.queue }.getOrNull().orEmpty()
+        val active = runCatching { session?.playbackState?.activeQueueItemId }.getOrNull()
+        // Everything after the current track. An app that does not say which
+        // item is current gets the whole queue, which is better than an empty
+        // pane and is what "playing next" means when nothing claims to be now.
+        val position = items.indexOfFirst { it.queueId == active }
+        val upcoming = if (position >= 0) items.drop(position + 1) else items
+        queueHeading?.visibility = if (upcoming.isEmpty()) View.GONE else View.VISIBLE
+        if (upcoming.isEmpty()) return
+        val gap = CarStyle.gutter(context)
+        val size = CarStyle.dp(context, QUEUE_ART_DP)
+        upcoming.take(MAX_QUEUE).forEach { item ->
+            val description = item.description
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, gap / 3, 0, gap / 3)
+                isClickable = true
+                setOnClickListener {
+                    runCatching { session?.transportControls?.skipToQueueItem(item.queueId) }
+                }
+                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            }
+            row.addView(
+                ImageView(context).apply {
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    clipToOutline = true
+                    background = Headway.panel(CarStyle.radius(context), Headway.SURFACE_RAISED)
+                    setImageDrawable(queueArt(description, size))
+                    layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                        marginEnd = gap
+                    }
+                },
+            )
+            val column = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+            }
+            column.addView(
+                CarStyle.label(context, 16f, CarStyle.TEXT).apply {
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    text = description?.title?.toString()?.takeIf { it.isNotBlank() } ?: "Untitled"
+                },
+            )
+            val under = listOfNotNull(
+                description?.subtitle?.toString()?.takeIf { it.isNotBlank() },
+                description?.description?.toString()?.takeIf { it.isNotBlank() },
+            ).joinToString(" \u00b7 ")
+            if (under.isNotBlank()) {
+                column.addView(
+                    CarStyle.label(context, 13f, CarStyle.DIM).apply {
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                        text = under
+                    },
+                )
+            }
+            row.addView(column)
+            list.addView(row)
+        }
+    }
+
+    /** A queue row's cover: the description's own bitmap, then its URI, then nothing. */
+    private fun queueArt(
+        description: android.media.MediaDescription?,
+        size: Int,
+    ): android.graphics.drawable.Drawable? {
+        val bitmap = description?.iconBitmap
+            ?: description?.iconUri?.let { uri -> bitmapFromUri(uri, size) }
+            ?: return null
+        return android.graphics.drawable.BitmapDrawable(appContext.resources, bitmap)
     }
 
     /**
@@ -656,12 +893,29 @@ class NowPlayingTile(
         // `art`, the field -- `artView` is a local inside `render()` and is not
         // in scope here. Falls back to the nominal box before the first layout.
         val box = art?.width?.takeIf { it > 0 } ?: CarStyle.dp(appContext, ART_BOX_DP)
-        val decoded = runCatching {
-            val parsed = android.net.Uri.parse(uri)
+        val decoded = bitmapFromUri(android.net.Uri.parse(uri), box)
+        cachedArtUri = uri
+        cachedArt = decoded
+        if (decoded == null) SessionLog.shared.info(TAG, "cover art at $uri could not be read")
+        return decoded
+    }
+
+    /**
+     * Decodes [uri] no larger than it will be drawn.
+     *
+     * Shared with the queue, which needs the same thing at a different size and
+     * for a different image. Sampled rather than scaled after the fact because
+     * a full-resolution cover is several megabytes and this runs on the thread
+     * drawing the car screen -- and a queue is tens of them.
+     *
+     * Every failure is a null: a cross-app `content://` may simply refuse.
+     */
+    private fun bitmapFromUri(uri: android.net.Uri, box: Int): android.graphics.Bitmap? =
+        runCatching {
             val bounds = android.graphics.BitmapFactory.Options().apply {
                 inJustDecodeBounds = true
             }
-            appContext.contentResolver.openInputStream(parsed)?.use {
+            appContext.contentResolver.openInputStream(uri)?.use {
                 android.graphics.BitmapFactory.decodeStream(it, null, bounds)
             }
             val sample = generateSequence(1) { it * 2 }
@@ -669,15 +923,10 @@ class NowPlayingTile(
             val options = android.graphics.BitmapFactory.Options().apply {
                 inSampleSize = sample
             }
-            appContext.contentResolver.openInputStream(parsed)?.use {
+            appContext.contentResolver.openInputStream(uri)?.use {
                 android.graphics.BitmapFactory.decodeStream(it, null, options)
             }
         }.getOrNull()
-        cachedArtUri = uri
-        cachedArt = decoded
-        if (decoded == null) SessionLog.shared.info(TAG, "cover art at $uri could not be read")
-        return decoded
-    }
 
     private var cachedArtUri: String? = null
     private var cachedArt: android.graphics.Bitmap? = null
@@ -776,10 +1025,20 @@ class NowPlayingTile(
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE)
         val album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM)
             ?: metadata?.getString(MediaMetadata.METADATA_KEY_DISPLAY_DESCRIPTION)
-        artistView.text = listOfNotNull(
-            artist?.takeIf { it.isNotBlank() },
-            album?.takeIf { it.isNotBlank() && it != artist },
-        ).joinToString(" \u00b7 ")
+        val albumView = albumText
+        if (albumView == null) {
+            artistView.text = listOfNotNull(
+                artist?.takeIf { it.isNotBlank() },
+                album?.takeIf { it.isNotBlank() && it != artist },
+            ).joinToString(" \u00b7 ")
+        } else {
+            // The full pane has a line for each, so they are not joined. Every
+            // other shape has one line between them and joins them.
+            artistView.text = artist?.takeIf { it.isNotBlank() }.orEmpty()
+            albumView.text = album?.takeIf { it.isNotBlank() && it != artist }.orEmpty()
+            albumView.visibility =
+                if (albumView.text.isNullOrBlank()) View.GONE else View.VISIBLE
+        }
         artistView.visibility =
             if (artistView.text.isNullOrBlank()) View.GONE else View.VISIBLE
         sourceView.text = appLabel(session.packageName).uppercase()
@@ -821,6 +1080,7 @@ class NowPlayingTile(
 
         val playing = isActive(state?.state)
         playPause?.kind = if (playing) TransportButton.PAUSE else TransportButton.PLAY
+        if (full) renderQueue(session)
     }
 
     /** The posting app's display name, or its package when it has none. */
@@ -869,6 +1129,27 @@ class NowPlayingTile(
          * the side of their screen reported exactly that crush.
          */
         private const val STACK_BELOW_DP = 260f
+
+        /**
+         * Artwork size on the pane that has a tab to itself.
+         *
+         * Large enough to identify an album from the driver's seat, which is
+         * the whole reason to give a pane to this rather than keep the compact
+         * readout. Squares, so a 480-pixel-tall panel keeps room for the queue.
+         */
+        private const val FULL_ART_DP = 128f
+
+        /** Artwork on a queue row: identification, not decoration. */
+        private const val QUEUE_ART_DP = 44f
+
+        /**
+         * How much of a queue is drawn.
+         *
+         * Every row is a real view that decodes a bitmap on the thread drawing
+         * the car screen, and a shuffled library can publish thousands. Fifty
+         * is far more than anybody scrolls at a junction and is bounded work.
+         */
+        private const val MAX_QUEUE = 50
 
         /**
          * The component whose enablement is the grant.
