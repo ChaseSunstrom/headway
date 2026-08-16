@@ -52,6 +52,7 @@ import dev.headway.app.link.CarWifiNetwork
 import dev.headway.app.link.PhoneCertificateStore
 import dev.headway.app.log.SessionLog
 import dev.headway.app.quirks.HeadUnitIdentity
+import dev.headway.app.media.CarMediaStatusStream
 import dev.headway.app.quirks.HeadUnitQuirks
 import dev.headway.app.quirks.QuirkStore
 import dev.headway.app.sensor.CarSensorStream
@@ -1261,6 +1262,21 @@ open class HeadwayService : Service() {
         if (sensors == null) {
             step("the head unit advertised no sensor service, so the car reports nothing about itself")
         }
+        // What is playing, told to the car rather than only drawn on it. Without
+        // this the head unit believes no media exists and answers its own
+        // steering-wheel and dashboard buttons with "action unavailable" --
+        // which a driver reported, and which is not a message Headway can emit.
+        // See `CarMediaStatusStream`.
+        val mediaStatus = CarMediaStatusStream.of(
+            profile = profile,
+            connectionFor = connectionFor,
+            context = applicationContext,
+            onStep = ::step,
+        )
+        if (mediaStatus == null) {
+            step("the head unit advertised no media-playback service, so its own transport " +
+                "buttons will have nothing to act on")
+        }
         val voice = CarVoiceStream.of(
             profile = profile,
             connectionFor = connectionFor,
@@ -1406,6 +1422,7 @@ open class HeadwayService : Service() {
             // whose complete absence costs the driver nothing but a pane that
             // says the car is quiet.
             startSubsystem("sensors") { sensors?.start(this) }
+            startSubsystem("media status") { mediaStatus?.start() }
 
             pump.join()
         } catch (t: Throwable) {
@@ -1426,6 +1443,7 @@ open class HeadwayService : Service() {
             input?.let { runCatching { step(it.describe()) } }
             voice?.let { runCatching { step(it.describe()) } }
             sensors?.let { runCatching { step(it.describe()) } }
+            mediaStatus?.let { runCatching { step(it.describe()) } }
             runCatching { CarShell.onVoiceRequested = null }
             runCatching { AppPaneHost.onSharingKnown = null }
             runCatching { AppPaneHost.onGrantLost = null }
@@ -1440,6 +1458,7 @@ open class HeadwayService : Service() {
             runCatching { input?.stop() }
             runCatching { voice?.stop() }
             runCatching { sensors?.stop() }
+            runCatching { mediaStatus?.stop() }
             demux.closeAll(sessionFailure)
             sessionFailure = null
         }

@@ -3747,6 +3747,31 @@ AACS/proto/InputChannel.proto L10-L14 defines only `repeated ButtonCode.Enum ava
 
 aasdk/include/aasdk/Messenger/ChannelId.hpp L30-L51 declares `enum class ChannelId` with no explicit initializers except `NONE = 255`. INPUT_SOURCE is the 9th entry, so its value is 8 by C++ ordinal rules, but that number is nowhere written in the file. Furthermore this is aasdk's INTERNAL channel numbering; the actual AAP channel number for the input service is whatever `Service.id` the head unit assigns in ServiceDiscoveryResponse (see openauto InputSourceService.cpp L67 `service->set_id(static_cast<uint32_t>(channel_->getId()))` - openauto happens to reuse the aasdk enum ordinal as the wire service id). A clean-room phone must read the id from service discovery, never hard-code 8.
 
+## 6a. Media-playback-status channel
+
+What the *phone* tells the car about what is playing. Implemented by
+`core-protocol`'s `MediaPlaybackChannel` and the app's `CarMediaStatusStream`.
+
+**Why it matters, and how the direction was established.** A driver reported
+that their steering-wheel and dashboard skip buttons answered "Action
+unavailable" while Headway's own on-screen transport worked. That string is not
+Headway's, and it cannot be a reply to a key: the input channel has no
+per-event acknowledgement (section 6 lists all four of its message ids). The
+head unit was declining to send the key at all, because nothing had ever told
+it there was media. `AapSession.connect` opens every advertised service, and a
+real 2021 Chevrolet Infotainment 3 advertises MEDIA_PLAYBACK_STATUS (row above,
+2026-08-13 capture) -- so the channel was open and permanently silent.
+
+| Constant | Value | Notes | Source |
+|---|---|---|---|
+| `MediaPlaybackStatusMessageId::MEDIA_PLAYBACK_STATUS` | 32769 (0x8001) | Phone -> HU. Payload `MediaPlaybackStatus`. | `aap_protobuf/service/mediaplayback/MediaPlaybackStatusMessageId.proto` L7 |
+| `MediaPlaybackStatusMessageId::MEDIA_PLAYBACK_INPUT` | 32770 (0x8002) | HU -> phone, instrument-cluster input. Decoded by no reference this project has read; Headway never sends it and names it only so a frame carrying it is recognisable in a log. | same file L8 |
+| `MediaPlaybackStatusMessageId::MEDIA_PLAYBACK_METADATA` | 32771 (0x8003) | Phone -> HU. Payload `MediaPlaybackMetadata`. | same file L9 |
+| `MediaPlaybackStatus` fields | `state` (STOPPED=1, PLAYING=2, PAUSED=3), `media_source`, `playback_seconds`, `shuffle`, `repeat`, `repeat_one` | `playback_seconds` is a uint32, so an unknown position must be *omitted* rather than sent as a negative -- `PlaybackState` reports `PLAYBACK_POSITION_UNKNOWN` for a session that has not said where it is. | `.../message/MediaPlaybackStatus.proto` |
+| `MediaPlaybackMetadata` fields | `song`, `artist`, `album`, `album_art` (bytes), `playlist`, `duration_seconds`, `rating` | Headway sends every field but `album_art` and `rating`. Artwork is commonly a megabyte of raw bytes in one message, fragmented across a link already carrying video, and nothing in the reported fault needs it. | `.../message/MediaPlaybackMetadata.proto` |
+| direction (phone -> HU) | -- | aasdk's head-unit-role handler *receives* both MEDIA_PLAYBACK_STATUS and MEDIA_PLAYBACK_METADATA and only ever sends a `ChannelOpenResponse`. A service appearing in the head unit's own `ServiceDiscoveryResponse` says the unit supports it, not which way the messages travel; this is what settles it. | `aasdk/src/Channel/MediaPlaybackStatus/MediaPlaybackStatusService.cpp` L61-L116 |
+| framing | `control = false`, `encrypted = true` | Every non-control service message travels inside the TLS session, the same shape `InputChannel.keyBindingRequest` uses. | section 2, and `InputChannel.kt` |
+
 ## 7. Sensor channel
 
 What the car knows about itself -- speed, revs, fuel, tyres, the odometer, night mode, driving status -- which the phone RECEIVES from the head unit. Implemented by `core-protocol`'s `SensorChannel` and the app's `CarSensorStream`.

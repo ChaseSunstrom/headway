@@ -19,8 +19,12 @@ package dev.headway.app.voice
 
 import android.content.Context
 import android.media.AudioManager
+import android.media.session.MediaController
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.SystemClock
 import android.view.KeyEvent
+import dev.headway.app.dash.tiles.NowPlayingTile
 import dev.headway.voice.MediaAction
 import dev.headway.voice.VolumeDirection
 
@@ -46,6 +50,18 @@ import dev.headway.voice.VolumeDirection
  * That trade is stated here rather than hidden because it is the reason the log
  * says "sent" and never "paused".
  *
+ * ## Why it now tries a controller first anyway
+ *
+ * Because by the time a car key arrives, Headway usually *does* hold the
+ * notification-listener grant — the now-playing pane asks for it and the driver
+ * has already given it, since that pane is how they see what is playing. When
+ * it is there, `getActiveSessions` picks the same session the on-screen
+ * transport drives, which removes the one uncertainty in the key route: the
+ * platform sends a media key to whichever session last held audio focus, and
+ * that is not always the one the driver is looking at. The key remains the
+ * fallback, so a driver who has refused notification access loses nothing they
+ * had before.
+ *
  * ## Why each key is a down *and* an up
  *
  * `KeyEvent.ACTION_DOWN` alone is a key held forever. `MediaSession` implementations
@@ -60,8 +76,30 @@ class PhoneMediaControl(
     private val onStep: (String) -> Unit = {},
 ) {
 
+    private val appContext: Context = context.applicationContext
+
     private val audio: AudioManager? =
-        context.applicationContext.getSystemService(AudioManager::class.java)
+        appContext.getSystemService(AudioManager::class.java)
+
+    /**
+     * The session the on-screen transport would drive, or null.
+     *
+     * The same selection rule the now-playing pane uses — playing first, then
+     * whatever is there — so a car key and a tap on the car screen reach the
+     * same app. Null whenever notification access has not been granted, which
+     * `getActiveSessions` reports by throwing.
+     */
+    private fun boundSession(): MediaController? = runCatching {
+        val manager = appContext.getSystemService(MediaSessionManager::class.java)
+            ?: return null
+        val sessions = manager.getActiveSessions(
+            NowPlayingTile.listenerComponent(appContext),
+        )
+        sessions.firstOrNull {
+            val state = it.playbackState?.state
+            state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING
+        } ?: sessions.firstOrNull()
+    }.getOrNull()
 
     /**
      * Sends the media key for [action].
@@ -71,6 +109,28 @@ class PhoneMediaControl(
      *   see the class KDoc.
      */
     fun perform(action: MediaAction): Boolean {
+        boundSession()?.let { session ->
+            val controls = session.transportControls
+            val sent = runCatching {
+                when (action) {
+                    MediaAction.PLAY -> controls.play()
+                    MediaAction.PAUSE -> controls.pause()
+                    MediaAction.PLAY_PAUSE ->
+                        if (session.playbackState?.state == PlaybackState.STATE_PLAYING) {
+                            controls.pause()
+                        } else {
+                            controls.play()
+                        }
+                    MediaAction.NEXT -> controls.skipToNext()
+                    MediaAction.PREVIOUS -> controls.skipToPrevious()
+                    MediaAction.STOP -> controls.stop()
+                }
+            }.isSuccess
+            if (sent) {
+                onStep("media: ${action.name} sent to ${session.packageName}")
+                return true
+            }
+        }
         val keyCode = when (action) {
             MediaAction.PLAY -> KeyEvent.KEYCODE_MEDIA_PLAY
             MediaAction.PAUSE -> KeyEvent.KEYCODE_MEDIA_PAUSE
