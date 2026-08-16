@@ -287,7 +287,21 @@ class CarMediaStatusStream(
         )
     }
 
-    private fun appLabel(packageName: String): String = runCatching {
+    /**
+     * Display names by package, because this is read from the tick.
+     *
+     * `getApplicationInfo` is a binder round trip into the package manager, and
+     * the status push runs once a second on the main looper -- the same thread
+     * that draws the car screen. An app's label does not change while it is
+     * installed, so asking the system every second was a round trip per second
+     * for an answer that was already known.
+     */
+    private val labels = mutableMapOf<String, String>()
+
+    private fun appLabel(packageName: String): String =
+        labels.getOrPut(packageName) { readAppLabel(packageName) }
+
+    private fun readAppLabel(packageName: String): String = runCatching {
         val packages = appContext.packageManager
         packages.getApplicationLabel(
             packages.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0L)),

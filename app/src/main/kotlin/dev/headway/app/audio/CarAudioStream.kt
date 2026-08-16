@@ -29,6 +29,7 @@ import dev.headway.audio.CarAudioSourceException
 import dev.headway.audio.PcmBuffer
 import dev.headway.audio.PhoneAudioFocus
 import dev.headway.protocol.channel.AudioChannel
+import dev.headway.protocol.channel.AudioChannelException
 import dev.headway.protocol.channel.AudioFocus
 import dev.headway.protocol.channel.AudioFocusState
 import dev.headway.protocol.channel.MediaAudioRoute
@@ -575,7 +576,16 @@ class CarAudioStream(
             // Named from the advertisement, not from ChannelId: this car assigns
             // its guidance sink the id Headway's own table calls
             // MEDIA_SINK_VIDEO, and the log said exactly that for a whole drive.
-            opened.joinToString { "${nameFor(it.channelId)} at ${it.format}" }
+            opened.joinToString {
+                // The negotiated format either way. A deferred sink has no
+                // `format` until its first use -- `sendStart` is what sets it --
+                // and printing null for a channel that is set up and waiting
+                // would read as a failure rather than as the resting state.
+                val shape = it.format
+                    ?: planned[it.channelId]?.let { index -> it.advertisedFormats.getOrNull(index) }
+                val state = if (it.sessionId == null) " (idle)" else ""
+                "${nameFor(it.channelId)} at $shape$state"
+            }
         }
         parts += "$promptsPlayed prompt(s), $buffersSent buffer(s), $underflows underflow(s) seen"
         if (mediaBytesSent > 0 || channelFor(AudioStreamType.AUDIO_STREAM_MEDIA) != null) {
@@ -593,7 +603,56 @@ class CarAudioStream(
 
     // --- bring-up -------------------------------------------------------------
 
+    /**
+     * Whether this sink is started as soon as it is set up.
+     *
+     * ## The bug this exists to not have
+     *
+     * `Start` is not "I might use this channel", it is "audio is coming". A
+     * drive log has Headway sending it on the *guidance* sink at connect and
+     * then sending `0 prompt(s)` for the rest of the session -- so the head
+     * unit spent the whole drive believing a voice stream was live. The driver
+     * reported that the car's volume knob would only adjust voice volume, and
+     * that turning it up changed nothing they could hear, which is exactly what
+     * an empty-but-active guidance stream looks like from the cabin: guidance
+     * outranks media in a car's audio policy, so the knob binds to it, and there
+     * is nothing on it to make louder.
+     *
+     * Media is the exception and stays eager. It is the stream that carries
+     * music the moment a capture grant exists, its `Start` is what negotiates
+     * the format the capture is resampled into, and it is working -- so it
+     * keeps the behaviour it has.
+     *
+     * Deferred channels are still set up, so [canSpeak] and the negotiated
+     * format are known from bring-up. Only the announcement waits.
+     */
+    private fun startsEagerly(stream: AudioStreamType): Boolean =
+        stream == AudioStreamType.AUDIO_STREAM_MEDIA
+
+    /**
+     * Sends `Start` for a deferred sink the first time something is put on it.
+     *
+     * Idempotent by [AudioChannel.sessionId], which `sendStart` sets. Started
+     * channels are left started rather than stopped after each prompt: a car
+     * that has been told about a stream carrying real audio is in a true state,
+     * and Start/Stop per prompt would be chatter on a link already carrying
+     * video.
+     */
+    private suspend fun ensureStarted(channel: AudioChannel) {
+        if (channel.sessionId != null) return
+        val index = planned[channel.channelId] ?: return
+        channel.sendStart(sessionId = startedSessionId, configurationIndex = index)
+        onStep("${nameFor(channel.channelId)} started on first use: ${channel.format}")
+    }
+
+    /** Configuration index chosen at Setup, by channel id, for [ensureStarted]. */
+    private val planned = mutableMapOf<Int, Int>()
+
+    /** The session id [bringUp] used, so a deferred Start matches the eager ones. */
+    private var startedSessionId: Int = DEFAULT_SESSION_ID
+
     private suspend fun bringUp(sessionId: Int) {
+        startedSessionId = sessionId
         val started = mutableListOf<AudioChannel>()
         val refused = mutableListOf<String>()
         try {
@@ -644,11 +703,22 @@ class CarAudioStream(
                 return false
             }
 
-            channel.sendStart(sessionId = sessionId, configurationIndex = index)
-            onStep(
-                "$name ready: ${channel.format}, window ${config.maxUnacked ?: 1}, " +
-                    "session $sessionId"
-            )
+            planned[channel.channelId] = index
+            // Only the media sink is started here. See `startLazily` for why the
+            // others wait, and `ensureStarted` for what wakes them.
+            if (startsEagerly(channel.stream)) {
+                channel.sendStart(sessionId = sessionId, configurationIndex = index)
+                onStep(
+                    "$name ready: ${channel.format}, window ${config.maxUnacked ?: 1}, " +
+                        "session $sessionId"
+                )
+            } else {
+                onStep(
+                    "$name negotiated ${channel.advertisedFormats.getOrNull(index)}, window " +
+                        "${config.maxUnacked ?: 1}; not started, because nothing is being sent " +
+                        "on it yet"
+                )
+            }
             return true
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -766,6 +836,27 @@ class CarAudioStream(
     ): Boolean = speaking.withLock {
         // A grant left over from the previous prompt must not satisfy this one.
         while (grants.tryReceive().isSuccess) Unit
+
+        // The announcement this channel did not make at bring-up. Before focus,
+        // because the car sizes its ducking from the streams it believes are
+        // live, and because `render` reads the format `Start` selects.
+        //
+        // A link that died between bring-up and this prompt costs the prompt,
+        // not the session -- the demultiplexer notices the same close and the
+        // supervisor reconnects. `AudioChannelException` is let through for the
+        // reason given at the end of this function: it means a sequencing bug
+        // here, and silence would hide it.
+        val announced = runCatching { ensureStarted(channel) }.exceptionOrNull()
+        if (announced != null) {
+            if (announced is AudioChannelException || announced is CancellationException) {
+                throw announced
+            }
+            onStep(
+                "could not start ${nameFor(channel.channelId)} for this prompt: " +
+                    "${announced.message}"
+            )
+            return@withLock false
+        }
 
         // Phone first, then car: if AudioManager refuses, the car is never asked,
         // so the radio is never ducked for a prompt that will not play.

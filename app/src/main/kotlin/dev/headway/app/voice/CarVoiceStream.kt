@@ -786,6 +786,29 @@ class CarVoiceStream(
                 )
                 return null
             }
+            val breadcrumb = File(modelDirectory.parentFile, LOADING_MARKER)
+            if (breadcrumb.exists()) {
+                onStep(
+                    "voice: the last attempt to start the speech model killed the app, so it is " +
+                        "being skipped. This is the speech engine needing to build machine code " +
+                        "while it runs, which GrapheneOS blocks with \"Restrict dynamic code " +
+                        "loading\" -- allowing it for Headway in the OS app settings, under " +
+                        "Exploit protection, is what turns voice back on. Everything else works " +
+                        "without it. Delete the model and re-download it to try again"
+                )
+                return null
+            }
+            // Written before the call and removed after it, because the failure
+            // this guards against cannot be caught. Loading Vosk goes through
+            // JNA, which builds its native call trampolines at runtime and needs
+            // memory that is first writable and then executable. GrapheneOS
+            // refuses that -- a real drive log has
+            // TSEC_FLAG_DENY_EXECUTE_APP_DATA_FILE on this process's cache
+            // directory -- and libffi does not check: it writes through the null
+            // it got back and the whole process dies on SIGSEGV at address 0x8,
+            // taking the car session with it. No catch block runs, so the only
+            // evidence that survives is a file.
+            runCatching { breadcrumb.parentFile?.mkdirs(); breadcrumb.writeText(VOSK_RECOGNIZER_CLASS) }
             return try {
                 val recognizer = Class.forName(VOSK_RECOGNIZER_CLASS)
                     .getConstructor(String::class.java, Int::class.javaPrimitiveType)
@@ -795,8 +818,35 @@ class CarVoiceStream(
             } catch (t: Throwable) {
                 onStep("voice: this build cannot run the speech model (${describeCause(t)})")
                 null
+            } finally {
+                // Reached on success and on a thrown failure alike. The only
+                // path that leaves it behind is the one that never returns.
+                runCatching { breadcrumb.delete() }
             }
         }
+
+        /**
+         * Clears the "loading the speech model killed us" marker.
+         *
+         * Exposed so a driver who has allowed dynamic code loading, or who
+         * re-downloads the model, gets voice back without reinstalling.
+         */
+        fun forgetSpeechModelCrash(context: Context) {
+            runCatching { File(defaultModelDirectory(context).parentFile, LOADING_MARKER).delete() }
+        }
+
+        /** True when the last attempt to start the speech model did not return. */
+        fun speechModelCrashed(context: Context): Boolean =
+            runCatching {
+                File(defaultModelDirectory(context).parentFile, LOADING_MARKER).exists()
+            }.getOrDefault(false)
+
+        /**
+         * Name of the breadcrumb file. A sibling of the model directory rather
+         * than a child, so deleting and re-extracting the model does not carry
+         * a stale marker back in with it.
+         */
+        private const val LOADING_MARKER = "speech-model-loading"
 
         /**
          * Names the failure a reflective construction actually hit.

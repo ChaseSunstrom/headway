@@ -1375,3 +1375,70 @@ says so on the car screen.
 deliberate inaction: AOSP documents that a third-party `startBluetoothSco` is
 ignored during a call, and that `setCommunicationDevice` gives priority to the
 app owning the audio mode — the dialer. Headway calls neither, and should not.
+
+## B-028 — The speech engine needs runtime-generated machine code, which GrapheneOS blocks
+
+**Status:** shipped workaround — voice degrades, the drive does not.
+
+**What a real drive showed.** Two `SIGSEGV`s in one log, both identical:
+
+```
+F libc : Fatal signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x8 in tid 19400 (DefaultDispatch)
+F DEBUG: Cause: null pointer dereference
+F DEBUG:   #00 ... (ffi_prep_c...)
+F DEBUG:   #01 ... (Java_com_sun_jna_Native_...)
+F DEBUG:   #06 ... (org.vosk.LibVosk.<clinit>)
+F DEBUG:   #11 ... (dev.headway.voice...)
+```
+
+and, in the same millisecond, from `auditd`:
+
+```
+avc: granted { execute } for comm="DefaultDispatch"
+     path=/data/data/dev.headway.app/cache/#212353 (deleted) tclass=file
+TSEC_FLAG_DENY_EXECUTE_APP_DATA_FILE: op denied, uid 10255, pid 18504, comm="DefaultDispatch"
+```
+
+**Why it happens.** Vosk's Android binding reaches the decoder through JNA, and
+JNA builds its native call trampolines *at run time* with libffi. libffi has to
+put those trampolines in memory that is first writable and then executable,
+which on Android means a scratch file in the app's own cache directory mapped
+`PROT_EXEC`. That is precisely what GrapheneOS's per-app **"Restrict dynamic
+code loading"** exists to forbid — the storage variant is the denial above, the
+memory variant is the anonymous `PROT_EXEC` mapping JNA falls back to. libffi
+does not check the result: it writes through the null it gets back, so the
+process dies at address `0x8` rather than reporting a failure.
+
+**Why it cannot be caught.** A `SIGSEGV` in native code is not a Java throwable.
+No `catch`, no `Thread.UncaughtExceptionHandler` and no `runCatching` sees it.
+The process is simply gone, and with it the car session, the video encoder and
+the audio capture — for a feature the driver may not even have been using.
+
+**Why the obvious fixes do not apply.** Shipping `libjnidispatch.so` in
+`lib/<abi>/` (which Headway now does, and CI checks) fixes *library loading*;
+it does not help here, because the fault is trampoline allocation, which happens
+after the library is loaded. Nor is this something a build flag can turn off:
+JNA has no ahead-of-time mode, and `Native.register`'s direct mapping is
+libffi-based by construction.
+
+**The workaround that shipped.** `CarVoiceStream.voskRecognizer` writes a
+breadcrumb file next to the model directory immediately before the call that may
+not return, and deletes it in a `finally` — reached on success and on an
+ordinary exception alike, and *not* reached when the process dies. A later start
+that finds the breadcrumb skips the speech engine entirely and says so in plain
+language, naming the GrapheneOS setting. So the failure costs voice once and
+then costs nothing, instead of crash-looping every session.
+
+**How a driver gets voice back.** Either allow dynamic code loading for Headway
+in the OS app settings, under Exploit protection — a deliberate weakening of a
+hardening feature, which is the driver's call and not Headway's — or re-install
+the speech model, which clears the breadcrumb and tries once more.
+
+**How to close it properly.** Replace the JNA binding with a small JNI shim over
+`libvosk.so`'s plain C entry points (`vosk_model_new`, `vosk_recognizer_new`,
+`vosk_recognizer_accept_waveform`, `vosk_recognizer_result`). A JNI shim is
+compiled ahead of time into the APK and generates no code at run time, so it
+works with the restriction fully enabled and drops the JNA dependency with it.
+That is a native build this project does not currently have — ADR 0001 kept the
+whole stack pure JVM — so it is a real piece of work rather than a patch, and it
+is the right shape for the next voice change rather than for a log fix.

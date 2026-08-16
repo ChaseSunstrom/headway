@@ -140,6 +140,12 @@ object SpeechModelInstaller {
         }
 
         File(target, MARKER).writeText(ASSET_NAME)
+        // A fresh model is a fresh chance. If a previous load took the process
+        // down with it -- which is what the marker records, and which is not a
+        // property of the model but of whether the OS will let the engine build
+        // its call trampolines -- re-installing is the driver's way of asking
+        // Headway to try again. See `CarVoiceStream.voskRecognizer`.
+        CarVoiceStream.forgetSpeechModelCrash(context)
         onStep("voice: installed the speech model ($unpacked file(s)) at ${target.absolutePath}")
         return true
     }
