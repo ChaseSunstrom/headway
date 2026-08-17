@@ -447,6 +447,69 @@ def misnested(path: Path, objects: dict) -> list:
     return problems
 
 
+TOP_LEVEL_TYPE = re.compile(
+    r"^(?:internal |private |public )?(?:open |abstract |sealed |data )*"
+    r"(?:class|object|interface|enum class) (\w+)"
+)
+
+PRIVATE_CONST = re.compile(r"^\s+private const val ([A-Z][A-Z0-9_]*)\b")
+
+WORD = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\b")
+
+
+def stranded_constants(path: Path) -> list:
+    """Every `private const val` used from a different top-level type in one file.
+
+    A file holding several classes gives each its own companion, and a constant
+    added to the wrong one compiles nowhere and reads fine everywhere -- the
+    declaration and the use are hundreds of lines apart and both look right.
+    That shape has now cost three CI rounds in this repository, always in the
+    same 2500-line file.
+
+    Private is the whole point: a `private const val` in one type's companion is
+    invisible to its siblings, while an internal or public one is not. Only
+    same-file uses are considered, so a constant that is genuinely shared by
+    being non-private never appears here.
+    """
+    text = code_only(path.read_text(encoding="utf-8"))
+    lines = text.split("\n")
+    owner = {}
+    current = None
+    for raw in lines:
+        match = TOP_LEVEL_TYPE.match(raw)
+        if match:
+            current = match.group(1)
+            continue
+        constant = PRIVATE_CONST.match(raw)
+        if constant and current:
+            # A *set* of owners, not the first one. Two classes in one file may
+            # each declare a private constant of the same name -- ContentTiles
+            # has two NO_ACCESS_HINTs, deliberately, because the two panes word
+            # the same absence differently. Keeping only the first owner made
+            # every use in the second class look stranded.
+            owner.setdefault(constant.group(1), set()).add(current)
+    if not owner:
+        return []
+    problems = []
+    current = None
+    for number, raw in enumerate(lines, 1):
+        match = TOP_LEVEL_TYPE.match(raw)
+        if match:
+            current = match.group(1)
+            continue
+        if PRIVATE_CONST.match(raw) or current is None:
+            continue
+        for name in WORD.findall(raw):
+            homes = owner.get(name)
+            if homes and current not in homes:
+                where = " and ".join(sorted(homes))
+                problems.append(
+                    f"{path}:{number}: {name} is a private const in {where}, and this is "
+                    f"{current} -- it resolves to nothing here"
+                )
+    return problems
+
+
 def main() -> int:
     problems = []
     objects = top_level_objects()
@@ -456,6 +519,7 @@ def main() -> int:
             problems += unterminated_strings(path)
             problems += unimported(path)
             problems += misnested(path, objects)
+            problems += stranded_constants(path)
             text = path.read_text(encoding="utf-8")
             for line in text.split("\n"):
                 if not line.startswith("import "):

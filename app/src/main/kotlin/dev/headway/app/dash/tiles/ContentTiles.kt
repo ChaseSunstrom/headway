@@ -1441,13 +1441,6 @@ class NowPlayingTile(
         private const val TICK_MILLIS = 1_000L
 
         /**
-         * Below this, an app's accent is repainted in the pane's text colour.
-         * Chosen against Headway's own dark surfaces rather than as a general
-         * contrast rule -- this screen is dark in every theme it ships with.
-         */
-        private const val MIN_GLYPH_LUMINANCE = 0.35
-
-        /**
          * Ticks between one re-read of the session and the next.
          *
          * The safety net for a callback that never arrives, which is the case a
@@ -1928,6 +1921,13 @@ class NotificationsTile(context: Context) : DashTile {
          * narrow to read on a panel this wide.
          */
         const val NOTICE_ICON_DP: Float = 32f
+
+        /**
+         * Below this, an app's accent is repainted in the pane's text colour.
+         * Chosen against Headway's own dark surfaces rather than as a general
+         * contrast rule -- this screen is dark in every theme it ships with.
+         */
+        private const val MIN_GLYPH_LUMINANCE = 0.35
     }
 }
 
