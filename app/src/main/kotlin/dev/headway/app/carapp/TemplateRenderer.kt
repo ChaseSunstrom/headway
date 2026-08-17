@@ -218,6 +218,7 @@ class TemplateRenderer(
             return
         }
         root.gravity = Gravity.TOP
+        mapUnderneath = false
         runCatching { draw(context, template) }
             .onFailure { error ->
                 SessionLog.shared.warn(TAG, "could not draw ${template.javaClass.simpleName}: $error")
@@ -274,6 +275,10 @@ class TemplateRenderer(
         // is unanswerable without it. Two rounds were spent fixing the chrome
         // of the wrong template -- the driver's report named what they saw on
         // screen, and nothing in the log named what had drawn it.
+        // Before the `when`, because `MapWithContentTemplate` recurses into this
+        // function for its content and the flag has to be set by the time the
+        // inner template draws its header.
+        if (template.drawsAMap()) mapUnderneath = true
         if (seenTemplates.add(template.javaClass.simpleName)) {
             onStep(
                 "car app: ${session.app.label} drew ${template.javaClass.simpleName}" +
@@ -699,13 +704,14 @@ class TemplateRenderer(
         // of the map -- which is the report that came back after the first fix.
         // Only the app's own controls survive here, and they are drawn as
         // icons. See [showChrome].
-        if (showChrome) {
+        val ownChrome = !iconsOnly
+        if (ownChrome) {
             // Always present, and first. It leaves the app entirely, which is
             // the one control the app cannot supply and the driver always
             // needs: an app whose own Back is missing, or whose root screen has
             // none, would otherwise be a pane with no exit until the tab is
-            // switched. A pinned pane is the exception -- it has no picker to
-            // go back to, and the tab strip is its way out.
+            // switched. Over a map it is the exception -- the pane is the map,
+            // and the rail and tab strip are the way out.
             bar.addView(
                 CarStyle.button(context, "Apps") { onLeave() }.apply {
                     minWidth = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
@@ -724,7 +730,7 @@ class TemplateRenderer(
         // with no way back is a car app the driver has to close and reopen.
         if (start != null) {
             bar.addView(actionView(context, start, compact = true))
-        } else if (showChrome) {
+        } else if (ownChrome) {
             bar.addView(
                 CarStyle.button(context, "Back") { session.back() }.apply {
                     minWidth = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
@@ -735,7 +741,7 @@ class TemplateRenderer(
                 },
             )
         }
-        if (showChrome) {
+        if (ownChrome) {
             bar.addView(
                 CarStyle.label(context, 17f, CarStyle.TEXT, bold = true).apply {
                     this.text = text.orEmpty()
@@ -752,11 +758,12 @@ class TemplateRenderer(
             })
         }
         end.forEach { bar.addView(actionView(context, it, compact = true)) }
+        strip?.let { describeStrip(it) }
         strip?.actions?.forEach { bar.addView(actionView(context, it, compact = true)) }
         // An empty bar is still padding across the top of a map. On a pinned
         // pane with an app that supplies no header controls there is genuinely
         // nothing to show, and showing nothing means adding nothing.
-        if (bar.childCount > 1 || showChrome) target.addView(bar)
+        if (bar.childCount > 1 || ownChrome) target.addView(bar)
     }
 
     /**
@@ -820,10 +827,70 @@ class TemplateRenderer(
      * whole content is the map. A Maps pane wants the app's controls small and
      * out of the way; a pane the driver navigated into wants them legible.
      */
-    private val iconsOnly: Boolean get() = !showChrome
+    /**
+     * Whether an action draws as an icon with no word beside it.
+     *
+     * ## Why this is not simply "is the pane pinned"
+     *
+     * It was, and it was wrong twice. `showChrome` is false only for a Maps
+     * pane, because only `CarShell.mapsTileFor` passes `pinned`. A driver whose
+     * map is in a **Car app** pane -- the same navigation app, picked from the
+     * picker instead of resolved by the Maps pane -- got `showChrome = true`
+     * and therefore the full chrome and a row of labelled pills across their
+     * map, which is exactly the report that came back after both attempts.
+     *
+     * So the condition is what is on the screen rather than how the pane was
+     * configured. A template that draws a map fills the pane with a map, and a
+     * bar of words over it is the complaint whichever pane kind it is. The way
+     * out of the app is the rail and the tab strip, which are always there.
+     */
+    private val iconsOnly: Boolean get() = !showChrome || mapUnderneath
+
+    /** True once this render has reached a template that draws a map. */
+    private var mapUnderneath = false
+
+    /**
+     * Whether this template puts a map behind its content.
+     *
+     * The same list as the branches in [draw] that call `attachMap`, and it has
+     * to stay that way -- a template that shows a map and is missing here gets
+     * a bar of pills over it.
+     */
+    private fun Template.drawsAMap(): Boolean =
+        this is NavigationTemplate ||
+            this is MapTemplate ||
+            this is MapWithContentTemplate ||
+            this is PlaceListNavigationTemplate ||
+            this is RoutePreviewNavigationTemplate ||
+            this is PlaceListMapTemplate
 
     /** Template names already named in the log, so each is said once. */
     private val seenTemplates = mutableSetOf<String>()
+
+    /**
+     * Names what an app put in a strip, once per distinct set.
+     *
+     * Two rounds of fixes for "the bars are still horizontal" missed because
+     * nothing recorded what the bar was *made of*. Whether an action carries an
+     * icon decides how it can be drawn, and it is invisible from the outside:
+     * an icon-less titled action and an icon-bearing one look identical in a
+     * screenshot and need opposite treatment.
+     */
+    private fun describeStrip(strip: ActionStrip) {
+        val shape = strip.actions.joinToString(", ") { action ->
+            val title = action.title.plain()
+            val icon = if (action.icon != null) "icon" else "no icon"
+            "${title ?: standardName(action.type)} ($icon)"
+        }
+        if (shape.isBlank() || !seenStrips.add(shape)) return
+        onStep(
+            "car app: ${session.app.label} strip of ${strip.actions.size} — $shape" +
+                if (iconsOnly) " [drawn compact over a map]" else " [drawn as pills]"
+        )
+    }
+
+    /** Strips already named in the log, so each shape is said once. */
+    private val seenStrips = mutableSetOf<String>()
 
     private fun actionStripView(context: Context, strip: ActionStrip): View =
         LinearLayout(context).apply {
@@ -831,6 +898,7 @@ class TemplateRenderer(
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
             val gap = CarStyle.gutter(context)
             setPadding(gap, gap / 4, gap, gap / 4)
+            describeStrip(strip)
             strip.actions.forEach { addView(actionView(context, it, compact = true)) }
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
         }
@@ -875,8 +943,14 @@ class TemplateRenderer(
         // of the screen, laid over the map the pane exists to show -- which is
         // what a driver reported twice. The title survives as the content
         // description, so nothing is lost to a screen reader or to the log.
+        // Over a map, a titled action with no icon is shortened rather than
+        // left alone. The first attempt only dropped the *label of an action
+        // that had an icon*, which does nothing at all for an app whose strip
+        // is titles with no icons -- and a driver reported the bar unchanged.
+        // The full title stays as the content description either way.
         val label = when {
             iconsOnly && icon != null -> ""
+            iconsOnly && title != null -> title.take(1).uppercase()
             title != null -> title
             icon != null -> ""
             else -> standardName(action.type)
@@ -896,11 +970,14 @@ class TemplateRenderer(
             // pill itself may now carry no text.
             pill.contentDescription = title ?: standardName(action.type)
         }
+        if (pill.contentDescription == null) {
+            pill.contentDescription = title ?: standardName(action.type)
+        }
         if (compact) {
             pill.minWidth = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
             pill.minHeight = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP * 0.75f)
         }
-        if (iconsOnly && icon != null) {
+        if (iconsOnly) {
             // Square, and the same size as a tab cell, so a strip of them reads
             // as one row of controls rather than as pills that lost their text.
             val side = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)

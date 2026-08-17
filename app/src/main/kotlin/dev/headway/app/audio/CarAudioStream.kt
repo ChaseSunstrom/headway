@@ -239,6 +239,18 @@ class CarAudioStream(
     var underflows: Long = 0L
         private set
 
+    /** Longest single wait for the car to take a buffer, in ms. */
+    private var longestSendMillis: Long = 0L
+
+    /** Longest gap between finishing one buffer and starting the next, in ms. */
+    private var idleGapMillis: Long = 0L
+
+    /** When the last buffer finished being handed to the link. */
+    private var lastSendEndedAt: Long = 0L
+
+    /** Sends that took longer than [STALL_REPORT_MILLIS]. */
+    private var stalls: Long = 0L
+
     /** Captured audio forwarded to the car. Diagnostics. */
     @Volatile
     var mediaBytesSent: Long = 0L
@@ -623,6 +635,13 @@ class CarAudioStream(
         parts += "$promptsPlayed prompt(s), $buffersSent buffer(s), $underflows underflow(s) seen"
         if (mediaBytesSent > 0 || channelFor(AudioStreamType.AUDIO_STREAM_MEDIA) != null) {
             parts += "music ${mediaBytesSent / 1024} KiB sent"
+            // Always stated once music has flowed. These are the numbers that
+            // answer "why did it cut out", and a summary that only mentions
+            // them when they are bad cannot show that they were fine.
+            if (mediaBytesSent > 0) {
+                parts += "worst wait for the car ${longestSendMillis} ms, " +
+                    "worst gap in capture ${idleGapMillis} ms, $stalls stall(s)"
+            }
         }
         if (refusals.isNotEmpty()) parts += "refused: ${refusals.joinToString("; ")}"
         if (untouched.isNotEmpty()) {
@@ -1076,6 +1095,17 @@ class CarAudioStream(
          * being retried and let the driver re-share.
          */
         const val MEDIA_CAPTURE_ATTEMPTS: Int = 3
+
+        /**
+         * A send this slow is audible, so it is worth a line of its own.
+         *
+         * 250 ms is roughly six buffers at the 40 ms this capture produces, and
+         * well past anything the acknowledgement window absorbs normally.
+         */
+        private const val STALL_REPORT_MILLIS: Long = 250L
+
+        /** Stalls reported individually before the summary count takes over. */
+        private const val MAX_REPORTED_STALLS: Long = 12L
         /**
          * Any non-zero value works; the head unit echoes it back in every
          * acknowledgement so the two sides can tell streams apart. The same id on

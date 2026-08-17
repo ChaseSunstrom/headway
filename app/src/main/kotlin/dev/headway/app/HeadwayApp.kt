@@ -18,6 +18,7 @@
 package dev.headway.app
 
 import android.app.Application
+import dev.headway.app.log.CrashLog
 import dev.headway.app.log.SessionLog
 import dev.headway.app.ui.HeadwaySettings
 import dev.headway.app.ui.theme.HeadwayTheme
@@ -45,6 +46,11 @@ class HeadwayApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // First, so a crash in anything below is still written down. See
+        // `CrashLog`: the session log lives in memory, so before this a process
+        // that died took the whole drive's evidence with it.
+        CrashLog.install(this)
+        CrashLog.reportPrevious(this)
         HeadwayTheme.load(this)
         // One preference migration, once. See HeadwaySettings.migrateAppSource
         // for why an existing choice is being changed at all.
