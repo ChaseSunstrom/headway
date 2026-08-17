@@ -510,6 +510,40 @@ def stranded_constants(path: Path) -> list:
     return problems
 
 
+# Assertion libraries that are not on a source set's test classpath, by the
+# path fragment that identifies it. `:app`'s unit tests are JUnit 5 with the
+# Jupiter assertions and no kotlin-test dependency; the jvm-only modules do
+# have kotlin-test, so this is per source set rather than global.
+TEST_LIBRARY_TRAPS = {
+    "app/src/test/": ("kotlin.test", "org.junit.jupiter.api.Assertions"),
+}
+
+
+def wrong_test_library(path: Path) -> list:
+    """Every test importing an assertion library its module does not have.
+
+    `:app`'s unit tests are the only Kotlin in this repository that no local
+    gradle task compiles -- `tools/jvm-only` covers the core modules and the
+    emulator, and everything else waits for CI. So a one-line import mistake in
+    a test costs a full CI round, which is what `import kotlin.test.assertTrue`
+    did: the module has JUnit 5 and no kotlin-test, and the report was ten
+    "Unresolved reference" lines pointing at the assertions rather than at the
+    import.
+    """
+    text = path.as_posix()
+    problems = []
+    for fragment, (banned, instead) in TEST_LIBRARY_TRAPS.items():
+        if fragment not in text:
+            continue
+        for number, raw in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
+            if raw.startswith(f"import {banned}."):
+                problems.append(
+                    f"{path}:{number}: {raw.strip()} -- this source set has no {banned}; "
+                    f"use {instead}"
+                )
+    return problems
+
+
 def main() -> int:
     problems = []
     objects = top_level_objects()
@@ -520,6 +554,7 @@ def main() -> int:
             problems += unimported(path)
             problems += misnested(path, objects)
             problems += stranded_constants(path)
+            problems += wrong_test_library(path)
             text = path.read_text(encoding="utf-8")
             for line in text.split("\n"):
                 if not line.startswith("import "):
