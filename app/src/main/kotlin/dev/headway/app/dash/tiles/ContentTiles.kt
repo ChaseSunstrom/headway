@@ -1441,6 +1441,13 @@ class NowPlayingTile(
         private const val TICK_MILLIS = 1_000L
 
         /**
+         * Below this, an app's accent is repainted in the pane's text colour.
+         * Chosen against Headway's own dark surfaces rather than as a general
+         * contrast rule -- this screen is dark in every theme it ships with.
+         */
+        private const val MIN_GLYPH_LUMINANCE = 0.35
+
+        /**
          * Ticks between one re-read of the session and the next.
          *
          * The safety net for a callback that never arrives, which is the case a
@@ -1599,6 +1606,17 @@ data class CarNotice(
     val icon: android.graphics.drawable.Drawable? = null,
     /** The colour the app asked its icon be tinted, or 0 for none. */
     val accent: Int = 0,
+    /**
+     * True only when [icon] came from `getSmallIcon`, which is monochrome.
+     *
+     * The distinction decides whether the icon may be tinted at all. A small
+     * icon is by contract a flat silhouette the platform expects somebody to
+     * colour. A *large* icon is finished artwork -- a contact photo, a full
+     * colour app mark -- and running a `SRC_IN` colour filter over one replaces
+     * every pixel it has, which is how Molly's icon came out as a plain purple
+     * square on a driver's car screen.
+     */
+    val iconIsMonochrome: Boolean = false,
 )
 
 /**
@@ -1825,8 +1843,17 @@ class NotificationsTile(context: Context) : DashTile {
                 // screen and a black one would not be.
                 val drawable = notice.icon ?: appIcon(appContext, notice.packageName)
                 setImageDrawable(drawable)
-                if (notice.icon != null && notice.accent != 0) {
-                    runCatching { setColorFilter(notice.accent) }
+                // Only a small icon, and only when the result is legible.
+                //
+                // `setColorFilter(Int)` is SRC_IN: it replaces every pixel the
+                // drawable has. On a monochrome silhouette that is the intended
+                // effect and on anything else it is vandalism -- a driver
+                // reported Molly showing "just purple, instead of the full
+                // icon", which is a full-colour icon flattened to its app's
+                // accent. The launcher-icon fallback is finished artwork too,
+                // and is never tinted.
+                if (notice.iconIsMonochrome) {
+                    runCatching { setColorFilter(legibleAccent(notice.accent)) }
                 }
                 layoutParams = LinearLayout.LayoutParams(size, size).apply {
                     marginEnd = gap
@@ -1857,6 +1884,28 @@ class NotificationsTile(context: Context) : DashTile {
         }
         card.addView(column)
         return card
+    }
+
+    /**
+     * The colour to paint a monochrome notification glyph.
+     *
+     * The app's own accent when it is bright enough to read on this screen, and
+     * the pane's text colour when it is not. An app is free to pick a deep
+     * navy that looks right on its own white notification shade and vanishes on
+     * a dark car screen, and a driver cannot see what an app intended -- only
+     * whether they can tell a message from a download at a glance.
+     *
+     * Relative luminance, not a per-channel test: a saturated blue and a
+     * saturated yellow have very different brightnesses at the same channel
+     * values, and only the weighted sum reflects that.
+     */
+    private fun legibleAccent(accent: Int): Int {
+        if (accent == 0) return CarStyle.TEXT
+        val red = android.graphics.Color.red(accent) / 255.0
+        val green = android.graphics.Color.green(accent) / 255.0
+        val blue = android.graphics.Color.blue(accent) / 255.0
+        val luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        return if (luminance >= MIN_GLYPH_LUMINANCE) accent else CarStyle.TEXT
     }
 
     private fun timeOf(millis: Long): String = runCatching {
@@ -2413,6 +2462,7 @@ class HeadwayNotificationListener : NotificationListenerService() {
                     ?: extras?.getCharSequence(Notification.EXTRA_SUB_TEXT)
                 )?.toString()?.trim()
             if (title.isNullOrBlank() && text.isNullOrBlank()) return null
+            val drawn = iconOf(context, notification)
             return CarNotice(
                 key = sbn.key.orEmpty(),
                 packageName = sbn.packageName.orEmpty(),
@@ -2421,7 +2471,8 @@ class HeadwayNotificationListener : NotificationListenerService() {
                 text = text.orEmpty(),
                 postedAtMillis = sbn.postTime,
                 ongoing = (notification.flags and Notification.FLAG_ONGOING_EVENT) != 0,
-                icon = iconOf(context, notification),
+                icon = drawn.first,
+                iconIsMonochrome = drawn.second,
                 // Only when the app said it means it. `color` is 0 unless set,
                 // and tinting a monochrome small icon with 0 paints it black on
                 // a black car screen.
@@ -2444,9 +2495,16 @@ class HeadwayNotificationListener : NotificationListenerService() {
         private fun iconOf(
             context: Context,
             notification: Notification,
-        ): android.graphics.drawable.Drawable? = runCatching {
-            (notification.getLargeIcon() ?: notification.smallIcon)?.loadDrawable(context)
-        }.getOrNull()
+        ): Pair<android.graphics.drawable.Drawable?, Boolean> {
+            val large = runCatching {
+                notification.getLargeIcon()?.loadDrawable(context)
+            }.getOrNull()
+            if (large != null) return large to false
+            val small = runCatching {
+                notification.smallIcon?.loadDrawable(context)
+            }.getOrNull()
+            return small to (small != null)
+        }
 
         /**
          * Registers [observer] and immediately hands it the current feed.

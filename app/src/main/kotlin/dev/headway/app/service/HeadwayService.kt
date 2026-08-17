@@ -1665,6 +1665,22 @@ open class HeadwayService : Service() {
             setShowBadge(false)
         }
         notificationManager?.createNotificationChannel(channel)
+        // A second channel, and it has to be a second one: importance is a
+        // property of the channel, not of the notification, so PRIORITY_HIGH on
+        // an IMPORTANCE_LOW channel does nothing at all. The ongoing service
+        // notification must stay quiet -- it is there because the platform
+        // demands one -- while "the car cannot show apps or play music until
+        // you allow this" is worth one heads-up.
+        val ask = NotificationChannel(
+            ASK_CHANNEL_ID,
+            "Screen sharing needed",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description =
+                "Asks for the screen-sharing grant that music and app panes need."
+            setShowBadge(true)
+        }
+        notificationManager?.createNotificationChannel(ask)
     }
 
     /**
@@ -1779,7 +1795,29 @@ open class HeadwayService : Service() {
             android.app.PendingIntent.FLAG_IMMUTABLE or
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        // Tried directly first, because a notification in the shade is not a
+        // prompt a driver reads. A session Headway started by itself -- the car
+        // came into range and it connected -- reaches this point with no grant
+        // and, until now, only a silent PRIORITY_DEFAULT notification to say
+        // so. The driver's report was that they had to disconnect and reconnect
+        // by hand to get screen sharing, which is exactly what "I never saw the
+        // notification" looks like.
+        //
+        // Not guaranteed, and deliberately not treated as though it were:
+        // Android blocks activity starts from the background, and the
+        // exemptions that apply here -- the app was foreground recently, which
+        // is the ordinary case of somebody getting into a car having just used
+        // their phone -- are the platform's to judge, not something an app can
+        // test for. A blocked start is dropped silently rather than throwing,
+        // so there is nothing to catch and nothing to report. The notification
+        // below is posted either way and is the answer when it does not work.
+        runCatching {
+            startActivity(
+                Intent(this, dev.headway.app.video.ProjectionRequestActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            )
+        }
+        val notification = NotificationCompat.Builder(this, ASK_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("Show apps and play music on the car")
             // Music is the surprising half and the half a driver notices first.
@@ -1795,7 +1833,10 @@ open class HeadwayService : Service() {
                         "Tap to allow it, for music and for showing apps on the car screen.",
                 ),
             )
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            // High rather than default: this is the difference between the car
+            // showing apps and playing music, and not. At default it sat
+            // silently in the shade behind the ongoing service notification.
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(tap)
             .build()
@@ -2478,6 +2519,9 @@ open class HeadwayService : Service() {
         const val EXTRA_PROJECTION_DATA: String = "dev.headway.app.extra.PROJECTION_DATA"
 
         const val CHANNEL_ID: String = "headway.link"
+
+        /** The channel the screen-sharing request uses; separate so it can be loud. */
+        const val ASK_CHANNEL_ID: String = "headway.ask"
         const val NOTIFICATION_ID: Int = 1
 
         /**

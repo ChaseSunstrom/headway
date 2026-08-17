@@ -47,7 +47,10 @@ import dev.headway.app.dash.tiles.LauncherTile
 import dev.headway.app.dash.tiles.MapsTile
 import dev.headway.app.dash.tiles.MediaBrowseTile
 import dev.headway.app.dash.tiles.MessagesTile
+import dev.headway.app.dash.tiles.CarNotice
+import dev.headway.app.dash.tiles.HeadwayNotificationListener
 import dev.headway.app.dash.tiles.NotificationsTile
+import dev.headway.app.dash.tiles.appIcon
 import dev.headway.app.dash.tiles.NowPlayingTile
 import dev.headway.app.dash.tiles.PhoneTile
 import dev.headway.app.dash.tiles.SensorsTile
@@ -252,6 +255,7 @@ class CarShell(
         // a Phone pane happens to be on screen -- a call arrives over whatever
         // tab the driver is looking at, which is the point of it floating.
         CarPhone.observe(callWatcher)
+        HeadwayNotificationListener.observeNotices(noticeWatcher)
         shown = this
         startClockTicks()
         live.forEach { runCatching { it.start() } }
@@ -307,6 +311,8 @@ class CarShell(
         if (tornDown) return
         tornDown = true
         runCatching { CarPhone.unobserve(callWatcher) }
+        runCatching { HeadwayNotificationListener.unobserveNotices(noticeWatcher) }
+        runCatching { main.removeCallbacks(dismissPopup) }
         DashLayoutStore.unobserveChanges(layoutsChanged)
         HeadwayTheme.unobserve(themeChanged)
         AppPaneHost.unobserve(appPaneChanged)
@@ -1232,6 +1238,144 @@ class CarShell(
     private val callWatcher = CarPhone.Listener { call -> main.post { showCall(call) } }
 
     /**
+     * Shows a notification briefly as it arrives, the way a phone does.
+     *
+     * ## What counts as "arrives"
+     *
+     * The feed is a whole list, re-delivered on every change -- a notification
+     * being dismissed elsewhere, a download updating its progress, the listener
+     * reconnecting. Only keys never seen before are popped, and the very first
+     * delivery is absorbed rather than shown: connecting to the car should not
+     * replay every notification already sitting on the phone.
+     *
+     * ## Why not the newest by time
+     *
+     * A notification an app *updates* keeps its key and its original post time,
+     * so "newest by postedAt" would re-pop a music player's ongoing card every
+     * few seconds. Identity is the only thing that answers "is this new".
+     */
+    private val noticeWatcher: (List<CarNotice>) -> Unit = { notices ->
+        main.post { onNotices(notices) }
+    }
+
+    /** Notification keys already seen, so an update is not mistaken for an arrival. */
+    private val seenNotices = mutableSetOf<String>()
+
+    /** False until the first feed has been absorbed. See [noticeWatcher]. */
+    private var noticesPrimed = false
+
+    private val dismissPopup = Runnable {
+        if (popupShowing) {
+            popupShowing = false
+            hideFloat()
+        }
+    }
+
+    /** True while the float layer is showing a notification rather than a call. */
+    private var popupShowing = false
+
+    /**
+     * Whether a call is live, tracked here rather than asked of `CarPhone`.
+     *
+     * `CarPhone` keeps its current call private and hands it out through the
+     * listener, which is the right shape -- this class is already told every
+     * time it changes, and reaching back in for a copy would be a second source
+     * of the same truth.
+     */
+    private var callUp = false
+
+    private fun onNotices(notices: List<CarNotice>) {
+        val fresh = notices.filter { seenNotices.add(it.key) }
+        if (!noticesPrimed) {
+            noticesPrimed = true
+            return
+        }
+        if (!HeadwaySettings.notificationPopups(context)) return
+        // A call owns the float layer outright. A notification arriving mid-call
+        // must not cover Answer and Hang up.
+        if (callUp) return
+        // Ongoing notifications are state, not events: a download at 40%, a
+        // navigation route, a media player's card. Popping those would put
+        // something over the driver's map every few seconds.
+        val notice = fresh.lastOrNull { !it.ongoing } ?: return
+        showNoticePopup(notice)
+    }
+
+    /**
+     * Draws one notification over the panes and takes it away again.
+     *
+     * Deliberately not touchable. A phone's heads-up notification is tappable
+     * because a phone is in your hand; this is in front of a driver, it appears
+     * without being asked for, and a control that moves under a finger already
+     * reaching for something else is worse than no control. The Notifications
+     * pane is where a driver acts on one.
+     */
+    private fun showNoticePopup(notice: CarNotice) {
+        val gap = CarStyle.gutter(context)
+        val card = CarStyle.panel(context).apply {
+            background = Headway.panel(
+                radiusPx = CarStyle.radius(context) * 2f,
+                fill = Headway.SURFACE,
+                stroke = Headway.OUTLINE,
+            )
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(gap, gap / 2, gap, gap / 2)
+            // Swallows touches without acting on them, so a tap meant for the
+            // pane underneath does not land on the map by surprise either.
+            isClickable = true
+        }
+        val side = CarStyle.dp(context, POPUP_ICON_DP)
+        card.addView(
+            ImageView(context).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setImageDrawable(
+                    notice.icon ?: appIcon(context, notice.packageName),
+                )
+                // The same rule the pane uses: a monochrome glyph may be
+                // coloured, finished artwork may not. See `CarNotice`.
+                if (notice.iconIsMonochrome) {
+                    runCatching { setColorFilter(CarStyle.TEXT) }
+                }
+                layoutParams = LinearLayout.LayoutParams(side, side).apply { marginEnd = gap }
+            },
+        )
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        }
+        column.addView(
+            CarStyle.label(context, 13f, CarStyle.DIM).apply {
+                text = notice.appLabel
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            },
+        )
+        column.addView(
+            CarStyle.label(context, 17f, CarStyle.TEXT, bold = true).apply {
+                text = notice.title.takeIf { it.isNotBlank() } ?: notice.text
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            },
+        )
+        notice.text.takeIf { it.isNotBlank() && it != notice.title }?.let { body ->
+            column.addView(
+                CarStyle.label(context, 15f, CarStyle.DIM).apply {
+                    text = body
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                },
+            )
+        }
+        card.addView(column)
+        popupShowing = true
+        showFloat(card, OverlaySpot.notificationBanner())
+        Headway.revealIn(card)
+        main.removeCallbacks(dismissPopup)
+        main.postDelayed(dismissPopup, POPUP_MILLIS)
+    }
+
+    /**
      * Raises or drops the call card.
      *
      * A card rather than a pane, and floating rather than in the tree, because
@@ -1248,6 +1392,12 @@ class CarShell(
      * privileged API that would be needed to do anything else.
      */
     private fun showCall(call: LiveCall?) {
+        // Either way the call owns the layer from here: a popup still on screen
+        // is cancelled rather than left to time out over the call card, and a
+        // call ending must not have its `hideFloat` undone by a stale timer.
+        main.removeCallbacks(dismissPopup)
+        popupShowing = false
+        callUp = call != null
         if (call == null) {
             hideFloat()
             return
@@ -1423,6 +1573,25 @@ class CarShell(
                 ?: "Showing its name in words",
         ) { showTabIconPicker(layout.name) }
         rows += CarSheet.Row("Opens on", startLayoutSummary()) { showStartLayout() }
+        rows += CarSheet.Row(
+            "Notification popups",
+            if (HeadwaySettings.notificationPopups(context)) {
+                "On — a new notification shows briefly at the top"
+            } else {
+                "Off — notifications only appear in the Notifications pane"
+            },
+        ) {
+            val next = !HeadwaySettings.notificationPopups(context)
+            HeadwaySettings.setNotificationPopups(context, next)
+            if (!next) {
+                main.removeCallbacks(dismissPopup)
+                if (popupShowing) {
+                    popupShowing = false
+                    hideFloat()
+                }
+            }
+            showSettings()
+        }
 
         rows += CarSheet.section("Apps")
         rows += CarSheet.Row("Open an app", "Show a running app in the app pane") {
@@ -2588,6 +2757,18 @@ class CarShell(
 
         /** Long enough to read a short phrase at a glance, short enough not to linger. */
         private const val BANNER_MILLIS = 2_600L
+
+        /**
+         * How long an arriving notification stays over the panes.
+         *
+         * Longer than the status banner above, because this one carries words a
+         * driver has to read rather than a state they already know about, and
+         * short enough that it is gone before it becomes something to look at.
+         */
+        private const val POPUP_MILLIS = 5_000L
+
+        /** The glyph beside a popped notification, in dp. */
+        private const val POPUP_ICON_DP = 30f
         private val EMPTY_RECT = PaneRect(0, 0, 0, 0)
     }
 }

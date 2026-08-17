@@ -202,6 +202,22 @@ object HeadwaySettings {
     fun autoConnect(context: Context): Boolean =
         of(context).getBoolean(KEY_AUTO_CONNECT, true)
 
+    /**
+     * Whether an arriving notification is shown briefly over the car screen.
+     *
+     * On by default, and a setting because it is the one thing on this screen
+     * that appears without the driver asking for it. A driver who wants the
+     * Notifications pane and nothing popping up over their map can say so.
+     */
+    fun notificationPopups(context: Context): Boolean =
+        of(context).getBoolean(KEY_NOTIFICATION_POPUPS, true)
+
+    fun setNotificationPopups(context: Context, show: Boolean) {
+        of(context).edit().putBoolean(KEY_NOTIFICATION_POPUPS, show).apply()
+    }
+
+    const val KEY_NOTIFICATION_POPUPS: String = "notification_popups"
+
     /** Set once the one-time move off the simulated display has been applied. */
     const val KEY_APP_SOURCE_MIGRATED: String = "app_source_migrated"
 

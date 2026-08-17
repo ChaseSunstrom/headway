@@ -337,6 +337,21 @@ class CarAudioStream(
      * (`MAX_UNACK: 16` on this head unit, not openauto's 1) simply slows the
      * reads. No pacing code, and no queue to drift.
      */
+    /**
+     * Whether the first [length] bytes of [buffer] are silence.
+     *
+     * 16-bit little-endian, which is the only format the media sink negotiates
+     * (`MEDIA(5) ready: 48000 Hz 16-bit stereo` on the target vehicle) and what
+     * `PhoneAudioCapture` is configured to produce. Reads every other byte --
+     * the high half of each sample -- because the low half cannot carry a
+     * meaningful amplitude on its own, and this runs on the thread pumping
+     * music.
+     */
+    // A member only so the constant travels with it; the work is the top-level
+    // function below, which is pure and has a unit test.
+    private fun isSilence(buffer: ByteArray, length: Int): Boolean =
+        isPcm16Silence(buffer, length, SILENCE_LEVEL)
+
     private suspend fun pumpMedia() {
         val channel = channelFor(AudioStreamType.AUDIO_STREAM_MEDIA) ?: return
         val format = channel.format ?: run {
@@ -458,7 +473,25 @@ class CarAudioStream(
                     continue
                 }
 
-                val playing = PhoneAudioCapture.isMusicPlaying(audioManager)
+                // The samples first, and `isMusicActive` only when they are
+                // silent. Two things come out of that order.
+                //
+                // Correctness: `AudioManager.isMusicActive()` describes the
+                // phone's music stream, not this capture, and it goes false
+                // across a gapless track change, a buffering stall and an app
+                // switching decoders. Three seconds of that used to release
+                // focus and stop the stream, and the car needed a moment to
+                // switch its source back when it returned -- which is the
+                // "music cuts out for a few seconds every few minutes" a driver
+                // reported. Audio that is arriving is proof that audio is
+                // playing, and no framework flag can contradict it.
+                //
+                // Cost: it was a binder call for every buffer, twenty-five
+                // times a second, on the thread pumping music. Now it is
+                // consulted only when the buffer is silent, which is when there
+                // is nothing else to do anyway.
+                val quiet = isSilence(buffer, read)
+                val playing = !quiet || PhoneAudioCapture.isMusicPlaying(audioManager)
                 if (playing) {
                     idleSince = 0L
                     // Re-reads the shared flag every buffer, so focus taken away
@@ -1094,7 +1127,27 @@ class CarAudioStream(
          * enough that a driver who stops the music gets their radio back before
          * they wonder why it is quiet.
          */
-        const val MEDIA_IDLE_RELEASE_MILLIS: Long = 3_000L
+        /**
+         * How long the capture must be silent before the car gets its radio back.
+         *
+         * Ten seconds, not three. Releasing focus is audible at both ends --
+         * the car switches source away and back -- so the window has to be
+         * longer than any gap that is not really a stop. Three seconds is
+         * inside the range of a podcast's pause, a long track gap and an app
+         * reloading its decoder, and a driver reported the resulting dropouts.
+         * Nothing is lost by waiting: silence is streamed to the car during the
+         * window, which is what it was already doing between tracks.
+         */
+        const val MEDIA_IDLE_RELEASE_MILLIS: Long = 10_000L
+
+        /**
+         * Amplitude at or below which a 16-bit sample counts as silence.
+         *
+         * Not zero. A capture of "nothing playing" is not digitally silent --
+         * resampling and mixing leave a least-significant-bit of noise -- and a
+         * zero test would hold the car's audio focus for the whole drive.
+         */
+        private const val SILENCE_LEVEL: Int = 64
 
         /**
          * The streams Headway always drives, in bring-up order.
@@ -1280,4 +1333,31 @@ class CarAudioStream(
             return sink.audioType.name.removePrefix("AUDIO_STREAM_") + "(${service.id})"
         }
     }
+}
+
+/**
+ * Whether the first [length] bytes of [buffer] are 16-bit PCM silence.
+ *
+ * Top-level and pure so it can be tested without an audio device: everything
+ * else on the media path needs a live capture, a car and a link.
+ *
+ * Little-endian, which is the only format the media sink negotiates -- the
+ * target vehicle reports `MEDIA(5) ready: 48000 Hz 16-bit stereo` -- and what
+ * `PhoneAudioCapture` is configured to produce. A trailing odd byte cannot form
+ * a sample and is ignored rather than guessed at.
+ *
+ * @param level amplitude at or below which a sample counts as silent. Not zero:
+ *   a capture of "nothing playing" carries a least-significant-bit of noise
+ *   from resampling and mixing, and an exact-zero test would hold the car's
+ *   audio focus for a whole drive.
+ */
+internal fun isPcm16Silence(buffer: ByteArray, length: Int, level: Int): Boolean {
+    val usable = minOf(length, buffer.size)
+    var index = 0
+    while (index + 1 < usable) {
+        val sample = (buffer[index].toInt() and 0xff) or (buffer[index + 1].toInt() shl 8)
+        if (sample > level || sample < -level) return false
+        index += 2
+    }
+    return true
 }

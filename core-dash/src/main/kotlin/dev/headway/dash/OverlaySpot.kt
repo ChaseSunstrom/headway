@@ -113,6 +113,34 @@ data class OverlaySpot(
 
         val DEFAULT: OverlaySpot = OverlaySpot()
 
+        /**
+         * Where an arriving notification sits: a band across the top.
+         *
+         * Not the driver's overlay spot, and deliberately so. That one is
+         * placed for a call card the driver reaches for, so it is somewhere
+         * comfortable and usually large. A notification is read, not touched,
+         * and it appears without being asked for -- so it goes where a phone
+         * puts one, along the top edge, out of the way of whatever the pane
+         * underneath is for.
+         *
+         * The height is a fraction rather than a fixed dp because everything
+         * else here is: the same band has to work on an 800x480 head unit and
+         * on a taller one, and a card sized in pixels would be a sliver on one
+         * and half the screen on the other.
+         */
+        fun notificationBanner(): OverlaySpot = OverlaySpot(
+            x = BANNER_INSET,
+            y = BANNER_INSET,
+            width = 1f - BANNER_INSET * 2f,
+            height = BANNER_HEIGHT,
+        )
+
+        /** Margin from the screen edge, as a fraction, for [notificationBanner]. */
+        private const val BANNER_INSET: Float = 0.03f
+
+        /** Height of [notificationBanner], as a fraction of the panel. */
+        private const val BANNER_HEIGHT: Float = 0.26f
+
         /** The sizes a picker offers, as (label, width, height). */
         val SIZES: List<Triple<String, Float, Float>> = listOf(
             Triple("Small", 0.34f, 0.36f),

@@ -270,6 +270,16 @@ class TemplateRenderer(
     // --- templates ------------------------------------------------------------
 
     private fun draw(context: Context, template: Template) {
+        // Said once per distinct template, because a car app's layout complaint
+        // is unanswerable without it. Two rounds were spent fixing the chrome
+        // of the wrong template -- the driver's report named what they saw on
+        // screen, and nothing in the log named what had drawn it.
+        if (seenTemplates.add(template.javaClass.simpleName)) {
+            onStep(
+                "car app: ${session.app.label} drew ${template.javaClass.simpleName}" +
+                    if (iconsOnly) " (pinned pane: no chrome, icon-only actions)" else ""
+            )
+        }
         when (template) {
             is ListTemplate -> {
                 header(context, template.header, template.title, template.actionStrip)
@@ -683,19 +693,29 @@ class TemplateRenderer(
             setPadding(gap, gap / 2, gap, gap / 2)
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
         }
-        // Always present, and first. It leaves the app entirely, which is the
-        // one control the app cannot supply and the driver always needs: an app
-        // whose own Back is missing, or whose root screen has none, would
-        // otherwise be a pane with no exit until the tab is switched.
-        bar.addView(
-            CarStyle.button(context, "Apps") { onLeave() }.apply {
-                minWidth = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
-                minHeight = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP * 0.75f)
-                layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                    marginEnd = CarStyle.gutter(context) / 2
-                }
-            },
-        )
+        // On a pinned pane this whole opening section is skipped. `chrome()`
+        // was gated on [showChrome] and this was not, so a Maps pane still drew
+        // an "Apps" button, a "Back" button and the app's name across the top
+        // of the map -- which is the report that came back after the first fix.
+        // Only the app's own controls survive here, and they are drawn as
+        // icons. See [showChrome].
+        if (showChrome) {
+            // Always present, and first. It leaves the app entirely, which is
+            // the one control the app cannot supply and the driver always
+            // needs: an app whose own Back is missing, or whose root screen has
+            // none, would otherwise be a pane with no exit until the tab is
+            // switched. A pinned pane is the exception -- it has no picker to
+            // go back to, and the tab strip is its way out.
+            bar.addView(
+                CarStyle.button(context, "Apps") { onLeave() }.apply {
+                    minWidth = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
+                    minHeight = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP * 0.75f)
+                    layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+                        marginEnd = CarStyle.gutter(context) / 2
+                    }
+                },
+            )
+        }
         // The app's own Back becomes Headway's Back, which unwinds the app's
         // screen stack rather than leaving the pane. Most templates carry one;
         // for the ones that do not, the library's own `onBackPressed` does the
@@ -704,7 +724,7 @@ class TemplateRenderer(
         // with no way back is a car app the driver has to close and reopen.
         if (start != null) {
             bar.addView(actionView(context, start, compact = true))
-        } else {
+        } else if (showChrome) {
             bar.addView(
                 CarStyle.button(context, "Back") { session.back() }.apply {
                     minWidth = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
@@ -715,17 +735,28 @@ class TemplateRenderer(
                 },
             )
         }
-        bar.addView(
-            CarStyle.label(context, 17f, CarStyle.TEXT, bold = true).apply {
-                this.text = text.orEmpty()
-                layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
-                    marginStart = CarStyle.gutter(context) / 2
-                }
-            },
-        )
+        if (showChrome) {
+            bar.addView(
+                CarStyle.label(context, 17f, CarStyle.TEXT, bold = true).apply {
+                    this.text = text.orEmpty()
+                    layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
+                        marginStart = CarStyle.gutter(context) / 2
+                    }
+                },
+            )
+        } else {
+            // Nothing to name, but the app's own controls still belong at the
+            // end rather than jammed against the start.
+            bar.addView(View(context).apply {
+                layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+            })
+        }
         end.forEach { bar.addView(actionView(context, it, compact = true)) }
         strip?.actions?.forEach { bar.addView(actionView(context, it, compact = true)) }
-        target.addView(bar)
+        // An empty bar is still padding across the top of a map. On a pinned
+        // pane with an app that supplies no header controls there is genuinely
+        // nothing to show, and showing nothing means adding nothing.
+        if (bar.childCount > 1 || showChrome) target.addView(bar)
     }
 
     /**
@@ -781,10 +812,23 @@ class TemplateRenderer(
         target.addView(bar)
     }
 
+    /**
+     * Whether an action draws as an icon with no word beside it.
+     *
+     * Tied to [showChrome] rather than being its own flag: both answer the same
+     * question -- is this pane showing an app the driver pointed it at, whose
+     * whole content is the map. A Maps pane wants the app's controls small and
+     * out of the way; a pane the driver navigated into wants them legible.
+     */
+    private val iconsOnly: Boolean get() = !showChrome
+
+    /** Template names already named in the log, so each is said once. */
+    private val seenTemplates = mutableSetOf<String>()
+
     private fun actionStripView(context: Context, strip: ActionStrip): View =
         LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
             val gap = CarStyle.gutter(context)
             setPadding(gap, gap / 4, gap, gap / 4)
             strip.actions.forEach { addView(actionView(context, it, compact = true)) }
@@ -825,7 +869,18 @@ class TemplateRenderer(
         // and no word at all, because the word would be a guess. Only an action
         // with neither gets a name, and then only a standard one has a name
         // worth giving.
-        val label = title ?: if (icon != null) "" else standardName(action.type)
+        // On a pinned pane an action with an icon shows only the icon. A
+        // navigation app's strip is Routes / Recents / Favourites / Settings
+        // and more, and as labelled pills that is a bar of words the full width
+        // of the screen, laid over the map the pane exists to show -- which is
+        // what a driver reported twice. The title survives as the content
+        // description, so nothing is lost to a screen reader or to the log.
+        val label = when {
+            iconsOnly && icon != null -> ""
+            title != null -> title
+            icon != null -> ""
+            else -> standardName(action.type)
+        }
         val primary = (action.flags and Action.FLAG_PRIMARY) != 0
         val handler = standardAction(action) ?: { click(action.onClickDelegate, label) }
         val pill = CarStyle.button(context, label, emphasised = primary, onClick = handler)
@@ -844,6 +899,16 @@ class TemplateRenderer(
         if (compact) {
             pill.minWidth = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
             pill.minHeight = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP * 0.75f)
+        }
+        if (iconsOnly && icon != null) {
+            // Square, and the same size as a tab cell, so a strip of them reads
+            // as one row of controls rather than as pills that lost their text.
+            val side = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
+            pill.minWidth = side
+            pill.minHeight = side
+            pill.width = side
+            pill.height = side
+            pill.setPadding(0, 0, 0, 0)
         }
         if (!action.isEnabled) {
             pill.isEnabled = false
