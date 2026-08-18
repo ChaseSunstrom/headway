@@ -92,6 +92,9 @@ val upstreamCertificates = listOf(
     ),
 )
 
+/** Attempts before a certificate fetch is called a failure. See the retry below. */
+val CERTIFICATE_FETCH_ATTEMPTS = 4
+
 val fetchCertificates by tasks.registering {
     description = "Fetches the AAP client certificates from the upstream reference projects."
     val outputDir = certificateResources.map { it.dir("dev/headway/transport/tls") }
@@ -105,8 +108,40 @@ val fetchCertificates by tasks.registering {
             if (!cached.exists()) {
                 cached.parentFile.mkdirs()
                 logger.lifecycle("Fetching ${file.name} from upstream...")
-                uri(file.url).toURL().openStream().use { input ->
-                    cached.outputStream().use { input.copyTo(it) }
+                // Retried, because the failure this saw in practice was not the
+                // file being wrong or gone. raw.githubusercontent.com answered
+                // HTTP 429 -- rate limiting, from a shared CI runner address --
+                // and the whole protocol job failed on it with nothing about
+                // the commit at fault. The content is pinned by SHA-256 below,
+                // so a retry cannot smuggle anything in; it can only turn a
+                // transient refusal into the same bytes a moment later.
+                var lastFailure: Exception? = null
+                for (attempt in 1..CERTIFICATE_FETCH_ATTEMPTS) {
+                    try {
+                        uri(file.url).toURL().openStream().use { input ->
+                            cached.outputStream().use { input.copyTo(it) }
+                        }
+                        lastFailure = null
+                        break
+                    } catch (failure: Exception) {
+                        lastFailure = failure
+                        runCatching { cached.delete() }
+                        if (attempt == CERTIFICATE_FETCH_ATTEMPTS) break
+                        val wait = 2000L * attempt
+                        logger.lifecycle(
+                            "  ${file.name}: attempt $attempt failed ($failure); " +
+                                "retrying in ${wait}ms"
+                        )
+                        Thread.sleep(wait)
+                    }
+                }
+                lastFailure?.let {
+                    throw GradleException(
+                        "could not fetch ${file.name} after $CERTIFICATE_FETCH_ATTEMPTS " +
+                            "attempts: $it. This is a network failure rather than anything " +
+                            "about the code being built; re-running the job is the usual fix.",
+                        it,
+                    )
                 }
             }
             val bytes = cached.readBytes()
