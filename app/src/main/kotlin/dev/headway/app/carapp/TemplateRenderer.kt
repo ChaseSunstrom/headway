@@ -803,7 +803,31 @@ class TemplateRenderer(
     }
 
     private fun body(context: Context, content: View) {
-        target.addView(content, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        if (!mapUnderneath) {
+            target.addView(content, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+            return
+        }
+        // Over a map, content gets a panel rather than the pane.
+        //
+        // Weight 1 means "take everything left", and everything left over a map
+        // template is the map. So a navigation app's own list -- Shortcuts,
+        // Favourites, Recents -- was drawn across the whole pane with the map
+        // behind it and invisible, which is what a driver meant by the bars
+        // "taking up all of the view". Android Auto gives content a panel and
+        // keeps the map beside it.
+        //
+        // The spacer goes first and carries the rest of the weight, so the
+        // panel sits against the bottom edge and the map shows through above
+        // it. Transparent by construction: it is a bare `View` with no
+        // background, and the map surface is behind this whole template.
+        target.addView(
+            View(context),
+            LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f - MAP_CONTENT_SHARE),
+        )
+        target.addView(
+            content,
+            LinearLayout.LayoutParams(MATCH_PARENT, 0, MAP_CONTENT_SHARE),
+        )
     }
 
     private fun actions(context: Context, actions: List<Action>) {
@@ -866,6 +890,16 @@ class TemplateRenderer(
 
     /** Template names already named in the log, so each is said once. */
     private val seenTemplates = mutableSetOf<String>()
+
+    /**
+     * How much of a map pane an app's own content may take.
+     *
+     * Half. Less and a list of place names is unreadable on an 800x480 head
+     * unit; more and the map it is laid over stops being a map. Not a setting,
+     * because the pane's own scale control already exists and this is the
+     * division between two things rather than the size of one.
+     */
+    private val MAP_CONTENT_SHARE: Float get() = 0.5f
 
     /**
      * Names what an app put in a strip, once per distinct set.

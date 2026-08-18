@@ -261,6 +261,44 @@ class SessionLog(
         }
     }
 
+    /**
+     * Writes the log for a session that has just ended, and prunes old ones.
+     *
+     * ## Why this is automatic rather than a button
+     *
+     * There is already an export button, and it works. What it cannot do is be
+     * pressed at the right time. Every report so far has arrived either with no
+     * log or with a `logcat` capture whose main buffer had rolled over, taking
+     * every Headway line from the drive with it -- so the answer to "which
+     * template drew that" or "what crashed" was simply absent, repeatedly, for
+     * days. A file written when the session ends is a file that exists before
+     * anybody thinks to ask for it.
+     *
+     * Bounded to [KEPT_SESSIONS] files. A drive log is a few hundred kilobytes
+     * and a driver connects twice a day; without pruning this would grow for
+     * the life of the install.
+     *
+     * Every failure is swallowed: this runs in a `finally` on the way out of a
+     * session, and storage being full is not a reason to change how the session
+     * ended.
+     */
+    fun exportSession(context: Context, reason: String) {
+        runCatching {
+            val file = export(context)
+            info(TAG_SESSION, "session log written to ${file.name} ($reason)")
+            // Crash reports are excluded from the pruning, deliberately.
+            // `CrashLog` writes `headway-crash-*.txt` into the same directory
+            // and those are the rarest and most valuable files here -- a
+            // handful of ordinary drives must not push out the one file that
+            // says why the app died. They are pruned by their own age when the
+            // driver clears logs, not by this counter.
+            exports(context)
+                .filter { it.name.startsWith("headway-") && !it.name.startsWith("headway-crash-") }
+                .drop(KEPT_SESSIONS)
+                .forEach { runCatching { it.delete() } }
+        }
+    }
+
     /** Old exports, newest first, so the UI can offer them and prune them. */
     fun exports(context: Context): List<File> {
         val directory = File(context.getExternalFilesDir(null) ?: context.filesDir, DIRECTORY)
@@ -300,6 +338,12 @@ class SessionLog(
          */
         const val DEFAULT_CAPACITY: Int = 12_000
         const val DIRECTORY: String = "logs"
+
+        /** Session logs kept on disk; see [exportSession]. */
+        const val KEPT_SESSIONS: Int = 8
+
+        /** Tag for the line [exportSession] leaves behind. */
+        private const val TAG_SESSION: String = "SessionLog"
 
         /** Below this a "secret" is too generic to scrub without destroying the log. */
         const val MIN_PROTECTED_LENGTH: Int = 4

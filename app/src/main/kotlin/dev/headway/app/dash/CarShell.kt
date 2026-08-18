@@ -65,6 +65,7 @@ import dev.headway.app.ui.theme.HeadwayTheme
 import dev.headway.app.video.AppPaneHost
 import dev.headway.app.video.CarAppDisplay
 import dev.headway.app.phone.CarPhone
+import dev.headway.app.phone.PhoneAssistant
 import dev.headway.app.phone.LiveCall
 import dev.headway.app.video.OverlayDisplay
 import dev.headway.app.video.PhoneRotation
@@ -1195,8 +1196,95 @@ class CarShell(
             runCatching {
                 live.filterIsInstance<AppPaneTile>().forEach { it.refresh() }
                 publishAppPaneRect()
+                reconsiderAssistant()
             }
         }
+    }
+
+    /**
+     * Shows the assistant on the car screen the way a call is shown.
+     *
+     * A driver asked for this in as many words: talking to the assistant on the
+     * phone showed nothing on the car. There is no callback for "the assistant
+     * is listening" -- no public API reports it -- but there is now a reliable
+     * signal for "the assistant app is in front", which is the same thing from
+     * the driver's seat and arrives on the same window-change events the app
+     * pane already uses.
+     *
+     * It deliberately does not try to mirror the assistant. The card says who
+     * is talking and gets out of the way, exactly like the call card, and for
+     * the same reason: the driver is talking, not reading.
+     *
+     * A live call outranks it -- if both are somehow true, the call owns the
+     * float layer, because hanging up is a control the driver needs and the
+     * assistant card carries none.
+     */
+    private fun reconsiderAssistant() {
+        if (callUp) return
+        val assistant = PhoneAssistant.packageName(context)
+        val front = AppPaneHost.foregroundPackage
+        val listening = assistant != null && front == assistant
+        if (listening == assistantUp) return
+        assistantUp = listening
+        if (!listening) {
+            if (!popupShowing) hideFloat()
+            return
+        }
+        main.removeCallbacks(dismissPopup)
+        popupShowing = false
+        showFloat(assistantCard(assistant), OverlaySpot.notificationBanner())
+        onStep("car screen: the assistant is in front on the phone")
+    }
+
+    /** True while the assistant card is up. */
+    private var assistantUp = false
+
+    private fun assistantCard(packageName: String?): View {
+        val gap = CarStyle.gutter(context)
+        val card = CarStyle.panel(context).apply {
+            background = Headway.panel(
+                radiusPx = CarStyle.radius(context) * 2f,
+                fill = Headway.SURFACE,
+                stroke = Headway.ACCENT,
+            )
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(gap, gap / 2, gap, gap / 2)
+            // Swallows touches rather than letting them fall onto the pane
+            // underneath, which is what the call card does and for the same
+            // reason: the driver is looking at a card, not through it.
+            isClickable = true
+        }
+        val side = CarStyle.dp(context, POPUP_ICON_DP)
+        card.addView(
+            ImageView(context).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setImageDrawable(packageName?.let { appIcon(context, it) })
+                layoutParams = LinearLayout.LayoutParams(side, side).apply { marginEnd = gap }
+            },
+        )
+        val label = packageName?.let { name ->
+            runCatching {
+                val manager = context.packageManager
+                manager.getApplicationLabel(manager.getApplicationInfo(name, 0)).toString()
+            }.getOrNull()
+        } ?: "Assistant"
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        }
+        column.addView(
+            CarStyle.label(context, 13f, CarStyle.DIM).apply { text = "On the phone" },
+        )
+        column.addView(
+            CarStyle.label(context, 17f, CarStyle.TEXT, bold = true).apply {
+                text = "$label is listening"
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            },
+        )
+        card.addView(column)
+        return card
     }
 
     // --- the startup animation ------------------------------------------------
@@ -1428,6 +1516,7 @@ class CarShell(
         // call ending must not have its `hideFloat` undone by a stale timer.
         main.removeCallbacks(dismissPopup)
         popupShowing = false
+        assistantUp = false
         callUp = call != null
         if (call == null) {
             hideFloat()

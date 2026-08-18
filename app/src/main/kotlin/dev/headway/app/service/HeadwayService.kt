@@ -1459,6 +1459,14 @@ open class HeadwayService : Service() {
                     )
                 }
             }
+            // Written here, at the end of the session, while every line from
+            // the drive is still in the buffer. See `SessionLog.exportSession`.
+            runCatching {
+                SessionLog.shared.exportSession(
+                    applicationContext,
+                    sessionFailure?.let { "ended: ${it.message}" } ?: "ended cleanly",
+                )
+            }
             runCatching { CarShell.onVoiceRequested = null }
             runCatching { AppPaneHost.onSharingKnown = null }
             runCatching { AppPaneHost.onGrantLost = null }
