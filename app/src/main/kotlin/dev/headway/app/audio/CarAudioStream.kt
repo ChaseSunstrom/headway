@@ -497,7 +497,11 @@ class CarAudioStream(
                                 "That is what a screen-sharing grant Android has revoked looks " +
                                 "like from here; waiting for a new one",
                         )
-                        return
+                        // True: the capture *did* start, and then the grant went
+                        // away. That is not a failed start, so the retry counter
+                        // resets and the outer loop goes back to waiting for a
+                        // new grant rather than counting down to giving up.
+                        return true
                     }
                     continue
                 }
