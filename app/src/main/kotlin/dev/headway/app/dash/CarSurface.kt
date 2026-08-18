@@ -181,7 +181,27 @@ class CarSurface private constructor(
         val down = touch.action == TouchAction.DOWN
         if (down) gestureBelongsToApp = presentation.claimsAppTouch(point.x, point.y)
         if (gestureBelongsToApp) {
-            if (touch.action == TouchAction.UP) gestureBelongsToApp = false
+            // Released by anything that ends the stroke, not only a plain UP.
+            //
+            // `UP` is the last finger lifting, and it was the only release. A
+            // cancel -- which is what every action Headway does not name maps
+            // to, a few lines below -- left the latch set. The next DOWN
+            // re-decides, so this is not load-bearing for correctness, but a
+            // latch left set is a latch that reads as stuck to anyone
+            // debugging the next problem.
+            //
+            // `POINTER_DOWN` and `POINTER_UP` deliberately do not release it:
+            // those are fingers joining and leaving a gesture that is still
+            // going, and ending the claim mid-stroke would split the rest of
+            // it onto the other path.
+            val ends = touch.action == TouchAction.UP ||
+                (
+                    touch.action != TouchAction.DOWN &&
+                        touch.action != TouchAction.MOVED &&
+                        touch.action != TouchAction.POINTER_DOWN &&
+                        touch.action != TouchAction.POINTER_UP
+                    )
+            if (ends) gestureBelongsToApp = false
             return false
         }
         val action = when (touch.action) {

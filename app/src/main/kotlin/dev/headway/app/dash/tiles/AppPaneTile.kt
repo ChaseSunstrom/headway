@@ -371,10 +371,23 @@ class AppPaneTile(
             // still shared, it is merely behind something on the phone -- and
             // the card is laid over it to say so, because a pane holding its
             // last frame silently is indistinguishable from a frozen car screen.
-            dormantCard.visibility = if (AppPaneHost.contentVisible) View.GONE else View.VISIBLE
-            if (!AppPaneHost.contentVisible) updateDormantText()
+            // Two ways the picture can be showing the wrong thing, and only one
+            // of them has a platform callback. `contentVisible` answers it for
+            // a single-app share. For a whole-screen share the capture is
+            // always "visible" -- the screen always shows *something* -- so
+            // closing the app left the car mirroring the launcher, the
+            // driver's messages, whatever came next. See
+            // `AppPaneHost.showsWantedApp`.
+            val rightApp = AppPaneHost.showsWantedApp(wantedPackage())
+            val showing = AppPaneHost.contentVisible && rightApp
+            dormantCard.visibility = if (showing) View.GONE else View.VISIBLE
+            // The picture goes too, not just behind a card: a card is a view in
+            // Headway's own window and the frames underneath it are still the
+            // driver's phone, being encoded and sent to the car. Hiding the
+            // surface is what actually stops it leaving the phone.
+            picture.visibility = if (showing) View.VISIBLE else View.INVISIBLE
+            if (!showing) updateDormantText()
             resizePicture()
-            picture.visibility = View.VISIBLE
             // A texture that already exists gets no fresh callback when the pane
             // merely becomes live again, so the bind is re-driven here. Without
             // it, a pane that lost focus and got it back would stay black.
@@ -454,6 +467,15 @@ class AppPaneTile(
     private var dormantLabel: android.widget.TextView? = null
     private var dormantHint: android.widget.TextView? = null
 
+    /**
+     * The app this pane is meant to be showing, best available answer.
+     *
+     * What the driver last opened wins over what the pane was configured with:
+     * a pane with no preferred package still shows something specific once
+     * somebody taps an app into it, and that is the thing to check against.
+     */
+    private fun wantedPackage(): String? = AppPaneHost.openedPackage ?: packageName
+
     private fun updateDormantText() {
         val label = dormantLabel ?: return
         val hint = dormantHint ?: return
@@ -472,6 +494,8 @@ class AppPaneTile(
             editing -> "This pane shows a running app"
             live && AppPaneHost.available && !AppPaneHost.contentVisible ->
                 "Covered on the phone — bring it back to the front"
+            live && AppPaneHost.available && !AppPaneHost.showsWantedApp(wantedPackage()) ->
+                "Closed on the phone — the car is not being shown your screen"
             !AppPaneHost.available -> "Tap here, then allow screen sharing on the phone"
             // Names the rule rather than implying the opposite. "Tap to bring
             // the app here" reads as a per-pane capability -- as though each

@@ -27,6 +27,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import dev.headway.app.log.SessionLog
+import dev.headway.app.video.AppPaneHost
 import dev.headway.input.CarGestureDispatcher
 import dev.headway.input.GestureDispatchOutcome
 import kotlinx.coroutines.CoroutineScope
@@ -48,14 +49,17 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * ## It cannot read the screen, by configuration
  *
- * `accessibility_service_config.xml` sets `canRetrieveWindowContent="false"`.
- * That is a promise to the user — Headway injects, it does not observe — and the
- * settings screen says so in as many words. Nothing here may come to depend on
- * window content, because the platform will not supply it: `rootInActiveWindow`
- * is null and event nodes are absent. [onAccessibilityEvent] is therefore empty,
- * and `typeWindowStateChanged` is declared in the config only because an
- * accessibility service with no declared event types is treated as inert by some
- * platform versions.
+ * `accessibility_service_config.xml` sets `canRetrieveWindowContent="false"`,
+ * and the platform enforces it: `rootInActiveWindow` is null and event nodes
+ * are absent. Nothing here may come to depend on window content.
+ *
+ * [onAccessibilityEvent] takes exactly one thing from an event -- the package
+ * name of the window that came to the front -- and the reason is privacy
+ * rather than a hole in it: without it, a whole-screen share went on mirroring
+ * the phone to the car after the driver closed the app they had opened. The
+ * settings description says this in as many words, and it is worth keeping the
+ * two in step: Headway learns *which* app is in front, and nothing about what
+ * is inside it.
  *
  * ## Lifetime
  *
@@ -126,12 +130,32 @@ class HeadwayAccessibilityService : AccessibilityService() {
     /**
      * Intentionally empty.
      *
-     * See the class KDoc: this service is configured without window-content
-     * access, so an event carries nothing worth acting on. Left as an explicit
-     * override so that "does nothing" reads as a decision rather than an
-     * oversight.
+     * ## The one thing taken from an event, and why
+     *
+     * The package name of whatever window just came to the front. Nothing else:
+     * not the text, not the nodes, not the content -- the service is configured
+     * `canRetrieveWindowContent="false"` and the platform supplies none of that
+     * anyway.
+     *
+     * It is read because of a privacy problem rather than in spite of one. When
+     * a driver shares their whole screen and opens an app on the car, closing
+     * that app on the phone used to leave the car mirroring whatever came next
+     * -- the launcher, their messages, anything. `MediaProjection` cannot report
+     * that:`onCapturedContentVisibilityChanged` only fires for a single-app
+     * share, and a whole-screen capture is by definition always "visible". The
+     * name of the app in front is the smallest fact that answers "is the car
+     * still showing what the driver asked it to show", and knowing it is what
+     * lets the pane cover itself. See `AppPaneHost.foregroundPackage`.
      */
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val name = event.packageName?.toString()?.takeIf { it.isNotBlank() } ?: return
+        // Headway's own windows are not a change of app. The car screen is a
+        // `Presentation` owned by this process, and every banner and sheet it
+        // shows would otherwise read as the driver leaving the app they opened.
+        if (name == packageName) return
+        AppPaneHost.foregroundPackage = name
+    }
 
     override fun onInterrupt() {
         SessionLog.shared.info(TAG, "accessibility service interrupted by the platform")

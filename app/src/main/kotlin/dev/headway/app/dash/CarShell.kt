@@ -361,8 +361,26 @@ class CarShell(
         if (editing) return false
         if (overlayHost.visibility == View.VISIBLE) return false
         val rect = AppPaneHost.pictureRect
-        return rect.width > 0 && rect.contains(x, y)
+        val claimed = rect.width > 0 && rect.contains(x, y)
+        // Said once per distinct answer-and-rectangle, so the log carries the
+        // geometry without carrying one line per touch. If car touches are
+        // being forwarded to the phone when they should be reaching the rail,
+        // this is the line that shows it -- the rectangle the pane published
+        // and whether the tap fell inside it.
+        val shape = "$claimed ${rect.left},${rect.top} ${rect.width}x${rect.height}"
+        if (lastTouchClaim != shape) {
+            lastTouchClaim = shape
+            onStep(
+                "car screen: touch at $x,$y ${if (claimed) "goes to the shared app" else
+                    "goes to the dashboard"} (app picture ${rect.left},${rect.top} " +
+                    "${rect.width}x${rect.height})",
+            )
+        }
+        return claimed
     }
+
+    /** Last reported claim shape, so [claimsAppTouch] logs changes only. */
+    private var lastTouchClaim: String? = null
 
     /**
      * Opens [packageName] on the app display and brings it into a pane.
@@ -393,6 +411,10 @@ class CarShell(
             }
             if (appLayout.name != layout.name) show(appLayout)
         }
+        // Recorded before the launch, so a pane binding fast still sees it.
+        // This is what the pane compares the phone's foreground app against, to
+        // know whether it is still showing what the driver asked for.
+        AppPaneHost.openedPackage = packageName
         val opened = OverlayDisplay.launch(context, packageName, CarAppDisplay.displayId, onStep)
         // Every branch out of here now says something on the *car* screen. It
         // used to say everything through `onStep`, which is the session log --
@@ -1069,6 +1091,12 @@ class CarShell(
     }
 
     private fun switchTo(name: String) {
+        // Logged on the way in, because a tab that does not switch leaves no
+        // other trace. A driver reported that after opening a pinned app,
+        // tapping other tabs stopped working -- and every explanation for that
+        // (the tap never arrived, the layout was gone, `show` declined it) is
+        // indistinguishable from the seat and from the log as it stood.
+        onStep("car screen: tab '$name' tapped while showing '${layout.name}'")
         // Re-read rather than trust the pill: the driver can edit layouts from
         // the phone mid-drive, so a pill may name something that no longer
         // exists, and writing that name into the active pointer would send the
@@ -1083,7 +1111,10 @@ class CarShell(
     }
 
     private fun show(target: DashLayout) {
-        if (target.name == layout.name && !editing) return
+        if (target.name == layout.name && !editing) {
+            onStep("car screen: already showing '${target.name}'; nothing to switch to")
+            return
+        }
         if (editing) setEditing(false)
         layout = target
         runCatching { store.setActive(target.name) }

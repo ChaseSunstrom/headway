@@ -233,6 +233,58 @@ object AppPaneHost {
     var contentVisible: Boolean = true
         private set
 
+    /**
+     * The app in front on the phone, as the accessibility service last saw it.
+     *
+     * Written by `HeadwayAccessibilityService.onAccessibilityEvent` and read by
+     * [showsWantedApp]. Null until the service has seen a window change, or
+     * when the driver has not granted accessibility -- and null is treated as
+     * "cannot tell", which shows the picture rather than hiding it. Guessing
+     * the other way would blank a working pane for anyone without the grant.
+     */
+    @Volatile
+    var foregroundPackage: String? = null
+        set(value) {
+            if (field == value) return
+            field = value
+            // Panes redraw from this, so a change has to reach them. Cheap: a
+            // window change is a human-scale event, not a frame-rate one.
+            announce("foreground app is ${value ?: "unknown"}")
+        }
+
+    /**
+     * The app the driver last opened into a pane, if any.
+     *
+     * Set by `CarShell.openApp` rather than taken from the pane's own
+     * configuration: a pane can be a general "show me an app" pane with no
+     * preferred package, and what matters is what the driver actually asked
+     * for. Cleared when the pane goes away.
+     */
+    @Volatile
+    var openedPackage: String? = null
+
+    /**
+     * Whether the capture is still showing the app the pane was opened for.
+     *
+     * Only meaningful for a whole-screen share. A single-app share has
+     * `onCapturedContentVisibilityChanged` to answer this properly, and the
+     * platform tells the truth there; a whole-screen capture is always
+     * "visible" by definition, because the screen is always showing something.
+     * That something stopped being the driver's app the moment they closed it,
+     * and the car went on showing their launcher, their messages, whatever came
+     * next. This is what stops that.
+     *
+     * @param wanted the package the pane was opened for, or null when the pane
+     *   is showing the phone generally rather than one app -- in which case
+     *   there is nothing to compare and the picture stands.
+     */
+    fun showsWantedApp(wanted: String?): Boolean {
+        if (wanted == null) return true
+        if (sharingSingleApp) return true
+        val front = foregroundPackage ?: return true
+        return front == wanted
+    }
+
     /** True when some pane currently holds the picture. */
     val live: Boolean get() = synchronized(lock) { display != null && boundTo != null }
 
@@ -547,6 +599,7 @@ object AppPaneHost {
             sharingSingleApp = false
             sharingOtherDisplay = false
             contentVisible = true
+            openedPackage = null
             pictureRect = PaneRect(0, 0, 0, 0)
             onStep = {}
         }
