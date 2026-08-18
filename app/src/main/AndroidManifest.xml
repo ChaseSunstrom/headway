@@ -26,6 +26,24 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <!--
+        Held only for a WifiLock, and only while a car session is up.
+
+        A drive log shows the AAP session ending seven times in thirty minutes,
+        three of them with the TCP connection reset outright, each costing a few
+        seconds of silence and a black car screen while it reconnects. Headway's
+        own numbers rule out its side of it: no stalls, no underflows, no read
+        errors, and the media pump never waited on the car. What is left is the
+        radio, and Wi-Fi power save plus periodic scanning is the ordinary cause
+        of a 5 GHz link stalling long enough for a head unit to give up.
+
+        WIFI_MODE_FULL_LOW_LATENCY is the documented lever for exactly this, and
+        WifiLock.acquire is enforced against WAKE_LOCK. Normal protection level:
+        no prompt, nothing for the driver to grant, and nothing kept awake by
+        Headway when no session is running.
+    -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!--
       Pairing with the car's access point, so joining it stops asking.
 
       WifiNetworkFactory consults CompanionDeviceManager before it shows its

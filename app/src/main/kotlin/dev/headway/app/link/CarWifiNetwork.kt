@@ -203,6 +203,65 @@ class CarWifiNetwork(
 
     private var scanCallback: WifiManager.ScanResultsCallback? = null
 
+    /** Held for the life of the session; see [holdWifiLock]. */
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    /**
+     * Asks the platform to stop power-saving the radio while a session runs.
+     *
+     * ## The evidence, because this used to be a guess
+     *
+     * A drive log has the AAP session ending seven times in thirty minutes --
+     * three of them `Connection reset`, the rest a clean close from the head
+     * unit -- each costing a few seconds of silence and a black car screen
+     * while it reconnects. That is what a driver was describing as the music
+     * cutting out and Headway crashing; the process never died once in that
+     * log.
+     *
+     * Headway's own side is ruled out by its own counters in the same log: no
+     * underflows, no read errors, zero stalls, and the media pump never waited
+     * on the car. Nothing was slow. The connection was simply reset. What is
+     * left is the radio, and Wi-Fi power save with periodic off-channel
+     * scanning is the ordinary reason a 5 GHz link stalls long enough for the
+     * other end to give up.
+     *
+     * `WIFI_MODE_FULL_LOW_LATENCY` is the documented lever: it disables power
+     * save and asks for low-latency scheduling. The platform applies it only
+     * while the screen is on and the app is foreground, so it is not a
+     * guarantee -- but a car session with the screen on is exactly the case it
+     * covers, and it costs nothing when it does not apply.
+     *
+     * Failure is not fatal and not worth a session over: a phone that refuses
+     * the lock behaves exactly as it did before.
+     */
+    private fun holdWifiLock() {
+        if (wifiLock != null) return
+        val manager = wifiManager ?: return
+        val lock = runCatching {
+            manager.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, WIFI_LOCK_TAG)
+        }.getOrNull() ?: return
+        val held = runCatching {
+            lock.setReferenceCounted(false)
+            lock.acquire()
+            lock.isHeld
+        }.getOrDefault(false)
+        if (!held) {
+            onStep("wi-fi: the low-latency lock was refused; the link keeps default power saving")
+            return
+        }
+        wifiLock = lock
+        onStep(
+            "wi-fi: holding a low-latency lock for this session, so the radio does not power " +
+                "save or wander off-channel while the car is streaming",
+        )
+    }
+
+    private fun releaseWifiLock() {
+        val lock = wifiLock ?: return
+        wifiLock = null
+        runCatching { if (lock.isHeld) lock.release() }
+    }
+
     /** True while a network request is registered. Drives the leak assertions. */
     val isRequestActive: Boolean get() = callback != null
 
@@ -1009,6 +1068,10 @@ class CarWifiNetwork(
         boundProcess = bound
         if (bound) {
             onStep("every socket in this process now goes to the car's network")
+            // Taken here rather than at association: this is the point at which
+            // the link starts carrying video and music, which is what the lock
+            // is for. See `holdWifiLock`.
+            holdWifiLock()
         } else {
             onStep(
                 "could not make the car's network this process's default; sockets are still " +
@@ -1177,6 +1240,7 @@ class CarWifiNetwork(
     /** Releases the request. Idempotent; safe from any thread and any path. */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        releaseWifiLock()
         releaseRequest()
         available.completeExceptionally(CarWifiException("car network released"))
         lost.complete(Unit)
@@ -1207,6 +1271,10 @@ class CarWifiNetwork(
     )
 
     companion object {
+
+        /** Names the lock in `dumpsys wifilock`, so it is attributable on a phone. */
+        private const val WIFI_LOCK_TAG: String = "headway:car-session"
+
 
         /**
          * The backstop deadline for a join. Not a timeout in the platform's
