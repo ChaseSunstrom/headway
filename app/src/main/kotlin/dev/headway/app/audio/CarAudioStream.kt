@@ -477,13 +477,31 @@ class CarAudioStream(
 
         val buffer = ByteArray(capture.bufferBytes)
         var idleSince = 0L
+        var empties = 0
         try {
             while (currentCoroutineContext().isActive) {
                 val read = capture.read(buffer)
                 if (read <= 0) {
                     if (read < 0) break
+                    // A run of empty reads is how a dead capture looks from
+                    // here. `AudioRecord.read` on a projection Android has
+                    // ended does not fail -- it returns nothing, forever -- so
+                    // this loop span silently while the car played nothing, and
+                    // the session summary reported "0 read error(s)" because
+                    // there genuinely were none. A drive log had four and a
+                    // half minutes of it.
+                    empties++
+                    if (empties == EMPTY_READS_BEFORE_GIVING_UP) {
+                        onStep(
+                            "media: the capture has returned nothing $empties times running. " +
+                                "That is what a screen-sharing grant Android has revoked looks " +
+                                "like from here; waiting for a new one",
+                        )
+                        return
+                    }
                     continue
                 }
+                empties = 0
 
                 // The samples first, and `isMusicActive` only when they are
                 // silent. Two things come out of that order.
@@ -1106,6 +1124,17 @@ class CarAudioStream(
 
         /** Stalls reported individually before the summary count takes over. */
         private const val MAX_REPORTED_STALLS: Long = 12L
+
+        /**
+         * Empty reads that mean the capture is gone rather than merely quiet.
+         *
+         * `PhoneAudioCapture.read` blocks until the tap has a buffer, so an
+         * empty read is already unusual; a hundred of them in a row is not a
+         * quiet passage. Generous on purpose -- the cost of being wrong is one
+         * unnecessary wait for a grant, and the cost of being trigger-happy is
+         * dropping a capture that was about to produce.
+         */
+        private const val EMPTY_READS_BEFORE_GIVING_UP: Int = 100
         /**
          * Any non-zero value works; the head unit echoes it back in every
          * acknowledgement so the two sides can tell streams apart. The same id on

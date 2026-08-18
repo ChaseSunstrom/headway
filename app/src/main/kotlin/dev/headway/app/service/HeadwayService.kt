@@ -1747,6 +1747,7 @@ open class HeadwayService : Service() {
             }
         val granted = projection ?: return
         step("screen capture granted; video will start with the session")
+        watchProjection(granted)
 
         // Music too, and it is not obvious: media audio reaches the car over the
         // AAP media channel captured from the phone's own playback (ADR 0005),
@@ -1785,6 +1786,60 @@ open class HeadwayService : Service() {
      * works without it, and a driver who does not use app panes should not be
      * asked twice.
      */
+    /**
+     * Notices when Android takes the screen-capture grant away.
+     *
+     * ## The hole this fills, from a drive log
+     *
+     * A capture of a real drive has, at the moment the platform ended the
+     * projection:
+     *
+     *     V MediaProjection: Dispatch stop to 0 callbacks.
+     *
+     * Zero. Nothing in this process was listening. `AppPaneHost` registers a
+     * callback, but only when an *app pane* attaches -- and that driver's
+     * layout is maps, playing, sensors and notifications, with no app pane in
+     * it. So the grant died on a lock screen, and the one thing that actually
+     * depended on it, music, went silent with nothing anywhere noticing. In
+     * that log it stayed silent for four and a half minutes.
+     *
+     * The projection is used for two different things and only one of them was
+     * watching it. Media capture is built from the same grant
+     * (ADR 0005), needs it just as much, and exists whether or not any pane
+     * shows an app -- so the service watches it too, for as long as it holds
+     * one.
+     *
+     * `onStop` arrives on [main] because the callback was registered with that
+     * handler, and everything it touches expects the main looper.
+     */
+    private fun watchProjection(granted: android.media.projection.MediaProjection) {
+        runCatching { projectionWatch?.let { granted.unregisterCallback(it) } }
+        val watch = object : android.media.projection.MediaProjection.Callback() {
+            override fun onStop() {
+                // Only for the grant still held. A callback from a projection
+                // that has already been replaced must not clear its successor.
+                if (projection !== granted) return
+                projection = null
+                step(
+                    "screen sharing ended -- Android stops it whenever the phone locks, and no " +
+                        "app can opt out. Music is captured from it, so the car goes quiet until " +
+                        "it is allowed again",
+                )
+                runCatching { CarAudioStream.current?.adoptProjection(null) }
+                runCatching { AppPaneHost.onGrantLost?.invoke() }
+                runCatching { offerScreenSharing() }
+            }
+        }
+        runCatching { granted.registerCallback(watch, main) }
+        projectionWatch = watch
+    }
+
+    /** The service's own projection callback; see [watchProjection]. */
+    private var projectionWatch: android.media.projection.MediaProjection.Callback? = null
+
+    /** Where [watchProjection]'s callback is delivered. */
+    private val main = Handler(Looper.getMainLooper())
+
     private fun offerScreenSharing() {
         val manager = getSystemService(NotificationManager::class.java) ?: return
         val tap = android.app.PendingIntent.getActivity(
