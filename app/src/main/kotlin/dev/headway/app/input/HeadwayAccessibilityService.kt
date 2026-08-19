@@ -27,6 +27,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import dev.headway.app.log.SessionLog
+import dev.headway.app.phone.PhoneAssistant
 import dev.headway.app.video.AppPaneHost
 import dev.headway.input.CarGestureDispatcher
 import dev.headway.input.GestureDispatchOutcome
@@ -154,7 +155,12 @@ class HeadwayAccessibilityService : AccessibilityService() {
         // `Presentation` owned by this process, and every banner and sheet it
         // shows would otherwise read as the driver leaving the app they opened.
         if (name == packageName) return
-        AppPaneHost.foregroundPackage = name
+        // An assistant session is an overlay over the driver's app, not the
+        // driver leaving it. See AppPaneHost.assistantInFront.
+        val assistant = runCatching { PhoneAssistant.packageName(this) }.getOrNull()
+        AppPaneHost.assistantInFront = assistant != null && name == assistant
+        AppPaneHost.foregroundPackage =
+            AppPaneHost.foregroundAfterWindow(name, AppPaneHost.foregroundPackage, assistant)
     }
 
     override fun onInterrupt() {

@@ -253,6 +253,35 @@ object AppPaneHost {
         }
 
     /**
+     * Whether the phone's assistant is the window in front.
+     *
+     * Kept apart from [foregroundPackage] on purpose. An assistant session is
+     * an overlay *over* whatever the driver was doing, not a replacement for
+     * it, and treating it as one is what made talking to the assistant look
+     * like Headway crashing: the pane decided the driver had left their app,
+     * covered itself, and then never uncovered -- because dismissing an
+     * overlay does not change the state of the window underneath, so no second
+     * event ever arrived to say the app was back.
+     */
+    @Volatile
+    var assistantInFront: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            announce(if (value) "the assistant is in front" else "the assistant has gone")
+        }
+
+    /**
+     * What the remembered foreground app becomes when [window] comes forward.
+     *
+     * Pure, and separate from the setter, because it is the whole rule and the
+     * rule is worth holding in CI: an assistant window leaves the remembered
+     * app alone; anything else replaces it.
+     */
+    fun foregroundAfterWindow(window: String, previous: String?, assistant: String?): String? =
+        if (assistant != null && window == assistant) previous else window
+
+    /**
      * The app the driver last opened into a pane, if any.
      *
      * Set by `CarShell.openApp` rather than taken from the pane's own

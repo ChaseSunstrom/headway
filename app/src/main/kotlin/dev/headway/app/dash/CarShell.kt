@@ -314,6 +314,7 @@ class CarShell(
         runCatching { CarPhone.unobserve(callWatcher) }
         runCatching { HeadwayNotificationListener.unobserveNotices(noticeWatcher) }
         runCatching { main.removeCallbacks(dismissPopup) }
+        runCatching { main.removeCallbacks(dismissAssistant) }
         DashLayoutStore.unobserveChanges(layoutsChanged)
         HeadwayTheme.unobserve(themeChanged)
         AppPaneHost.unobserve(appPaneChanged)
@@ -1221,19 +1222,32 @@ class CarShell(
      */
     private fun reconsiderAssistant() {
         if (callUp) return
-        val assistant = PhoneAssistant.packageName(context)
-        val front = AppPaneHost.foregroundPackage
-        val listening = assistant != null && front == assistant
+        val listening = AppPaneHost.assistantInFront
         if (listening == assistantUp) return
         assistantUp = listening
+        main.removeCallbacks(dismissAssistant)
         if (!listening) {
             if (!popupShowing) hideFloat()
             return
         }
         main.removeCallbacks(dismissPopup)
         popupShowing = false
-        showFloat(assistantCard(assistant), OverlaySpot.notificationBanner())
+        showFloat(assistantCard(PhoneAssistant.packageName(context)), OverlaySpot.notificationBanner())
+        // Bounded, because the signal that raises this card is reliable and the
+        // one that would lower it is not: an overlay going away need not change
+        // the state of the window underneath, so no event is owed. A card that
+        // can only be raised is a card that stays up for the rest of the drive.
+        main.postDelayed(dismissAssistant, ASSISTANT_CARD_MILLIS)
         onStep("car screen: the assistant is in front on the phone")
+    }
+
+    /** Lowers the assistant card when nothing has said the assistant is gone. */
+    private val dismissAssistant = Runnable {
+        if (assistantUp) {
+            assistantUp = false
+            AppPaneHost.assistantInFront = false
+            if (!popupShowing) hideFloat()
+        }
     }
 
     /** True while the assistant card is up. */
@@ -1515,6 +1529,7 @@ class CarShell(
         // is cancelled rather than left to time out over the call card, and a
         // call ending must not have its `hideFloat` undone by a stale timer.
         main.removeCallbacks(dismissPopup)
+        main.removeCallbacks(dismissAssistant)
         popupShowing = false
         assistantUp = false
         callUp = call != null
@@ -2886,6 +2901,15 @@ class CarShell(
          * short enough that it is gone before it becomes something to look at.
          */
         private const val POPUP_MILLIS = 5_000L
+
+        /**
+         * How long the assistant card stays up without another assistant event.
+         *
+         * Longer than a notification popup, because the driver is mid-sentence
+         * and the card is telling them where their words are going. Bounded all
+         * the same: nothing is owed to say an overlay has closed.
+         */
+        private const val ASSISTANT_CARD_MILLIS = 20_000L
 
         /** The glyph beside a popped notification, in dp. */
         private const val POPUP_ICON_DP = 30f
