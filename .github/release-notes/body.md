@@ -28,6 +28,23 @@ measured. They read zero through the drive that lost half a minute of
 music. They are real now, and the summary also prints captured against
 sent.
 
+**Tabs stopped working after opening a pinned app — if you had cropping
+on.** *Crop the picture to fill the panel* makes an app's picture
+deliberately larger than its panel; the panel clips what is drawn, and that
+is right. Nothing clipped the numbers the touch router uses, so on an
+800x480 screen showing a portrait phone the app's rectangle ran from 617
+pixels above the screen to 683 below it — it contained everything. From the
+moment a pinned app appeared, every tab, every pin, Settings and the
+microphone were being sent to the phone instead. Only ownership is clipped
+now; where a touch lands inside the app still uses the full picture, so a
+cropped app is still tapped in the right place.
+
+**The end of a screen share no longer waits on the car.** Build 162 could
+hang there when the phone locked while the head unit had gone quiet,
+leaving the car ducked and silent with re-sharing doing nothing for the
+rest of the drive. Two seconds now, then it lets go. **If you installed
+162, update.**
+
 **The car screen was being drawn in a loop that never stopped.** Binding an
 app pane told the dashboard to refresh, and refreshing an app pane re-bound
 it. One more piece of work on the drawing thread every pass, for the whole
