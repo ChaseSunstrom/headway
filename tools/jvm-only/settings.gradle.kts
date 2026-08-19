@@ -58,6 +58,8 @@ include(":core-transport")
 include(":core-voice")
 include(":core-dash")
 include(":headunit-emulator")
+// See app-pure/build.gradle.kts: a compiler for the Android-free half of :app.
+include(":app-pure")
 
 project(":core-protocol").projectDir = file("../../core-protocol")
 project(":core-transport").projectDir = file("../../core-transport")
