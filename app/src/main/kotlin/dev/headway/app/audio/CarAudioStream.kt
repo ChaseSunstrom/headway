@@ -829,7 +829,13 @@ class CarAudioStream(
                 "${nameFor(it.channelId)} at $shape$state"
             }
         }
-        parts += "$promptsPlayed prompt(s), $buffersSent buffer(s), $underflows underflow(s) seen"
+        // The channels' own count, not this class's. `underflows` is only ever
+        // incremented by the prompt path's `drainAcks`, and music does not go
+        // through it -- so for every drive that was only playing music the old
+        // figure was structurally zero however badly the car was starving.
+        val carUnderflows = opened.sumOf { it.underflowsSeen }
+        parts += "$promptsPlayed prompt(s), $buffersSent buffer(s), " +
+            "$carUnderflows underflow(s) reported by the car"
         if (mediaBytesSent > 0 || channelFor(AudioStreamType.AUDIO_STREAM_MEDIA) != null) {
             parts += "music ${mediaBytesSent / 1024} KiB sent"
             // Always stated once music has flowed. These are the numbers that
@@ -858,6 +864,17 @@ class CarAudioStream(
                 // the only thing that says so.
                 parts += "captured ${capturedBytes / 1024} KiB while playing, " +
                     "sent ${mediaBytesSent / 1024} KiB"
+                // What the car said back. `sendPcm` waits for credit before
+                // every buffer, so acknowledgements are the thing that decides
+                // whether the sender runs or waits -- and until now a log could
+                // say "worst wait for the car 4200 ms" without being able to
+                // say whether the car had acknowledged three buffers or thirty
+                // thousand.
+                channelFor(AudioStreamType.AUDIO_STREAM_MEDIA)?.let { media ->
+                    parts += "music channel: ${media.mediaMessagesSent} message(s) sent, " +
+                        "${media.acksReceived} acknowledged, " +
+                        "${media.unacknowledgedMessages} outstanding at the end"
+                }
             }
         }
         if (refusals.isNotEmpty()) parts += "refused: ${refusals.joinToString("; ")}"

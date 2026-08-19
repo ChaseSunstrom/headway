@@ -323,6 +323,21 @@ class AudioChannel(
     var acksReceived: Long = 0L
         private set
 
+    /**
+     * `AUDIO_UNDERFLOW_NOTIFICATION`s the car has sent on this channel.
+     *
+     * Counted where the message is decoded rather than where somebody happens
+     * to be listening, and that is the whole point. The app counted underflows
+     * in its own prompt-draining loop, which the *media* stream never runs --
+     * music goes out through `sendPcm`, whose `awaitCredit` waits on `awaitAck`
+     * and discards every event that is not an acknowledgement. So the session
+     * summary printed "0 underflow(s) seen" for a drive in which the car ran
+     * out of audio continuously, and underflow is the one signal that says the
+     * car went quiet because nothing arrived in time.
+     */
+    var underflowsSeen: Long = 0L
+        private set
+
     /** Media messages sent but not yet acknowledged. Bounded by [SetupResponse.maxUnacked]. */
     var unacknowledgedMessages: Int = 0
         private set
@@ -577,6 +592,7 @@ class AudioChannel(
 
             AUDIO_UNDERFLOW_NOTIFICATION -> {
                 val underflow = AudioUnderflowNotification.parseFrom(message.payload)
+                underflowsSeen++
                 onStep("underflow on session ${underflow.sessionId}")
                 Event.Underflow(underflow.sessionId)
             }

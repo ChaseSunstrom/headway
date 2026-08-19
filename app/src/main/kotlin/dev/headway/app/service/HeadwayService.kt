@@ -1517,6 +1517,14 @@ open class HeadwayService : Service() {
             // from a real drive is read for, and one of these throwing must not
             // cost the lines after it.
             video?.let { runCatching { step(it.describe()) } }
+            // The car surface's own numbers, which nothing printed. Its
+            // `describe` existed and had no caller, so no drive log has ever
+            // said whether a car touch actually reached the dashboard --
+            // "the head unit sent nothing", "they went to the shared app" and
+            // "they were dispatched and the view tree ignored them" all read
+            // identically. That last one is what a rail whose tabs have gone
+            // dead looks like from here.
+            video?.surface?.let { runCatching { step(it.describe()) } }
             audio?.let { runCatching { step(it.describe()) } }
             input?.let { runCatching { step(it.describe()) } }
             voice?.let { runCatching { step(it.describe()) } }
