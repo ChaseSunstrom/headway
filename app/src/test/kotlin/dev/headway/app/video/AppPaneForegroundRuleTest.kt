@@ -18,6 +18,8 @@
 package dev.headway.app.video
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
@@ -39,7 +41,12 @@ class AppPaneForegroundRuleTest {
     fun `an ordinary app coming forward replaces the remembered one`() {
         assertEquals(
             maps,
-            ForegroundApp.after(maps, previous = "com.example.launcher", assistant = assistant),
+            ForegroundApp.after(
+                maps,
+                previous = "com.example.launcher",
+                assistant = assistant,
+                opened = null,
+            ),
         )
     }
 
@@ -47,7 +54,7 @@ class AppPaneForegroundRuleTest {
     fun `the assistant coming forward leaves the remembered app alone`() {
         assertEquals(
             maps,
-            ForegroundApp.after(assistant, previous = maps, assistant = assistant),
+            ForegroundApp.after(assistant, previous = maps, assistant = assistant, opened = null),
             "an assistant session is an overlay over the driver's app, not the driver leaving it",
         )
     }
@@ -56,7 +63,7 @@ class AppPaneForegroundRuleTest {
     fun `with no assistant configured every window is an ordinary one`() {
         assertEquals(
             assistant,
-            ForegroundApp.after(assistant, previous = maps, assistant = null),
+            ForegroundApp.after(assistant, previous = maps, assistant = null, opened = null),
             "a phone with no assistant set must not have some package treated as special",
         )
     }
@@ -68,7 +75,30 @@ class AppPaneForegroundRuleTest {
         // confident wrong answer.
         assertEquals(
             null,
-            ForegroundApp.after(assistant, previous = null, assistant = assistant),
+            ForegroundApp.after(assistant, previous = null, assistant = assistant, opened = null),
+        )
+    }
+
+    @Test
+    fun `the assistant the driver opened is an app, not an overlay`() {
+        // The regression the `opened` parameter exists to stop. The assistant
+        // is also an app with an icon, and a driver may pin it and tap it.
+        // Treating that window as an overlay leaves the remembered app naming
+        // whatever came before, so the pane compares what it was asked to show
+        // against a package that can never arrive, decides it was closed, and
+        // covers itself -- for good, because no later event can name the
+        // assistant either.
+        assertEquals(
+            assistant,
+            ForegroundApp.after(assistant, previous = maps, assistant = assistant, opened = assistant),
+        )
+        assertFalse(
+            ForegroundApp.isAssistantSession(assistant, assistant, opened = assistant),
+            "no 'is listening' card over the assistant the driver asked to see",
+        )
+        assertTrue(
+            ForegroundApp.isAssistantSession(assistant, assistant, opened = maps),
+            "an assistant over the driver's app is still a voice session",
         )
     }
 }

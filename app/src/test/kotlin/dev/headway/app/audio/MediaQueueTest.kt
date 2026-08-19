@@ -17,6 +17,7 @@
 
 package dev.headway.app.audio
 
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -63,7 +64,7 @@ class MediaQueueTest {
     @Test
     fun `take waits for a buffer rather than spinning`() = runBlocking {
         val queue = MediaQueue(depth = 4)
-        val taken = kotlinx.coroutines.async { queue.take() }
+        val taken = async { queue.take() }
         Thread.sleep(50)
         assertTrue(taken.isActive, "take must suspend while the queue is empty")
         queue.offer(buffer(7))
