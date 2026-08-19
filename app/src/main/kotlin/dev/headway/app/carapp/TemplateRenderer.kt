@@ -35,6 +35,7 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
 import android.widget.GridLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -291,15 +292,25 @@ class TemplateRenderer(
                 if (template.isLoading) {
                     body(context, loading(context))
                 } else {
-                    val list = LinearLayout(context).apply {
-                        orientation = LinearLayout.VERTICAL
+                    val single = template.singleList
+                    if (mapUnderneath && single != null && template.sectionedLists.isEmpty()) {
+                        // The shape `MapWithContentTemplate` usually carries.
+                        // Over a map it gets the icon strip like any other item
+                        // list; a *sectioned* list falls through to the column
+                        // below, because section headings are words and there
+                        // is no evidence yet of an app putting one over a map.
+                        drawItemList(context, single)
+                    } else {
+                        val list = LinearLayout(context).apply {
+                            orientation = LinearLayout.VERTICAL
+                        }
+                        single?.let { fillItems(context, list, it) }
+                        template.sectionedLists.forEach { section ->
+                            section.header.plain()?.let { list.addView(sectionHeading(context, it)) }
+                            fillItems(context, list, section.itemList)
+                        }
+                        body(context, scrolling(context, list))
                     }
-                    template.singleList?.let { fillItems(context, list, it) }
-                    template.sectionedLists.forEach { section ->
-                        section.header.plain()?.let { list.addView(sectionHeading(context, it)) }
-                        fillItems(context, list, section.itemList)
-                    }
-                    body(context, scrolling(context, list))
                 }
                 actions(context, template.actions)
             }
@@ -363,11 +374,7 @@ class TemplateRenderer(
                 if (template.isLoading) {
                     body(context, loading(context))
                 } else {
-                    val list = LinearLayout(context).apply {
-                        orientation = LinearLayout.VERTICAL
-                    }
-                    template.itemList?.let { fillItems(context, list, it) }
-                    body(context, scrolling(context, list))
+                    template.itemList?.let { drawItemList(context, it) }
                 }
             }
 
@@ -467,11 +474,7 @@ class TemplateRenderer(
                 if (template.isLoading) {
                     body(context, loading(context))
                 } else {
-                    val list = LinearLayout(context).apply {
-                        orientation = LinearLayout.VERTICAL
-                    }
-                    template.itemList?.let { fillItems(context, list, it) }
-                    body(context, scrolling(context, list))
+                    template.itemList?.let { drawItemList(context, it) }
                 }
             }
 
@@ -481,11 +484,7 @@ class TemplateRenderer(
                 if (template.isLoading) {
                     body(context, loading(context))
                 } else {
-                    val list = LinearLayout(context).apply {
-                        orientation = LinearLayout.VERTICAL
-                    }
-                    template.itemList?.let { fillItems(context, list, it) }
-                    body(context, scrolling(context, list))
+                    template.itemList?.let { drawItemList(context, it) }
                 }
                 template.navigateAction?.let { actions(context, listOf(it)) }
             }
@@ -496,11 +495,7 @@ class TemplateRenderer(
                 if (template.isLoading) {
                     body(context, loading(context))
                 } else {
-                    val list = LinearLayout(context).apply {
-                        orientation = LinearLayout.VERTICAL
-                    }
-                    template.itemList?.let { fillItems(context, list, it) }
-                    body(context, scrolling(context, list))
+                    template.itemList?.let { drawItemList(context, it) }
                 }
             }
 
@@ -803,31 +798,108 @@ class TemplateRenderer(
     }
 
     private fun body(context: Context, content: View) {
+        target.addView(content, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+    }
+
+    /**
+     * An app's item list, as a list or as a strip of icons over a map.
+     *
+     * ## Three attempts before this shape
+     *
+     * A driver has reported this four times. It was not the tab strip and it
+     * was not the action strip -- a log settled that: HERE WeGo draws
+     * `PlaceListNavigationTemplate` whose action strip is two icon actions,
+     * already compact. The thing filling their map is the template's *item
+     * list*, and Shortcuts / Favourites / Recents are its rows.
+     *
+     * Giving that list half the pane was the third attempt and it was still
+     * wrong, for the reason they gave immediately: "the bars on the map were
+     * just moved down, still taking up space". Half a map is not a map. What a
+     * car screen wants here is what Android Auto does -- the map is the pane,
+     * and the app's entries are small controls laid *on* it.
+     *
+     * So over a map the rows become one row of icon cells, sized to their own
+     * content, and everything above them is map. Off a map nothing changes: a
+     * list is a list, with its titles, its subtitles and its toggles.
+     */
+    private fun drawItemList(context: Context, list: ItemList) {
         if (!mapUnderneath) {
-            target.addView(content, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+            val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+            fillItems(context, column, list)
+            body(context, scrolling(context, column))
             return
         }
-        // Over a map, content gets a panel rather than the pane.
-        //
-        // Weight 1 means "take everything left", and everything left over a map
-        // template is the map. So a navigation app's own list -- Shortcuts,
-        // Favourites, Recents -- was drawn across the whole pane with the map
-        // behind it and invisible, which is what a driver meant by the bars
-        // "taking up all of the view". Android Auto gives content a panel and
-        // keeps the map beside it.
-        //
-        // The spacer goes first and carries the rest of the weight, so the
-        // panel sits against the bottom edge and the map shows through above
-        // it. Transparent by construction: it is a bare `View` with no
-        // background, and the map surface is behind this whole template.
         target.addView(
-            View(context),
-            LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f - MAP_CONTENT_SHARE),
+            mapItemStrip(context, list),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
         )
-        target.addView(
-            content,
-            LinearLayout.LayoutParams(MATCH_PARENT, 0, MAP_CONTENT_SHARE),
-        )
+    }
+
+    /**
+     * The item list as a horizontal strip of icon cells.
+     *
+     * Scrolls sideways rather than truncating: a navigation app may offer four
+     * entries or twelve, and dropping the ones past the edge would take away
+     * controls the driver can see in the app itself.
+     *
+     * A row with no image gets its title's first letter, the same fallback the
+     * tab strip uses, because a blank square reads as broken. The full title is
+     * always the content description, so nothing is lost to a screen reader or
+     * to the log.
+     */
+    private fun mapItemStrip(context: Context, list: ItemList): View {
+        val gap = CarStyle.gutter(context)
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(gap, gap / 4, gap, gap / 4)
+        }
+        val items = list.items.filterIsInstance<Row>()
+        if (items.isEmpty()) {
+            // Nothing to lay over the map, so nothing is laid over it. An empty
+            // strip would be a band of padding across a driver's map.
+            return View(context).apply {
+                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0)
+            }
+        }
+        val selection = runCatching { list.onSelectedDelegate }.getOrNull()
+        items.forEachIndexed { index, item ->
+            val title = item.title.plain()
+            val glyph = runCatching { item.image }.getOrNull()?.let { drawable(it) }
+            val onTap: (() -> Unit)? = when {
+                selection != null -> { { sendSelected(selection, index, title ?: "item $index") } }
+                item.onClickDelegate != null -> { { click(item.onClickDelegate, title ?: "row") } }
+                else -> null
+            }
+            row.addView(tabCell(context, title, null, active = false, onTap = onTap).also { cell ->
+                // `tabCell` resolves a `CarIcon`; a row's image is already a
+                // drawable by the time it gets here, so it is set directly
+                // rather than round-tripped.
+                if (glyph != null) {
+                    (cell as? FrameLayout)?.let { frame ->
+                        frame.removeAllViews()
+                        val side = CarStyle.dp(context, CarStyle.PRIMARY_TARGET_DP)
+                        val inset = gap / 2
+                        frame.addView(
+                            ImageView(context).apply {
+                                scaleType = ImageView.ScaleType.FIT_CENTER
+                                setImageDrawable(glyph)
+                                layoutParams = FrameLayout.LayoutParams(
+                                    side - inset * 2,
+                                    side - inset * 2,
+                                ).apply { gravity = Gravity.CENTER }
+                            },
+                        )
+                    }
+                }
+            })
+        }
+        return HorizontalScrollView(context).apply {
+            isFillViewport = false
+            isHorizontalScrollBarEnabled = false
+            addView(row)
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        }
     }
 
     private fun actions(context: Context, actions: List<Action>) {
@@ -890,16 +962,6 @@ class TemplateRenderer(
 
     /** Template names already named in the log, so each is said once. */
     private val seenTemplates = mutableSetOf<String>()
-
-    /**
-     * How much of a map pane an app's own content may take.
-     *
-     * Half. Less and a list of place names is unreadable on an 800x480 head
-     * unit; more and the map it is laid over stops being a map. Not a setting,
-     * because the pane's own scale control already exists and this is the
-     * division between two things rather than the size of one.
-     */
-    private val MAP_CONTENT_SHARE: Float get() = 0.5f
 
     /**
      * Names what an app put in a strip, once per distinct set.
