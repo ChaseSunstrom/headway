@@ -3,61 +3,69 @@ Android and on-device gate passed before this was published.
 
 ## What is new in this build
 
-**Eight things a driver reported from a real car, and the reasons they
-happened.**
+**Music that cut out, and Headway that "crashed", were one thing.** A
+drive log settled it: the app never died. The session to the car ended and
+came back, and everything went quiet while it did — the music, the screen,
+all of it. Two of the five ends in that drive were the car saying goodbye,
+at the times a driver would expect. Three were not.
 
-- **Widgets add.** The "That widget was not added" message was Headway
-  hiding the answer: *blank the phone screen* is on by default and is an
-  opaque accessibility overlay, which sits above everything the system
-  draws — including the phone's own "Allow Headway to add widgets?"
-  dialog. You looked at the phone and saw black. The dialog then cancels
-  itself on the first stray touch, and Headway reported the cancellation.
-  The phone is now uncovered for as long as that dialog is up, and a
-  cancelled dialog that bound the widget anyway is no longer thrown away.
-- **The car opens on the map.** It used to open on whatever tab the last
-  drive ended on, so the map was something to go and find at the start of
-  every drive. Under *Settings → Opens on* you can put it back, or name a
-  tab.
-- **Now playing is inside the music panel.** Artwork, track, artist and
-  album, and the transport, at the foot of the library — the Android Auto
-  shape — following the app you are browsing rather than whatever else is
-  playing. The separate Now playing panel is still there if you want it.
-- **The music panel lists only the apps you allowed**, like the all-apps
-  panel already did.
-- **Everything in every panel scales.** *Settings → Panel size* moves
-  Headway's own drawing in all of them at once. The per-app size is still
-  per app, because a map and a messenger disagree about what 100% means.
-- **The location marker can be shrunk.** Some map apps size their own
-  marker in fixed pixels and ignore every size the host sends — a driver
-  found one. *Map detail*, in the same sheet as the app's size, hands the
-  app a larger buffer than the panel so anything drawn in fixed pixels
-  lands smaller while everything else stays put.
-- **Your odometer reads correctly.** Two independent readings of real
-  hardware put it a hundred times high, which is exactly the ratio between
-  what the protocol field is named and what the unit actually sends. The
-  default now matches the hardware; `odometerScale` in the quirk file
-  still exists for a unit that means what the schema says.
-- **Messages became Notifications.** The pane was reading everything the
-  phone shows and then dropping anything that did not look like a
-  conversation. *Notifications* keeps all of it, newest first. The
-  Messages pane stays, because a pane that is only conversations and can
-  reply to them is worth having.
+- **A reconnect no longer waits.** Reconnecting takes about 700 ms. The
+  silences on that drive were 3.4, 5.1 and 9.3 seconds, because a session
+  that broke inherited the backoff meant for a car that is not there yet —
+  and each break doubled it. A session that actually ran now starts over
+  from the short delay.
+- **The car's keepalive gets past the video.** The head unit pings on a
+  timer and hangs up when the answers stop; it says so itself in service
+  discovery, and Headway had never read what it said. Everything shared one
+  queue to the wire, so an answer could sit behind a keyframe. The control
+  channel now has its own lane. This is a likely cause rather than a proven
+  one, so every ping is now timed against the car's own budget and the
+  session log says whether an answer was ever late.
+- **The log names what ended a session.** It used to record a cancellation
+  raised while tearing down, which named nothing.
 
-**Two more, from the drive before.** A car app that ignored the size you
-picked was being told the phone's density all along — the value was
-silently discarded before it was sent, so the slider moved Headway's
-chrome and the app's own text and nothing else. And every car app was
-being told it was running on a tall portrait handset; it is now told the
-panel's real shape, orientation and size class.
+**Talking to your assistant no longer blanks the car screen.** An assistant
+overlay was being read as you closing the app you had opened, so the pane
+covered itself — and because dismissing an overlay owes no notification, it
+never uncovered again for the rest of the drive. It is treated as what it
+is now, and the car shows a card saying who is listening, the way a call
+does.
+
+**A map panel is a map.** An app's Shortcuts / Favourites / Recents were
+being drawn as full-width rows down the panel. Over a map they are now a
+row of icons laid on it, and the panel is the map.
+
+**Notification icons look like themselves.** They were being tinted a flat
+block of colour, so an app with a detailed monochrome icon showed as a
+coloured square. New notifications can also appear briefly on the car
+screen as they arrive — `Settings → Show notifications as they arrive`, on
+by default.
+
+**The car stops showing your phone when you close the app.** Sharing your
+whole screen and then closing the app you had opened used to leave the car
+mirroring whatever came next.
+
+**Screen sharing is offered on an automatic connect**, instead of only
+when you connected by hand.
+
+**If Headway does crash, the log survives it.** The stack and the whole
+session buffer are written before the process goes, and a session log is
+now exported automatically when a session ends — so a drive can be
+diagnosed from the file without catching it in the act.
+
+**Also in this round:** the car's own media buttons control the music, the
+odometer reads correctly, the speech engine can no longer take the app down
+with it, and layouts, panel sizes, corner radius and tab icons are all
+yours to set.
 
 **Apps can lay out in landscape.** A portrait phone mirrored into a wide
-panel is about a quarter of it, and no amount of scaling makes a tall map
-a wide one — an app's layout is decided by the display it runs on.
-*Settings → Apps and panels → Turn the phone sideways for apps* rotates
-the phone for the drive and puts it back afterwards. It needs one
-permission, granted on the phone, and it cannot help an app that locks
-itself to portrait. `BLOCKERS.md` B-025 has the five routes that would
-have avoided touching the phone at all, and why each is closed.
+panel is about a quarter of it, and no amount of scaling makes a tall map a
+wide one — an app's layout is decided by the display it runs on. *Settings →
+Apps and panels → Turn the phone sideways for apps* rotates the phone for
+the drive and puts it back afterwards. It needs one permission, granted on
+the phone, and it cannot help an app that locks itself to portrait.
+`BLOCKERS.md` B-025 has the five routes that would have avoided touching the
+phone at all, and why each is closed.
 
 **About music, because it is not obvious.** Headway sends your music to
 the car by capturing what the phone is playing, and Android only allows
