@@ -82,17 +82,19 @@ class FramedConnectionPriorityTest {
     fun `a control message overtakes media already waiting for the wire`() = runBlocking {
         val transport = GatedTransport()
         val connection = FramedConnection(transport)
+        // What a session declares after discovery: video is the bulk lane.
+        connection.bulkChannels = setOf(ChannelId.MEDIA_SINK_VIDEO.id)
 
         // Holds the wire. Everything below queues behind this one message.
         val holder = launch(Dispatchers.IO) { connection.send(message(ChannelId.MEDIA_SINK_VIDEO)) }
         withTimeout(5_000) { transport.firstWriteStarted.await() }
 
-        // The backlog a real session builds: video and audio, in that order.
+        // The backlog a real session builds. All video: audio is deliberately
+        // not in the bulk lane any more, so it would not queue here at all --
+        // which is the subject of the next test rather than this one.
         val backlog = List(8) { index ->
             launch(Dispatchers.IO) {
-                connection.send(
-                    message(if (index % 2 == 0) ChannelId.MEDIA_SINK_VIDEO else ChannelId.MEDIA_SINK_MEDIA_AUDIO)
-                )
+                connection.send(message(ChannelId.MEDIA_SINK_VIDEO))
             }
         }
         // The backlog has to actually be waiting on the lock before control
@@ -118,7 +120,7 @@ class FramedConnectionPriorityTest {
         assertEquals(
             ChannelId.CONTROL.id,
             transport.written[1],
-            "control must come next, ahead of the eight media messages queued before it",
+            "control must come next, ahead of the eight video messages queued before it",
         )
     }
 
@@ -126,6 +128,7 @@ class FramedConnectionPriorityTest {
     fun `media still goes out in order`() = runBlocking {
         val transport = GatedTransport()
         val connection = FramedConnection(transport)
+        connection.bulkChannels = setOf(ChannelId.MEDIA_SINK_VIDEO.id)
 
         val holder = launch(Dispatchers.IO) { connection.send(message(ChannelId.MEDIA_SINK_VIDEO)) }
         withTimeout(5_000) { transport.firstWriteStarted.await() }
@@ -138,6 +141,46 @@ class FramedConnectionPriorityTest {
         assertTrue(
             transport.written.drop(1).all { it == ChannelId.MEDIA_SINK_MEDIA_AUDIO.id },
             "media must still arrive on its own channel: ${transport.written}",
+        )
+    }
+
+    @Test
+    fun `audio overtakes video already waiting for the wire`() = runBlocking {
+        // The other half of the 2026-08-19 finding. `AudioChannel.sendPcm`
+        // waits for the head unit's credit before each buffer, and the capture
+        // behind it has nowhere to put what the phone is playing while it
+        // waits -- `AudioRecord`'s buffer is a ring that overwrites. So audio
+        // waiting on video is audio the driver never hears, whereas a late
+        // video frame is thrown away by `VideoPump` and costs nothing.
+        val transport = GatedTransport()
+        val connection = FramedConnection(transport)
+        connection.bulkChannels = setOf(ChannelId.MEDIA_SINK_VIDEO.id)
+
+        val holder = launch(Dispatchers.IO) { connection.send(message(ChannelId.MEDIA_SINK_VIDEO)) }
+        withTimeout(5_000) { transport.firstWriteStarted.await() }
+
+        val backlog = List(6) {
+            launch(Dispatchers.IO) { connection.send(message(ChannelId.MEDIA_SINK_VIDEO)) }
+        }
+        Thread.sleep(100)
+
+        val music = launch(Dispatchers.IO) {
+            connection.send(message(ChannelId.MEDIA_SINK_MEDIA_AUDIO))
+        }
+        Thread.sleep(50)
+
+        transport.release.complete(Unit)
+        withTimeout(10_000) {
+            holder.join()
+            music.join()
+            backlog.forEach { it.join() }
+        }
+
+        assertEquals(8, transport.written.size)
+        assertEquals(
+            ChannelId.MEDIA_SINK_MEDIA_AUDIO.id,
+            transport.written[1],
+            "music must not wait behind six video frames: ${transport.written}",
         )
     }
 }

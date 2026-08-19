@@ -91,6 +91,16 @@ object AppPaneHost {
     private var boundWidth = 0
     private var boundHeight = 0
 
+    /**
+     * The exact `Surface` the display is pointed at, kept for identity.
+     *
+     * A pane hands back the same instance every time -- see `AppPaneTile.attach`
+     * -- so identity is what tells a repeat bind from a real one. Without it
+     * `bind` had no way to know it was being asked for something it had already
+     * done, and it announced regardless. See the `changed` check in [bind].
+     */
+    private var boundSurface: Surface? = null
+
     private var densityDpi = 160
     private var onStep: (String) -> Unit = {}
 
@@ -488,6 +498,10 @@ object AppPaneHost {
     fun bind(owner: Any, surface: Surface, width: Int, height: Int): Boolean {
         if (width <= 0 || height <= 0) return false
         if (!surface.isValid) return false
+        // Set only where something really moved. See the `changed` check below
+        // the block: this used to announce on every call, and the announcement
+        // comes back round as another call.
+        var changed = false
         synchronized(lock) {
             val token = projection ?: return false
             val existing = display
@@ -527,6 +541,8 @@ object AppPaneHost {
                 boundTo = owner
                 boundWidth = width
                 boundHeight = height
+                boundSurface = surface
+                changed = true
                 onStep("app pane: showing the app in a ${width}x$height pane")
             } else {
                 val moved = boundTo !== owner
@@ -534,13 +550,40 @@ object AppPaneHost {
                     runCatching { existing.resize(width, height, densityDpi) }
                     boundWidth = width
                     boundHeight = height
+                    changed = true
                 }
-                runCatching { existing.surface = surface }
+                if (boundSurface !== surface) {
+                    runCatching { existing.surface = surface }
+                    boundSurface = surface
+                    changed = true
+                }
                 boundTo = owner
-                if (moved) onStep("app pane: moved the app to another pane")
+                if (moved) {
+                    changed = true
+                    onStep("app pane: moved the app to another pane")
+                }
             }
         }
-        announce("bound")
+        // Only when something moved, and this is not a nicety.
+        //
+        // `announce` runs its listeners synchronously, and the only listener is
+        // the shell, which answers by posting a refresh of every app pane
+        // (`CarShell.appPaneChanged`). `AppPaneTile.applyState` ends that
+        // refresh by re-driving the bind -- deliberately, so a pane that lost
+        // the picture and got it back is not left black -- which called this
+        // again, which announced again, which posted again.
+        //
+        // Nothing in that ring ever decremented. One extra runnable on the main
+        // looper per pass, forever, on the same thread that measures, lays out
+        // and draws the dashboard being encoded to the head unit. It never
+        // blocked input outright, so it did not look like a hang; it looked
+        // like a car screen that had gone treacly, which is how it was
+        // reported. And when the pane is covered -- the app closed on the
+        // phone, exactly the state the cover exists for -- each pass also ran
+        // `updateDormantText`, which is two PackageManager IPCs.
+        //
+        // A bind that changes nothing has nothing to tell anyone.
+        if (changed) announce("bound")
         return true
     }
 
@@ -559,6 +602,7 @@ object AppPaneHost {
             boundTo = null
             boundWidth = 0
             boundHeight = 0
+            boundSurface = null
             runCatching { display?.surface = null }
             changed = true
         }
@@ -579,6 +623,7 @@ object AppPaneHost {
             boundTo = null
             boundWidth = 0
             boundHeight = 0
+            boundSurface = null
             runCatching { display?.surface = null }
             sourceWidth = 0
             sourceHeight = 0
@@ -653,6 +698,7 @@ object AppPaneHost {
         boundTo = null
         boundWidth = 0
         boundHeight = 0
+        boundSurface = null
         runCatching { going.surface = null }
         runCatching { going.release() }
         SessionLog.shared.info(TAG, "released the app-pane display: $why")

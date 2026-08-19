@@ -44,6 +44,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.currentCoroutineContext
@@ -245,11 +246,19 @@ class CarAudioStream(
     /** Longest gap between finishing one buffer and starting the next, in ms. */
     private var idleGapMillis: Long = 0L
 
-    /** When the last buffer finished being handed to the link. */
-    private var lastSendEndedAt: Long = 0L
-
     /** Sends that took longer than [STALL_REPORT_MILLIS]. */
+    private var slowSends: Long = 0L
+
+    /** Buffers dropped because the car fell further behind than the queue holds. */
     private var stalls: Long = 0L
+
+    /** Bytes the capture produced while focus was held. Diagnostics. */
+    @Volatile
+    private var capturedBytes: Long = 0L
+
+    /** The live queue between the capture and the car, if one is running. */
+    @Volatile
+    private var mediaQueue: MediaQueue? = null
 
     /** Captured audio forwarded to the car. Diagnostics. */
     @Volatile
@@ -476,102 +485,35 @@ class CarAudioStream(
         mediaCapture = capture
 
         val buffer = ByteArray(capture.bufferBytes)
-        var idleSince = 0L
-        var empties = 0
+        // Everything the car might make us wait for happens on the other side
+        // of this. See MediaQueue: `sendPcm` waits for the head unit's credit,
+        // and while it waited nothing was reading `AudioRecord`, whose buffer
+        // is a ring that overwrites rather than waits. A drive lost 34 seconds
+        // of music that way with no error anywhere.
+        val queued = MediaQueue()
+        mediaQueue = queued
         try {
-            while (currentCoroutineContext().isActive) {
-                val read = capture.read(buffer)
-                if (read <= 0) {
-                    if (read < 0) break
-                    // A run of empty reads is how a dead capture looks from
-                    // here. `AudioRecord.read` on a projection Android has
-                    // ended does not fail -- it returns nothing, forever -- so
-                    // this loop span silently while the car played nothing, and
-                    // the session summary reported "0 read error(s)" because
-                    // there genuinely were none. A drive log had four and a
-                    // half minutes of it.
-                    empties++
-                    if (empties == EMPTY_READS_BEFORE_GIVING_UP) {
-                        onStep(
-                            "media: the capture has returned nothing $empties times running. " +
-                                "That is what a screen-sharing grant Android has revoked looks " +
-                                "like from here; waiting for a new one",
-                        )
-                        // True: the capture *did* start, and then the grant went
-                        // away. That is not a failed start, so the retry counter
-                        // resets and the outer loop goes back to waiting for a
-                        // new grant rather than counting down to giving up.
-                        return true
-                    }
-                    continue
+            coroutineScope {
+                val sender = launch { drainToCar(queued, channel) }
+                try {
+                    readCaptureInto(queued, capture, buffer)
+                } finally {
+                    // The reader is the only producer, so once it is done the
+                    // sender has a finite amount left and can finish it.
+                    queued.close()
+                    sender.join()
                 }
-                empties = 0
-
-                // The samples first, and `isMusicActive` only when they are
-                // silent. Two things come out of that order.
-                //
-                // Correctness: `AudioManager.isMusicActive()` describes the
-                // phone's music stream, not this capture, and it goes false
-                // across a gapless track change, a buffering stall and an app
-                // switching decoders. Three seconds of that used to release
-                // focus and stop the stream, and the car needed a moment to
-                // switch its source back when it returned -- which is the
-                // "music cuts out for a few seconds every few minutes" a driver
-                // reported. Audio that is arriving is proof that audio is
-                // playing, and no framework flag can contradict it.
-                //
-                // Cost: it was a binder call for every buffer, twenty-five
-                // times a second, on the thread pumping music. Now it is
-                // consulted only when the buffer is silent, which is when there
-                // is nothing else to do anyway.
-                val quiet = isSilence(buffer, read)
-                val playing = !quiet || PhoneAudioCapture.isMusicPlaying(audioManager)
-                if (playing) {
-                    idleSince = 0L
-                    // Re-reads the shared flag every buffer, so focus taken away
-                    // by a spoken prompt is noticed and taken back rather than
-                    // assumed. See [mediaFocusHeld].
-                    if (!mediaFocusHeld) {
-                        // Same lock, same reason: taking focus mid-prompt would
-                        // overwrite the prompt's own request in the single slot.
-                        speaking.withLock {
-                            if (!mediaFocusHeld) mediaFocusHeld = requestMediaFocus()
-                        }
-                    }
-                } else if (mediaFocusHeld) {
-                    // Not released on the first silent buffer: a track change is
-                    // a second of silence, and giving the radio back and taking
-                    // it again across every gap would make the car click.
-                    val now = SystemClock.elapsedRealtime()
-                    if (idleSince == 0L) idleSince = now
-                    if (now - idleSince >= MEDIA_IDLE_RELEASE_MILLIS) {
-                        // Under the same lock a prompt takes. `PhoneAudioFocus`
-                        // keeps one slot, so releasing it here while a spoken
-                        // reply is mid-render would send the car a RELEASE for
-                        // the *prompt's* focus and un-duck the radio underneath
-                        // it. `speaking` is the existing serialiser for exactly
-                        // this resource; the pump had simply never taken it.
-                        speaking.withLock {
-                            releaseMediaFocus()
-                            mediaFocusHeld = false
-                        }
-                    }
-                }
-
-                if (!mediaFocusHeld) continue
-                val sent = channel.streamPcm(
-                    if (read == buffer.size) buffer else buffer.copyOf(read)
-                )
-                buffersSent += sent
-                mediaBytesSent += read
             }
+            return true
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failed: Exception) {
             // The link dying mid-song is ordinary. Audio must never be the
             // component that decides the session is over.
             onStep("media stream ended: ${failed.message ?: failed::class.java.simpleName}")
+            return true
         } finally {
+            mediaQueue = null
             if (mediaFocusHeld) {
                 runCatching { releaseMediaFocus() }
                 mediaFocusHeld = false
@@ -579,7 +521,153 @@ class CarAudioStream(
             runCatching { capture.close() }
             onStep(capture.describe())
         }
-        return true
+    }
+
+    /**
+     * Drains [queued] to the car, and is the only thing allowed to wait for it.
+     *
+     * Runs beside the reader rather than in front of it. Every suspension in
+     * here -- the credit window, the socket -- used to be a suspension of the
+     * capture as well.
+     */
+    private suspend fun drainToCar(queued: MediaQueue, channel: AudioChannel) {
+        while (true) {
+            val pcm = queued.take() ?: return
+            val started = SystemClock.elapsedRealtime()
+            val sent = channel.streamPcm(pcm)
+            val took = SystemClock.elapsedRealtime() - started
+            if (took > longestSendMillis) longestSendMillis = took
+            // A send is one 20 ms buffer. Anything past STALL_REPORT_MILLIS is
+            // the car's credit window closed, and it is the count rather than
+            // the worst case that says whether that is happening constantly or
+            // happened once.
+            if (took > STALL_REPORT_MILLIS) slowSends++
+            buffersSent += sent
+            mediaBytesSent += pcm.size
+        }
+    }
+
+    /**
+     * Reads the capture until it ends, deciding focus and handing buffers over.
+     *
+     * @return normally when the capture is finished with; the caller closes it.
+     */
+    private suspend fun readCaptureInto(
+        queued: MediaQueue,
+        capture: PhoneAudioCapture,
+        buffer: ByteArray,
+    ) {
+        var idleSince = 0L
+        var empties = 0
+        var lastRead = SystemClock.elapsedRealtime()
+        while (currentCoroutineContext().isActive) {
+            val read = capture.read(buffer)
+            // Measured here and nowhere else. The three figures this used
+            // to print -- worst wait, worst gap, stalls -- were declared,
+            // printed and never once assigned, so a session summary read
+            // "0 ms, 0 ms, 0 stall(s)" whatever had happened, and that was
+            // taken as evidence the audio path was healthy while it was
+            // losing half a minute of music a drive.
+            val now = SystemClock.elapsedRealtime()
+            val gap = now - lastRead
+            lastRead = now
+            if (read > 0 && gap > idleGapMillis) idleGapMillis = gap
+            if (read <= 0) {
+                if (read < 0) break
+                // A run of empty reads is how a dead capture looks from
+                // here. `AudioRecord.read` on a projection Android has
+                // ended does not fail -- it returns nothing, forever -- so
+                // this loop span silently while the car played nothing, and
+                // the session summary reported "0 read error(s)" because
+                // there genuinely were none. A drive log had four and a
+                // half minutes of it.
+                empties++
+                if (empties == EMPTY_READS_BEFORE_GIVING_UP) {
+                    onStep(
+                        "media: the capture has returned nothing $empties times running. " +
+                            "That is what a screen-sharing grant Android has revoked looks " +
+                            "like from here; waiting for a new one",
+                    )
+                    // The capture *did* start, and then the grant went
+                    // away. That is not a failed start, so returning here
+                    // ends the reader; `pumpMediaWith` reports success and
+                    // the outer loop goes back to waiting for a new grant
+                    // rather than counting down to giving up.
+                    return
+                }
+                continue
+            }
+            empties = 0
+
+            // The samples first, and `isMusicActive` only when they are
+            // silent. Two things come out of that order.
+            //
+            // Correctness: `AudioManager.isMusicActive()` describes the
+            // phone's music stream, not this capture, and it goes false
+            // across a gapless track change, a buffering stall and an app
+            // switching decoders. Three seconds of that used to release
+            // focus and stop the stream, and the car needed a moment to
+            // switch its source back when it returned -- which is the
+            // "music cuts out for a few seconds every few minutes" a driver
+            // reported. Audio that is arriving is proof that audio is
+            // playing, and no framework flag can contradict it.
+            //
+            // Cost: it was a binder call for every buffer, twenty-five
+            // times a second, on the thread pumping music. Now it is
+            // consulted only when the buffer is silent, which is when there
+            // is nothing else to do anyway.
+            val quiet = isSilence(buffer, read)
+            val playing = !quiet || PhoneAudioCapture.isMusicPlaying(audioManager)
+            if (playing) {
+                idleSince = 0L
+                // Re-reads the shared flag every buffer, so focus taken away
+                // by a spoken prompt is noticed and taken back rather than
+                // assumed. See [mediaFocusHeld].
+                if (!mediaFocusHeld) {
+                    // Same lock, same reason: taking focus mid-prompt would
+                    // overwrite the prompt's own request in the single slot.
+                    speaking.withLock {
+                        if (!mediaFocusHeld) mediaFocusHeld = requestMediaFocus()
+                    }
+                }
+            } else if (mediaFocusHeld) {
+                // Not released on the first silent buffer: a track change is
+                // a second of silence, and giving the radio back and taking
+                // it again across every gap would make the car click.
+                val now = SystemClock.elapsedRealtime()
+                if (idleSince == 0L) idleSince = now
+                if (now - idleSince >= MEDIA_IDLE_RELEASE_MILLIS) {
+                    // Under the same lock a prompt takes. `PhoneAudioFocus`
+                    // keeps one slot, so releasing it here while a spoken
+                    // reply is mid-render would send the car a RELEASE for
+                    // the *prompt's* focus and un-duck the radio underneath
+                    // it. `speaking` is the existing serialiser for exactly
+                    // this resource; the pump had simply never taken it.
+                    speaking.withLock {
+                        releaseMediaFocus()
+                        mediaFocusHeld = false
+                    }
+                }
+            }
+
+            if (!mediaFocusHeld) continue
+            // A copy, always. The buffer is reused by the next read, and
+            // the sender may not have looked at this one yet -- which is
+            // the entire point of it being somewhere else.
+            val lost = queued.offer(buffer.copyOf(read))
+            if (lost > 0) {
+                stalls += lost
+                if (stalls == lost.toLong()) {
+                    onStep(
+                        "media: the car is behind by more than the queue holds, so the " +
+                            "oldest audio is being dropped. This is counted from here on " +
+                            "and reported at the end of the session"
+                    )
+                }
+            }
+            capturedBytes += read
+            }
+        }
     }
 
     /** Takes focus for continuous playback, on both the phone and the car. */
@@ -661,8 +749,22 @@ class CarAudioStream(
             // answer "why did it cut out", and a summary that only mentions
             // them when they are bad cannot show that they were fine.
             if (mediaBytesSent > 0) {
+                // Every one of these is now actually assigned. They were not:
+                // three counters printed at the end of every session, never
+                // written to, reading "0 ms, 0 ms, 0 stall(s)" through a drive
+                // that lost 34 seconds of music. A figure that cannot move is
+                // worse than no figure, because it is read as a measurement.
+                val queue = mediaQueue
                 parts += "worst wait for the car ${longestSendMillis} ms, " +
-                    "worst gap in capture ${idleGapMillis} ms, $stalls stall(s)"
+                    "worst gap in capture ${idleGapMillis} ms, " +
+                    "$slowSends send(s) over ${STALL_REPORT_MILLIS} ms, " +
+                    "$stalls buffer(s) dropped behind the car" +
+                    (queue?.let { ", queue peaked at ${it.deepest}" } ?: "")
+                // The one figure that would have found this a week ago: what
+                // the capture produced against what reached the car. They
+                // differ only by whatever is still in the queue, so a gap here
+                // is audio that was recorded and never played.
+                parts += "captured ${capturedBytes / 1024} KiB, sent ${mediaBytesSent / 1024} KiB"
             }
         }
         if (refusals.isNotEmpty()) parts += "refused: ${refusals.joinToString("; ")}"

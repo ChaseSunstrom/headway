@@ -1152,6 +1152,28 @@ open class HeadwayService : Service() {
         connection: FramedConnection,
         profile: HeadUnitProfile,
     ) = coroutineScope {
+        // Which channels may be made to wait for the wire, named from what this
+        // unit actually advertised rather than from a table -- the target
+        // vehicle puts video on id 12 and its audio sinks on 2 to 5.
+        //
+        // Only video. A late video frame is discarded by `VideoPump` and costs
+        // nothing; a late *audio* buffer is audio the driver never hears,
+        // because the capture behind the sender has nowhere to put what the
+        // phone is playing while it waits. See FramedConnection.bulkChannels.
+        connection.bulkChannels = profile.services
+            .filter {
+                it.hasMediaSinkService() &&
+                    it.mediaSinkService.availableType == MediaCodecType.MEDIA_CODEC_VIDEO_H264_BP
+            }
+            .map { it.id }
+            .toSet()
+        if (connection.bulkChannels.isNotEmpty()) {
+            step(
+                "wire priority: control first, then audio and everything else, with " +
+                    "video ${connection.bulkChannels.joinToString()} made to queue"
+            )
+        }
+
         // Every view must be registered before the pump starts, or the first
         // messages for a channel arrive before anyone is subscribed and are
         // counted unroutable. That is the demultiplexer's documented contract.

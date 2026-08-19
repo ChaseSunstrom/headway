@@ -39,12 +39,37 @@ object ForegroundApp {
      * leaving it, so it leaves the remembered app alone. Anything else replaces
      * it.
      *
+     * ## Unless the driver asked for the assistant
+     *
+     * The assistant is also an ordinary app with an icon, and a driver may pin
+     * it to the rail and tap it. Treating that window as an overlay too would
+     * leave `previous` naming the app before it, so the pane would compare the
+     * app it was asked to show against a package that can never arrive, decide
+     * it was closed, and cover itself — permanently, because no later window
+     * event can name the assistant either. That is the same never-uncovering
+     * pane this rule exists to remove, moved rather than fixed.
+     *
+     * So [opened] settles it: an assistant window is an overlay only when the
+     * assistant is not what the driver opened.
+     *
      * @param window the package of the window that just came to the front.
      * @param previous what was remembered until now; null means "cannot tell",
      *   which callers read as "show the picture" rather than as an answer.
      * @param assistant the phone's configured assistant, or null when it has
      *   none — in which case no package is treated as special.
+     * @param opened what the driver last opened into a pane, if anything.
      */
-    fun after(window: String, previous: String?, assistant: String?): String? =
-        if (assistant != null && window == assistant) previous else window
+    fun after(window: String, previous: String?, assistant: String?, opened: String?): String? =
+        if (assistant != null && window == assistant && opened != assistant) previous else window
+
+    /**
+     * Whether [window] coming forward is the assistant listening.
+     *
+     * The same distinction as [after] and it has to be made the same way: an
+     * assistant the driver opened as an app is an app on the car screen, not a
+     * voice session, and putting "Assistant is listening" over it would be
+     * covering the thing they asked to see.
+     */
+    fun isAssistantSession(window: String, assistant: String?, opened: String?): Boolean =
+        assistant != null && window == assistant && opened != assistant
 }

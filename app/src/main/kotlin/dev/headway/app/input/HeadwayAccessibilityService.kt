@@ -159,9 +159,12 @@ class HeadwayAccessibilityService : AccessibilityService() {
         // An assistant session is an overlay over the driver's app, not the
         // driver leaving it. See AppPaneHost.assistantInFront.
         val assistant = runCatching { PhoneAssistant.packageName(this) }.getOrNull()
-        AppPaneHost.assistantInFront = assistant != null && name == assistant
+        // What the driver opened matters: the assistant is also an app they can
+        // pin and tap, and then its window is not a voice session at all.
+        val opened = AppPaneHost.openedPackage
+        AppPaneHost.assistantInFront = ForegroundApp.isAssistantSession(name, assistant, opened)
         AppPaneHost.foregroundPackage =
-            ForegroundApp.after(name, AppPaneHost.foregroundPackage, assistant)
+            ForegroundApp.after(name, AppPaneHost.foregroundPackage, assistant, opened)
     }
 
     override fun onInterrupt() {

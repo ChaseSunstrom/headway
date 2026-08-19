@@ -126,6 +126,27 @@ class FramedConnection(
     private val bulkLane = Mutex()
 
     /**
+     * Which channels are bulk, and therefore the only ones made to queue.
+     *
+     * Set after service discovery, because channel numbers are the head unit's
+     * to choose: the target vehicle advertises video on id 12 and audio sinks
+     * on 2 to 5, which no fixed table would have got right.
+     *
+     * Video is the whole of it in practice, and the asymmetry is the point.
+     * A late video frame is worthless and `VideoPump` already throws them away.
+     * A late *audio* buffer is not droppable in the same way — while the sender
+     * waits, the capture behind it has nowhere to put what the phone is playing,
+     * and on 2026-08-19 that cost 34 seconds of music in twenty minutes. Audio
+     * therefore contends for the wire directly, ahead of any video queued
+     * behind this lane, and only control comes before it.
+     *
+     * Empty means nothing is gated, which is the safe default: it degrades to
+     * the old behaviour plus the control lane.
+     */
+    @Volatile
+    var bulkChannels: Set<Int> = emptySet()
+
+    /**
      * Fragments, encrypts if required, and writes [message].
      *
      * @throws IllegalStateException if the message is marked encrypted but no
@@ -133,8 +154,12 @@ class FramedConnection(
      *   the alternative is silently transmitting plaintext the peer will reject.
      */
     override suspend fun send(message: AapMessage) {
-        // See bulkLane. Control skips the queue; everything else joins it.
-        if (message.channelId == ChannelId.CONTROL.id) {
+        // Three lanes. Control never queues; bulk (video) queues so that only
+        // one of it is ever in front of anything else; everything in between --
+        // audio, sensors, media status -- contends for the wire directly.
+        if (message.channelId == ChannelId.CONTROL.id ||
+            message.channelId !in bulkChannels
+        ) {
             sendLock.withLock { write(message) }
         } else {
             bulkLane.withLock { sendLock.withLock { write(message) } }
