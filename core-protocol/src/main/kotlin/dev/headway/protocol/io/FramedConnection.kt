@@ -82,13 +82,27 @@ class FramedConnection(
      * ## Why a second lock rather than one
      *
      * `Mutex` is fair: waiters are served in arrival order. With one lock for
-     * the whole connection, a control message joins the back of a queue that in
-     * a live session is ~80 messages per second long — 30 fps of video plus
-     * ~50 audio buffers — and every one of those has to be written to a
-     * congested car radio before the control message is even looked at. A drive
-     * log from the target vehicle shows 810 video frames dropped in eight
-     * minutes for want of wire, which is the same congestion measured from the
-     * other end.
+     * the whole connection, a control message joins the back of whatever is
+     * already waiting.
+     *
+     * That queue is short — a handful of senders, not one per message. Video,
+     * each audio sink, sensors and media status each drive the wire from a
+     * single coroutine, and video discards frames it cannot send rather than
+     * piling them up (`VideoPump`). So the honest figure is on the order of
+     * five waiters, not the eighty-a-second the message rate suggests. What
+     * makes five enough to matter is what each one costs: the lock is held for
+     * a *whole message*, and a keyframe is several 16 KiB fragments written to
+     * a car radio that a drive log shows dropping 810 video frames in eight
+     * minutes for want of capacity. Five of those in front of a ping answer is
+     * seconds, and seconds is the budget.
+     *
+     * It is a contributor rather than a proven cause, and this does not fix the
+     * sharper version of it: a single `transport.write` that blocks for a long
+     * time holds the lock whatever lane the waiter is in, because one socket
+     * with one framing stream cannot have two writers. Java's `SO_TIMEOUT`
+     * bounds reads and not writes, so nothing bounds that today. The timing
+     * added alongside this — see the service's keepalive summary — measures the
+     * whole wait including the lock, so the next drive log says which it was.
      *
      * That matters because of what rides on the control channel: the head unit
      * pings on a timer for the whole session and tears the session down when
