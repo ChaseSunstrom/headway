@@ -524,15 +524,43 @@ class CarAudioStream(
                     withContext(reading) { readCaptureInto(queued, capture, buffer) }
                 } finally {
                     // The reader is the only producer, so once it is done the
-                    // sender has a finite amount left and can finish it.
+                    // sender has a finite amount left to send.
                     //
                     // `NonCancellable`, because a bare `join` in a `finally`
                     // throws the moment the scope is cancelling -- which is
                     // exactly when this runs if the sender is what failed --
                     // and would replace the failure that caused it with a
                     // cancellation naming nothing.
+                    //
+                    // Bounded, and that is not a nicety. `sendPcm` waits for
+                    // the head unit's credit, `awaitCredit` has no timeout, and
+                    // neither does the socket write beneath it -- FramedConnection
+                    // says so in as many words. The reader returns *normally* on
+                    // two paths a driver hits constantly: the projection being
+                    // revoked at a lock screen, and the audioserver restarting.
+                    // On those the scope is not cancelling, so nothing else
+                    // would ever stop this waiting.
+                    //
+                    // Everything after this point is recovery -- giving the
+                    // car's audio focus back so its radio returns, closing the
+                    // capture, closing the reader's thread, and letting the
+                    // outer loop wait for a new grant. None of it may sit
+                    // behind a head unit that has stopped answering. Waiting
+                    // here forever meant a locked phone left the car ducked and
+                    // silent, with re-sharing the screen doing nothing for the
+                    // rest of the drive.
                     queued.close()
-                    withContext(NonCancellable) { sender.join() }
+                    withContext(NonCancellable) {
+                        val drained = withTimeoutOrNull(DRAIN_TIMEOUT_MILLIS) { sender.join() }
+                        if (drained == null) {
+                            onStep(
+                                "media: the car did not take the last of the queued audio " +
+                                    "within $DRAIN_TIMEOUT_MILLIS ms, so it is being dropped " +
+                                    "rather than held on to"
+                            )
+                            sender.cancel()
+                        }
+                    }
                 }
             }
             return true
@@ -800,7 +828,13 @@ class CarAudioStream(
                 // the capture produced against what reached the car. They
                 // differ only by whatever is still in the queue, so a gap here
                 // is audio that was recorded and never played.
-                parts += "captured ${capturedBytes / 1024} KiB, sent ${mediaBytesSent / 1024} KiB"
+                // "while playing", because both of these are gated on media
+                // focus being held and the "KiB read" printed on the capture's
+                // own line beside them is not. Comparing this pair is valid;
+                // comparing either against that one is not, and the label is
+                // the only thing that says so.
+                parts += "captured ${capturedBytes / 1024} KiB while playing, " +
+                    "sent ${mediaBytesSent / 1024} KiB"
             }
         }
         if (refusals.isNotEmpty()) parts += "refused: ${refusals.joinToString("; ")}"
@@ -1263,6 +1297,16 @@ class CarAudioStream(
          * well past anything the acknowledgement window absorbs normally.
          */
         private const val STALL_REPORT_MILLIS: Long = 250L
+
+        /**
+         * How long the end of a grant waits for the car to take what is queued.
+         *
+         * One queue depth of audio is two seconds, and a head unit keeping up
+         * clears it in far less. Past this it is not keeping up, and holding on
+         * to a second of stale music is worth less than getting the car's radio
+         * back and the capture closed. See the drain in `pumpMediaWith`.
+         */
+        private const val DRAIN_TIMEOUT_MILLIS: Long = 2_000L
 
         /** Stalls reported individually before the summary count takes over. */
         private const val MAX_REPORTED_STALLS: Long = 12L
