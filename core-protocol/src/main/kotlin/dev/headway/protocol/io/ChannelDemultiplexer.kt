@@ -64,6 +64,19 @@ class ChannelDemultiplexer(
     var droppedMessages: Long = 0L
         private set
 
+    private val droppedPerChannel = ConcurrentHashMap<Int, Long>()
+
+    /**
+     * [droppedMessages] broken down by channel id.
+     *
+     * The total on its own is not actionable. A drive log reporting "38 were
+     * evicted from a full channel queue" says nothing about whether that was
+     * video the driver will never miss or control traffic the head unit was
+     * waiting on, and those two readings call for opposite responses. Naming
+     * the channel is the difference between a number and a diagnosis.
+     */
+    val droppedByChannel: Map<Int, Long> get() = droppedPerChannel.toMap()
+
     /** Messages that arrived for a channel with no subscriber. Diagnostics. */
     @Volatile
     var unroutableMessages: Long = 0L
@@ -110,6 +123,7 @@ class ChannelDemultiplexer(
                     // would freeze control traffic and the session with it.
                     queue.tryReceive()
                     droppedMessages++
+                    droppedPerChannel.merge(message.channelId, 1L, Long::plus)
                     queue.trySend(message)
                 }
             }

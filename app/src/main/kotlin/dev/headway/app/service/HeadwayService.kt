@@ -713,6 +713,8 @@ open class HeadwayService : Service() {
         // to be read after the fact.
         channelNames = emptyMap()
         highRateChannels = DEFAULT_HIGH_RATE_CHANNELS
+        pingsAnswered = 0L
+        worstPingAnswerMillis = 0L
 
         val adapter = BluetoothCarLink.adapterOf(this)
             ?: throw IllegalStateException("this device has no Bluetooth adapter")
@@ -1307,8 +1309,24 @@ open class HeadwayService : Service() {
                 while (true) {
                     val message = control.receive()
                     when {
-                        ControlKeepalive.isPing(message) ->
+                        ControlKeepalive.isPing(message) -> {
+                            // Timed, because the answer being late is the one
+                            // way this loop can kill a session, and it is
+                            // invisible from the cabin. A head unit pings on a
+                            // timer and resets the connection when the answers
+                            // stop -- which is what three ends in the
+                            // 2026-08-19 drive log look like: a reset or a
+                            // broken pipe, and no BYEBYE_REQUEST with any of
+                            // them. If this number is ever seconds, that is the
+                            // answer; if the count stays zero, this unit does
+                            // not ping and the theory is dead. Either reading
+                            // is worth more than the silence there was before.
+                            val started = System.nanoTime()
                             ControlKeepalive.answer(control, message, connection.cryptor != null)
+                            val took = (System.nanoTime() - started) / 1_000_000
+                            pingsAnswered++
+                            if (took > worstPingAnswerMillis) worstPingAnswerMillis = took
+                        }
 
                         audio?.onControlMessage(message) == true -> Unit
 
@@ -1469,11 +1487,45 @@ open class HeadwayService : Service() {
                 val unroutable = demux.unroutableMessages
                 val dropped = demux.droppedMessages
                 if (unroutable > 0L || dropped > 0L) {
+                    // Named per channel. "38 evicted" was a number nobody could
+                    // act on: video the driver never missed and control traffic
+                    // the head unit was waiting on read identically.
+                    val where = demux.droppedByChannel.entries
+                        .sortedByDescending { it.value }
+                        .joinToString(", ") { (id, count) ->
+                            "${channelNames[id] ?: ChannelId.describe(id)} $count"
+                        }
                     step(
                         "frames: $unroutable arrived for a channel this session never opened, " +
-                            "$dropped were evicted from a full channel queue"
+                            "$dropped were evicted from a full channel queue" +
+                            if (where.isEmpty()) "" else " ($where)"
                     )
                 }
+            }
+            runCatching {
+                // The car's own budget, so the number above can be read against
+                // something instead of admired. A slowest answer past the
+                // announced timeout is not a slow session, it is the reason the
+                // session ended: the protocol has STATUS_PING_TIMEOUT for it,
+                // and a unit that gives up sends a reset rather than a byebye.
+                val budget = profile.pingConfiguration
+                val timeout = budget?.takeIf { it.hasTimeoutMs() }?.timeoutMs
+                val slow = budget?.takeIf { it.hasHighLatencyThresholdMs() }?.highLatencyThresholdMs
+                val verdict = when {
+                    pingsAnswered == 0L ->
+                        "; this unit did not ping at all, so a late answer cannot be why a " +
+                            "session ended"
+                    timeout != null && worstPingAnswerMillis >= timeout ->
+                        "; that is past the ${timeout} ms this unit allows, which is enough on " +
+                            "its own to explain a session the car reset without a byebye"
+                    slow != null && worstPingAnswerMillis >= slow ->
+                        "; over the ${slow} ms this unit calls slow, though inside its timeout"
+                    else -> ""
+                }
+                step(
+                    "keepalive: $pingsAnswered ping(s) from the car answered, " +
+                        "slowest answer took $worstPingAnswerMillis ms$verdict"
+                )
             }
             // Written here, at the end of the session, while every line from
             // the drive is still in the buffer. See `SessionLog.exportSession`.
@@ -2244,6 +2296,20 @@ open class HeadwayService : Service() {
      */
     @Volatile
     private var channelNames: Map<Int, String> = emptyMap()
+
+    /**
+     * How many of the head unit's keepalives this session answered, and the
+     * worst time one of those answers took to reach the wire.
+     *
+     * Written only by the control loop, which is a single coroutine, and read
+     * only by the session summary -- so a plain volatile pair rather than
+     * atomics. See the control loop for why they exist.
+     */
+    @Volatile
+    private var pingsAnswered: Long = 0L
+
+    @Volatile
+    private var worstPingAnswerMillis: Long = 0L
 
     /** The quirks in force for the current session; see where it is set. */
     @Volatile

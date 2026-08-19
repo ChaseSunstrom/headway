@@ -77,6 +77,41 @@ class FramedConnection(
     private val receiveLock = Mutex()
 
     /**
+     * The queue every *bulk* sender waits in before it may queue for [sendLock].
+     *
+     * ## Why a second lock rather than one
+     *
+     * `Mutex` is fair: waiters are served in arrival order. With one lock for
+     * the whole connection, a control message joins the back of a queue that in
+     * a live session is ~80 messages per second long — 30 fps of video plus
+     * ~50 audio buffers — and every one of those has to be written to a
+     * congested car radio before the control message is even looked at. A drive
+     * log from the target vehicle shows 810 video frames dropped in eight
+     * minutes for want of wire, which is the same congestion measured from the
+     * other end.
+     *
+     * That matters because of what rides on the control channel: the head unit
+     * pings on a timer for the whole session and tears the session down when
+     * the answers stop (openauto's `AndroidAutoEntity` runs exactly that loop;
+     * see [dev.headway.protocol.control.ControlKeepalive]). A ping answer stuck
+     * behind a second of backlog is a session the car kills — and it kills it
+     * with a reset rather than a `BYEBYE_REQUEST`, because from the car's point
+     * of view the phone stopped answering. Three of those, with no byebye, is
+     * what the 2026-08-19 drive log contains.
+     *
+     * So bulk senders line up here first, and only the one at the front is ever
+     * allowed to queue for [sendLock]. A control message skips this lane
+     * entirely, so the longest it can wait is the message currently going out
+     * plus at most one queued behind it — bounded and small — instead of the
+     * whole backlog.
+     *
+     * Media is not harmed by this. Bulk throughput is unchanged: the lane adds
+     * no serialisation that [sendLock] did not already impose, since only one
+     * message can be on the wire at a time either way.
+     */
+    private val bulkLane = Mutex()
+
+    /**
      * Fragments, encrypts if required, and writes [message].
      *
      * @throws IllegalStateException if the message is marked encrypted but no
@@ -84,34 +119,42 @@ class FramedConnection(
      *   the alternative is silently transmitting plaintext the peer will reject.
      */
     override suspend fun send(message: AapMessage) {
-        sendLock.withLock {
-            for (fragment in fragmenter.fragment(message)) {
-                val wire = if (fragment.encrypted) {
-                    val c = cryptor ?: throw IllegalStateException(
-                        "message on ${ChannelId.describe(message.channelId)} is marked encrypted " +
-                            "but the TLS session is not established"
-                    )
-                    c.encrypt(fragment.plaintext)
-                } else {
-                    fragment.plaintext
-                }
+        // See bulkLane. Control skips the queue; everything else joins it.
+        if (message.channelId == ChannelId.CONTROL.id) {
+            sendLock.withLock { write(message) }
+        } else {
+            bulkLane.withLock { sendLock.withLock { write(message) } }
+        }
+    }
 
-                // The header can only be built once the on-wire length is known,
-                // because for an encrypted frame that is the ciphertext length
-                // while the total-size field stays in plaintext units.
-                val header = fragment.headerFor(wire.size)
-                // Logged as plaintext, not as the ciphertext actually written:
-                // a hex dump of a TLS record tells a reader nothing, and the
-                // whole point of this hook is that a failure be readable.
-                onFrame(Direction.SENT, header, fragment.plaintext)
-
-                // One write per frame: header and payload must not be separated
-                // by another coroutine's frame.
-                val out = ByteArray(header.encodedSize + wire.size)
-                header.encode().copyInto(out)
-                wire.copyInto(out, header.encodedSize)
-                transport.write(out)
+    /** The body of [send], once the caller owns [sendLock]. */
+    private suspend fun write(message: AapMessage) {
+        for (fragment in fragmenter.fragment(message)) {
+            val wire = if (fragment.encrypted) {
+                val c = cryptor ?: throw IllegalStateException(
+                    "message on ${ChannelId.describe(message.channelId)} is marked encrypted " +
+                        "but the TLS session is not established"
+                )
+                c.encrypt(fragment.plaintext)
+            } else {
+                fragment.plaintext
             }
+
+            // The header can only be built once the on-wire length is known,
+            // because for an encrypted frame that is the ciphertext length
+            // while the total-size field stays in plaintext units.
+            val header = fragment.headerFor(wire.size)
+            // Logged as plaintext, not as the ciphertext actually written:
+            // a hex dump of a TLS record tells a reader nothing, and the
+            // whole point of this hook is that a failure be readable.
+            onFrame(Direction.SENT, header, fragment.plaintext)
+
+            // One write per frame: header and payload must not be separated
+            // by another coroutine's frame.
+            val out = ByteArray(header.encodedSize + wire.size)
+            header.encode().copyInto(out)
+            wire.copyInto(out, header.encodedSize)
+            transport.write(out)
         }
     }
 

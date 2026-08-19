@@ -22,6 +22,7 @@ import aap_protobuf.service.media.shared.message.MediaCodecTypeOuterClass.MediaC
 import aap_protobuf.service.control.message.ChannelOpenRequestOuterClass.ChannelOpenRequest
 import aap_protobuf.service.control.message.ChannelOpenResponseOuterClass.ChannelOpenResponse
 import aap_protobuf.service.control.message.ServiceDiscoveryRequestOuterClass.ServiceDiscoveryRequest
+import aap_protobuf.service.control.message.PingConfigurationOuterClass.PingConfiguration
 import aap_protobuf.service.control.message.ServiceDiscoveryResponseOuterClass.ServiceDiscoveryResponse
 import aap_protobuf.shared.MessageStatusOuterClass.MessageStatus
 import dev.headway.protocol.control.ControlKeepalive
@@ -55,6 +56,22 @@ data class HeadUnitProfile(
     val version: VersionHandshake.Version,
     val displayName: String?,
     val services: List<ServiceOuterClass.Service>,
+    /**
+     * The keepalive terms the head unit announced, if it announced any.
+     *
+     * Parsed but never read until 2026-08-19, and it is the most operationally
+     * important thing in the discovery response after the channel list: it is
+     * the car stating, in its own words, how long the phone may take to answer
+     * a ping before the session is torn down. openauto's head unit fills it
+     * with `{tracked_ping_count=5, timeout_ms=3000, interval_ms=1000,
+     * high_latency_threshold_ms=200}` (see docs/protocol-notes.md, "STEP 6"),
+     * and the protocol has a dedicated `STATUS_PING_TIMEOUT = -25` for what
+     * happens when the phone misses that window.
+     *
+     * Headway had no idea what its own budget was, and a drive log could not
+     * say whether an answer had been late. Now it can.
+     */
+    val pingConfiguration: PingConfiguration? = null,
 ) {
     /** Finds the advertised service whose id matches [channelId]. */
     fun serviceFor(channelId: Int): ServiceOuterClass.Service? = services.firstOrNull { it.id == channelId }
@@ -391,7 +408,39 @@ class AapSession(
             version = version,
             displayName = if (response.hasDisplayName()) response.displayName else null,
             services = response.channelsList,
+            pingConfiguration = response.takeIf { it.hasConnectionConfiguration() }
+                ?.connectionConfiguration
+                ?.takeIf { it.hasPingConfiguration() }
+                ?.pingConfiguration,
         )
+        profile.pingConfiguration?.let {
+            onStep(
+                "head unit's keepalive terms: " +
+                    (if (it.hasIntervalMs()) "a ping every ${it.intervalMs} ms" else "unstated interval") +
+                    ", " +
+                    (
+                        if (it.hasTimeoutMs()) {
+                            "each answered within ${it.timeoutMs} ms"
+                        } else {
+                            "unstated timeout"
+                        }
+                        ) +
+                    (
+                        if (it.hasHighLatencyThresholdMs()) {
+                            ", over ${it.highLatencyThresholdMs} ms counts as slow"
+                        } else {
+                            ""
+                        }
+                        ) +
+                    (
+                        if (it.hasTrackedPingCount()) {
+                            ", ${it.trackedPingCount} tracked"
+                        } else {
+                            ""
+                        }
+                        )
+            )
+        }
         // Described from each service's own descriptor, not from Headway's
         // ChannelId table.
         //
