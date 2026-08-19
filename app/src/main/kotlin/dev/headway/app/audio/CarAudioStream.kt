@@ -642,7 +642,10 @@ class CarAudioStream(
                 // Not released on the first silent buffer: a track change is
                 // a second of silence, and giving the radio back and taking
                 // it again across every gap would make the car click.
-                val now = SystemClock.elapsedRealtime()
+                //
+                // `now` is the one read at the top of the loop. It used to be
+                // taken again here, which shadowed it -- a warning, and a
+                // second clock read for a ten-second timer.
                 if (idleSince == 0L) idleSince = now
                 if (now - idleSince >= MEDIA_IDLE_RELEASE_MILLIS) {
                     // Under the same lock a prompt takes. `PhoneAudioFocus`
