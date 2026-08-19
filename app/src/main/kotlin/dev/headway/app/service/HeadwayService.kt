@@ -1432,7 +1432,23 @@ open class HeadwayService : Service() {
             // and that invented sentence is what the log and the reconnect
             // banner report — indistinguishable from the head unit hanging up,
             // which is exactly how the last drive was misread.
-            sessionFailure = t
+            // The *first* cause wins, and a cancellation never overwrites one.
+            //
+            // `runSession` is a scope with children, so a child failing --
+            // the demultiplexer's read hitting `Connection reset`, say --
+            // cancels the scope, and the next suspension point here throws
+            // `CancellationException`. Recording that as the failure replaced
+            // the real reason with "is cancelling", which in a release build is
+            // a minified class name and says nothing at all. A drive log has
+            // five session ends, every one of them reported that way, while the
+            // supervisor's own line beside it named `Connection reset`,
+            // `Broken pipe` and `peer closed` -- the answers that were wanted.
+            val cancelled = t is kotlinx.coroutines.CancellationException
+            val heldIsCancellation =
+                sessionFailure is kotlinx.coroutines.CancellationException
+            if (sessionFailure == null || (heldIsCancellation && !cancelled)) {
+                sessionFailure = t
+            }
             throw t
         } finally {
             // Every describe() before every stop(): the counts are what a log
@@ -1464,7 +1480,14 @@ open class HeadwayService : Service() {
             runCatching {
                 SessionLog.shared.exportSession(
                     applicationContext,
-                    sessionFailure?.let { "ended: ${it.message}" } ?: "ended cleanly",
+                    sessionFailure?.let { failure ->
+                        val cause = generateSequence(failure) { link ->
+                            link.cause?.takeIf { it !== link }
+                        }.take(CAUSE_DEPTH).lastOrNull() ?: failure
+                        val named = cause.message?.takeIf { it.isNotBlank() }
+                            ?: cause.javaClass.simpleName
+                        "ended: $named"
+                    } ?: "ended cleanly",
                 )
             }
             runCatching { CarShell.onVoiceRequested = null }
@@ -2233,6 +2256,9 @@ open class HeadwayService : Service() {
      * `demux.closeAll` instead of letting it invent one.
      */
     private var sessionFailure: Throwable? = null
+
+    /** How far to walk a cause chain when naming why a session ended. */
+    private val CAUSE_DEPTH: Int = 5
 
     /**
      * Channels logged as a byte count rather than as hex, for the same reason
