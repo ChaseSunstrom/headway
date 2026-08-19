@@ -43,6 +43,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,6 +54,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -500,8 +502,14 @@ class CarAudioStream(
                 } finally {
                     // The reader is the only producer, so once it is done the
                     // sender has a finite amount left and can finish it.
+                    //
+                    // `NonCancellable`, because a bare `join` in a `finally`
+                    // throws the moment the scope is cancelling -- which is
+                    // exactly when this runs if the sender is what failed --
+                    // and would replace the failure that caused it with a
+                    // cancellation naming nothing.
                     queued.close()
-                    sender.join()
+                    withContext(NonCancellable) { sender.join() }
                 }
             }
             return true

@@ -17,6 +17,7 @@
 
 package dev.headway.app.audio
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 
 /**
@@ -98,7 +99,18 @@ class MediaQueue(depth: Int = DEFAULT_DEPTH) {
     suspend fun take(): ByteArray? {
         while (true) {
             synchronized(lock) { queue.removeFirstOrNull() }?.let { return it }
-            val more = runCatching { wakeup.receive() }.isSuccess
+            val more = try {
+                wakeup.receive()
+                true
+            } catch (cancelled: CancellationException) {
+                // Rethrown rather than folded in with "the queue is closed".
+                // A `runCatching` here would swallow the session ending and
+                // send one more buffer into a cancelled coroutine, where the
+                // failure would be reported as the link dying.
+                throw cancelled
+            } catch (closed: Exception) {
+                false
+            }
             if (!more) return synchronized(lock) { queue.removeFirstOrNull() }
         }
     }
