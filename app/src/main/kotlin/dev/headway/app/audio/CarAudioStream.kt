@@ -713,11 +713,11 @@ class CarAudioStream(
                 // a second of silence, and giving the radio back and taking
                 // it again across every gap would make the car click.
                 //
-                // `now` is the one read at the top of the loop. It used to be
-                // taken again here, which shadowed it -- a warning, and a
-                // second clock read for a ten-second timer.
-                if (idleSince == 0L) idleSince = now
-                if (now - idleSince >= MEDIA_IDLE_RELEASE_MILLIS) {
+                // `returned` is the stamp taken when this buffer's read came
+                // back, at the top of the loop. A second clock read here would
+                // shadow it and buy nothing on a ten-second timer.
+                if (idleSince == 0L) idleSince = returned
+                if (returned - idleSince >= MEDIA_IDLE_RELEASE_MILLIS) {
                     // Under the same lock a prompt takes. `PhoneAudioFocus`
                     // keeps one slot, so releasing it here while a spoken
                     // reply is mid-render would send the car a RELEASE for
