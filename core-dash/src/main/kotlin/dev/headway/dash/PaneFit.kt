@@ -25,6 +25,33 @@ data class PaneRect(val left: Int, val top: Int, val right: Int, val bottom: Int
     val width: Int get() = right - left
     val height: Int get() = bottom - top
     fun contains(x: Int, y: Int): Boolean = x >= left && x < right && y >= top && y < bottom
+
+    /**
+     * The part of this rectangle that is also inside [other]; empty if none is.
+     *
+     * ## What this is for
+     *
+     * [cover] returns a rectangle deliberately *larger* than the pane, and the
+     * pane clips the drawing. Nothing clipped the numbers, and the numbers are
+     * what the touch router uses to decide which touches belong to the app. On
+     * an 800x480 head unit showing a portrait phone cropped to fill, the
+     * published rectangle ran from y=-617 to y=1163: it contained every pixel
+     * of the car screen, including the rail. Every tap on a layout tab was
+     * forwarded to the phone, and the driver reported the tabs as dead after
+     * opening a pinned app.
+     *
+     * A rectangle that says where a picture is drawn and a rectangle that says
+     * what a driver can see and touch are two different rectangles the moment
+     * cropping is switched on. This makes the second one.
+     */
+    fun intersect(other: PaneRect): PaneRect {
+        val l = maxOf(left, other.left)
+        val t = maxOf(top, other.top)
+        val r = minOf(right, other.right)
+        val b = minOf(bottom, other.bottom)
+        return if (r <= l || b <= t) PaneRect(0, 0, 0, 0) else PaneRect(l, t, r, b)
+    }
+
     override fun toString(): String = "${width}x$height at ($left,$top)"
 }
 

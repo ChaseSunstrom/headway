@@ -356,6 +356,38 @@ class AppPaneTile(
         return PaneRect(location[0], location[1], location[0] + width, location[1] + height)
     }
 
+    /**
+     * The part of the picture the driver can actually see, in car coordinates.
+     *
+     * Not the same rectangle as [pictureRect], and the difference is a bug a
+     * driver reported. [pictureRect] is where the picture is *mapped from*: with
+     * "crop the picture to fill the panel" on, `PaneFit.cover` deliberately
+     * returns something larger than the pane and the pane clips the drawing, so
+     * the unclipped bounds are what a touch has to be un-cropped against or it
+     * lands in the wrong place inside the app.
+     *
+     * Nothing clipped those bounds for the *ownership* question. On an 800x480
+     * head unit showing a portrait phone cropped to fill, the picture ran from
+     * y=-617 to y=1163 -- it contained every pixel of the car screen, rail
+     * included -- so once a pinned app was open, every tap on a layout tab was
+     * claimed by the app and forwarded to the phone. The tabs went dead and
+     * stayed dead until the app was closed, which is exactly how it was
+     * reported.
+     *
+     * So: [pictureRect] answers "where does this touch land in the app", and
+     * this answers "is this touch the app's at all".
+     */
+    fun visibleRect(): PaneRect {
+        val picture = pictureRect()
+        if (picture.width <= 0 || !::root.isInitialized) return picture
+        val at = IntArray(2)
+        root.getLocationInWindow(at)
+        if (root.width <= 0 || root.height <= 0) return picture
+        return picture.intersect(
+            PaneRect(at[0], at[1], at[0] + root.width, at[1] + root.height),
+        )
+    }
+
     override fun describe(): String = when {
         !live -> "app pane (dormant${packageName?.let { ", wants $it" } ?: ""})"
         !surfaceReady -> "app pane (live, waiting for a surface)"

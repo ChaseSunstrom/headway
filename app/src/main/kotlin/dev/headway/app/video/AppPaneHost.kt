@@ -337,6 +337,19 @@ object AppPaneHost {
     var pictureRect: PaneRect = PaneRect(0, 0, 0, 0)
 
     /**
+     * The part of [pictureRect] the driver can actually see and touch.
+     *
+     * The same rectangle whenever the picture is letterboxed, and a smaller one
+     * whenever it is cropped to fill -- see `AppPaneTile.visibleRect`. Kept
+     * apart because the two answer different questions: [pictureRect] says
+     * where inside the app a touch lands, this says whether the touch is the
+     * app's in the first place. Conflating them let a cropped picture claim the
+     * whole car screen, rail included.
+     */
+    @Volatile
+    var visibleRect: PaneRect = PaneRect(0, 0, 0, 0)
+
+    /**
      * Takes charge of [projection] for the session.
      *
      * The projection is *not* stopped by [detach] — it belongs to the service,
@@ -639,6 +652,7 @@ object AppPaneHost {
             sharingSingleApp = false
             sharingOtherDisplay = false
             pictureRect = PaneRect(0, 0, 0, 0)
+            visibleRect = PaneRect(0, 0, 0, 0)
             onStep = {}
         }
         announce("detached")
@@ -665,6 +679,7 @@ object AppPaneHost {
             contentVisible = true
             openedPackage = null
             pictureRect = PaneRect(0, 0, 0, 0)
+            visibleRect = PaneRect(0, 0, 0, 0)
             onStep = {}
         }
         announce("released")

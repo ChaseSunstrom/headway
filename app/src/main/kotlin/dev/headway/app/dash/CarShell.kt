@@ -329,6 +329,7 @@ class CarShell(
         // the process, and the only symptom is battery.
         live.forEach { runCatching { it.stop() } }
         AppPaneHost.pictureRect = EMPTY_RECT
+        AppPaneHost.visibleRect = EMPTY_RECT
         // Last, and the reason this is not simply the old `onStop` body: it is
         // what gives the platform's display listener back. Called directly
         // rather than inside a `runCatching`, because Kotlin forbids a `super`
@@ -350,6 +351,15 @@ class CarShell(
     fun appPictureRect(): PaneRect = liveAppPane?.pictureRect() ?: EMPTY_RECT
 
     /**
+     * What the driver can actually see of the app's picture; empty when none.
+     *
+     * Distinct from [appPictureRect] only when the picture is cropped to fill
+     * the pane, and that difference is the whole of a reported bug -- see
+     * `AppPaneTile.visibleRect`.
+     */
+    fun appVisibleRect(): PaneRect = liveAppPane?.visibleRect() ?: EMPTY_RECT
+
+    /**
      * Whether a car touch at ([x], [y]) belongs to the app rather than to Headway.
      *
      * Answered from the *published* rectangle rather than by re-reading the
@@ -362,20 +372,33 @@ class CarShell(
     fun claimsAppTouch(x: Int, y: Int): Boolean {
         if (editing) return false
         if (overlayHost.visibility == View.VISIBLE) return false
-        val rect = AppPaneHost.pictureRect
+        // The *visible* rectangle, not the picture's. A picture cropped to
+        // fill is deliberately larger than its pane and the pane clips the
+        // drawing; using the unclipped bounds here let it claim the rail, the
+        // tabs and everything else on the car screen. See
+        // `AppPaneTile.visibleRect`.
+        val rect = AppPaneHost.visibleRect
         val claimed = rect.width > 0 && rect.contains(x, y)
         // Said once per distinct answer-and-rectangle, so the log carries the
         // geometry without carrying one line per touch. If car touches are
         // being forwarded to the phone when they should be reaching the rail,
         // this is the line that shows it -- the rectangle the pane published
         // and whether the tap fell inside it.
-        val shape = "$claimed ${rect.left},${rect.top} ${rect.width}x${rect.height}"
+        val picture = AppPaneHost.pictureRect
+        val shape = "$claimed ${rect.left},${rect.top} ${rect.width}x${rect.height}" +
+            if (picture != rect) " of ${picture.width}x${picture.height}" else ""
         if (lastTouchClaim != shape) {
             lastTouchClaim = shape
             onStep(
                 "car screen: touch at $x,$y ${if (claimed) "goes to the shared app" else
-                    "goes to the dashboard"} (app picture ${rect.left},${rect.top} " +
-                    "${rect.width}x${rect.height})",
+                    "goes to the dashboard"} (visible ${rect.left},${rect.top} " +
+                    "${rect.width}x${rect.height}" +
+                    if (picture != rect) {
+                        ", cropped from ${picture.width}x${picture.height} at " +
+                            "${picture.left},${picture.top})"
+                    } else {
+                        ")"
+                    },
             )
         }
         return claimed
@@ -1051,6 +1074,7 @@ class CarShell(
 
     private fun publishAppPaneRect() {
         AppPaneHost.pictureRect = appPictureRect()
+        AppPaneHost.visibleRect = appVisibleRect()
     }
 
     private fun persistRatio(path: DashPath, ratio: Float) {

@@ -192,4 +192,55 @@ class PaneFitTest {
         // A target with no area is not something to resize towards.
         assertFalse(PaneFit.needsResize(10, 10, PaneRect(0, 0, 0, 0)))
     }
+
+    @Test
+    fun `a cropped picture is clipped to its pane before anyone asks who owns a touch`() {
+        // The bug this exists for, at the numbers from the target vehicle:
+        // an 800x480 head unit, a TOP rail about 65 px thick, so a stage of
+        // 800x415, showing a 1080x2404 phone cropped to fill.
+        val pane = PaneRect(0, 65, 800, 480)
+        val covered = PaneFit.cover(1080, 2404, pane.width, pane.height)
+
+        // cover() is doing its job: the picture is taller than the pane and
+        // starts above it. That is correct for drawing, and the pane clips it.
+        assertTrue(covered.top < 0, "a covered portrait source must overflow: $covered")
+
+        // In window coordinates the picture therefore starts above the rail.
+        val drawn = PaneRect(
+            pane.left + covered.left,
+            pane.top + covered.top,
+            pane.left + covered.right,
+            pane.top + covered.bottom,
+        )
+        assertTrue(drawn.contains(400, 30), "unclipped, it swallows the rail: $drawn")
+
+        // Clipped, it stops at the pane, so a tap on the rail is the rail's.
+        val visible = drawn.intersect(pane)
+        assertFalse(visible.contains(400, 30), "a rail tap must not be the app's: $visible")
+        assertTrue(visible.contains(400, 300), "a tap on the picture still is: $visible")
+        assertEquals(pane, visible, "the whole pane is covered, and nothing beyond it")
+    }
+
+    @Test
+    fun `a letterboxed picture is unchanged by clipping`() {
+        // The default path. `fit` cannot overflow, so the clip must be a no-op
+        // rather than something that quietly shrinks the picture.
+        val pane = PaneRect(0, 65, 800, 480)
+        val fitted = PaneFit.fit(1080, 2404, pane.width, pane.height)
+        val drawn = PaneRect(
+            pane.left + fitted.left,
+            pane.top + fitted.top,
+            pane.left + fitted.right,
+            pane.top + fitted.bottom,
+        )
+        assertEquals(drawn, drawn.intersect(pane))
+    }
+
+    @Test
+    fun `rectangles that do not meet intersect to nothing`() {
+        val a = PaneRect(0, 0, 100, 100)
+        assertEquals(PaneRect(0, 0, 0, 0), a.intersect(PaneRect(200, 200, 300, 300)))
+        assertEquals(PaneRect(0, 0, 0, 0), a.intersect(PaneRect(100, 0, 200, 100)))
+        assertEquals(0, a.intersect(PaneRect(200, 200, 300, 300)).width)
+    }
 }
