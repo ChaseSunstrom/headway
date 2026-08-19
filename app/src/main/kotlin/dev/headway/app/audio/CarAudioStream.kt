@@ -247,7 +247,15 @@ class CarAudioStream(
     /** Longest single wait for the car to take a buffer, in ms. */
     private var longestSendMillis: Long = 0L
 
-    /** Longest gap between finishing one buffer and starting the next, in ms. */
+    /**
+     * Longest the reader was away from the tap between two reads, in ms.
+     *
+     * Not the read cycle, which is mostly the blocking read itself and says
+     * nothing. This is the window in which `AudioRecord`'s ring fills with
+     * nobody draining it, so it is the number to compare against the tap's
+     * capacity -- `BUFFERS_IN_FLIGHT` buffers of `BUFFER_MICROS` each, 320 ms
+     * as configured. Anything approaching that lost music.
+     */
     private var idleGapMillis: Long = 0L
 
     /** Sends that took longer than [STALL_REPORT_MILLIS]. */
@@ -621,7 +629,6 @@ class CarAudioStream(
     ) {
         var idleSince = 0L
         var empties = 0
-        var lastRead = SystemClock.elapsedRealtime()
         while (currentCoroutineContext().isActive) {
             val read = capture.read(buffer)
             // Measured here and nowhere else. The three figures this used
@@ -630,10 +637,19 @@ class CarAudioStream(
             // "0 ms, 0 ms, 0 stall(s)" whatever had happened, and that was
             // taken as evidence the audio path was healthy while it was
             // losing half a minute of music a drive.
-            val now = SystemClock.elapsedRealtime()
-            val gap = now - lastRead
-            lastRead = now
-            if (read > 0 && gap > idleGapMillis) idleGapMillis = gap
+            // The far end of this is at the bottom of the loop. Between them
+            // is the only interval that can lose audio: the tap is filling and
+            // nothing is draining it.
+            //
+            // The first version stamped both ends at a read's *return*, so it
+            // measured the whole cycle with the blocking read inside it --
+            // and `AudioRecord.read` blocks for a buffer period by design, so
+            // it had a 40 ms floor and its worst case was dominated by how
+            // long the tap had nothing to give, which is harmless. That is not
+            // the question. The question is whether this loop was ever away
+            // from the tap long enough to overrun its ring, and only time
+            // outside the read counts towards that.
+            val returned = SystemClock.elapsedRealtime()
             if (read <= 0) {
                 if (read < 0) break
                 // A run of empty reads is how a dead capture looks from
@@ -731,6 +747,13 @@ class CarAudioStream(
                 }
             }
             capturedBytes += read
+            // Closes the interval opened after the read. Deliberately computed
+            // here and nowhere else: the paths that `continue` above never
+            // reach it, which is right -- they did no work worth measuring,
+            // and a variable carried across iterations to cover them would go
+            // stale on exactly those paths and inflate the next real one.
+            val away = SystemClock.elapsedRealtime() - returned
+            if (away > idleGapMillis) idleGapMillis = away
         }
     }
 
@@ -820,7 +843,7 @@ class CarAudioStream(
                 // worse than no figure, because it is read as a measurement.
                 val queue = mediaQueue
                 parts += "worst wait for the car ${longestSendMillis} ms, " +
-                    "worst gap in capture ${idleGapMillis} ms, " +
+                    "worst ${idleGapMillis} ms away from the tap of ~320 available, " +
                     "$slowSends send(s) over ${STALL_REPORT_MILLIS} ms, " +
                     "$stalls buffer(s) dropped behind the car" +
                     (queue?.let { ", queue peaked at ${it.deepest}" } ?: "")

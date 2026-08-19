@@ -713,6 +713,14 @@ open class HeadwayService : Service() {
         // to be read after the fact.
         channelNames = emptyMap()
         highRateChannels = DEFAULT_HIGH_RATE_CHANNELS
+        // Per attempt, like everything above it. Left standing, the second
+        // session in a service lifetime -- which is every automatic reconnect,
+        // the thing CLAUDE.md makes a first-class feature -- reported frame
+        // counts and byte totals belonging mostly to earlier sessions, and an
+        // fps figure averaged across the gap between them. It also meant the
+        // "first few frames in full" logging never fired again after the first
+        // session, because the counter it checks was already past its limit.
+        frameLogStates.clear()
         pingsAnswered = 0L
         worstPingAnswerMillis = 0L
         worstPingQueueMillis = 0L

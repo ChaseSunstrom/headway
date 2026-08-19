@@ -651,6 +651,25 @@ object AppPaneHost {
             sourceMeasured = false
             sharingSingleApp = false
             sharingOtherDisplay = false
+            // Two more that belong with the geometry, and were being left to
+            // `release` -- which runs on the service going away, not between
+            // sessions. Both are latched verdicts about a drive that is over.
+            //
+            // `contentVisible` is set only by the platform's
+            // `onCapturedContentVisibilityChanged`, which fires for a
+            // single-app share and never for a whole-screen one. A session that
+            // ended with the shared app covered left it false for the rest of
+            // the process, so the *next* session's pane hid a capture that was
+            // producing frames perfectly and said "Covered on the phone" -- with
+            // the explanation for it written into the previous drive's log.
+            //
+            // `openedPackage` is what the pane compares the phone's foreground
+            // app against. Carried over, a new session begins believing the
+            // driver had opened last drive's app, so the pane covers itself
+            // with "Closed on the phone" before the driver has opened anything
+            // at all.
+            contentVisible = true
+            openedPackage = null
             pictureRect = PaneRect(0, 0, 0, 0)
             visibleRect = PaneRect(0, 0, 0, 0)
             onStep = {}
