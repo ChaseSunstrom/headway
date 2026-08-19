@@ -309,6 +309,46 @@ the cause:
 `hiddenSsid`, `pinBssid` and `announceWifiChannel` are in the quirk file, so the
 remaining hypotheses can be tested with a text edit instead of a rebuild.
 
+## Sessions that end mid-drive, and what is known about them (2026-08-19)
+
+A driver reported music cutting out every few minutes and Headway "crashing
+mid-drive". The exported log says those are one event and neither is a crash:
+the process never died. The AAP session ends and comes back.
+
+Of the five ends in a thirty-minute drive, two are the car saying
+`BYEBYE_REQUEST` — arriving and parking, exactly when a driver would expect.
+The other three are `Connection reset`, `Broken pipe` and `Connection reset`
+with no byebye at all, which is what a head unit that gave up looks like from
+the phone.
+
+What has been ruled out, by testing rather than by argument:
+
+- **Phone-side Wi-Fi power management.** Build 254 holds a
+  `WIFI_MODE_FULL_LOW_LATENCY` lock for the whole session. The log confirms the
+  lock is held. The drops continued unchanged. A genuine negative result.
+- **Bluetooth.** Every end is preceded by "the Bluetooth link stopped being
+  readable", which reads like a cause and is an effect: closing the RFCOMM link
+  is part of Headway's own teardown. The TCP failure comes first every time.
+
+What is being acted on:
+
+- **The keepalive budget.** The head unit states it in service discovery and
+  Headway had never read it: openauto fills `ping_configuration` with a ping a
+  second, answered inside three, and 200 ms already counted as slow. The send
+  path was one fair mutex shared with media, so an answer queued behind whatever
+  was on the wire. Channel 0 now has its own lane. This is a contributor, not a
+  proven cause — see the note in `FramedConnection` for what it does *not* fix
+  — and every ping is now timed against the car's announced budget, so the next
+  drive log settles it.
+- **The cost of an end, which is separate from its cause.** Reconnecting takes
+  about 700 ms. The silences the driver heard were 3.4 s, 5.1 s and 9.3 s,
+  because a broken session inherited the backoff ladder built for a car that is
+  not there yet. A session that ran past `healthySessionMillis` now resets it.
+
+What is still open: whether the car's access point, or the VPN present in every
+log so far, is behind the three abrupt ends. One drive with the VPN off would
+answer it.
+
 ## Two APKs per release, since 2026-08-14
 
 A user could not install any build after 84 — "App not installed", no reason
