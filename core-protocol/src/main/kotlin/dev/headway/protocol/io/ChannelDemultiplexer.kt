@@ -67,6 +67,26 @@ class ChannelDemultiplexer(
     private val droppedPerChannel = ConcurrentHashMap<Int, Long>()
 
     /**
+     * `System.nanoTime()` when a control message was last put on its queue.
+     *
+     * Exists so a keepalive answer can be timed from when it *arrived* rather
+     * than from when its reader got round to it. Without this, a measurement
+     * taken in the control loop covers only the send path, and a reader that
+     * was starved for two seconds reports a five-millisecond answer -- which
+     * would exonerate the phone on the strength of a number that never looked
+     * at the part that was slow.
+     *
+     * One `Long`, not a queue of them: the pump is the only writer, control
+     * traffic is about one message a second, and a second one arriving before
+     * the first is answered would make this read low rather than high. That is
+     * the safe direction for a number whose job is to raise an alarm, and it is
+     * written down rather than left for a reader to work out.
+     */
+    @Volatile
+    var lastControlArrivalNanos: Long = 0L
+        private set
+
+    /**
      * [droppedMessages] broken down by channel id.
      *
      * The total on its own is not actionable. A drive log reporting "38 were
@@ -115,6 +135,9 @@ class ChannelDemultiplexer(
                     unroutableMessages++
                     onUnroutable(message)
                     continue
+                }
+                if (message.channelId == ChannelId.CONTROL.id) {
+                    lastControlArrivalNanos = System.nanoTime()
                 }
                 if (!queue.trySend(message).isSuccess) {
                     // The queue is full. Discard its oldest entry and take the

@@ -715,6 +715,8 @@ open class HeadwayService : Service() {
         highRateChannels = DEFAULT_HIGH_RATE_CHANNELS
         pingsAnswered = 0L
         worstPingAnswerMillis = 0L
+        worstPingQueueMillis = 0L
+        worstPingSendMillis = 0L
 
         val adapter = BluetoothCarLink.adapterOf(this)
             ?: throw IllegalStateException("this device has no Bluetooth adapter")
@@ -1322,10 +1324,22 @@ open class HeadwayService : Service() {
                             // not ping and the theory is dead. Either reading
                             // is worth more than the silence there was before.
                             val started = System.nanoTime()
+                            // Split, because the two halves have different
+                            // causes and different fixes: time spent queued is
+                            // a reader that was not running, time spent in
+                            // `answer` is the wire and the lock in front of it.
+                            // A single figure that happened to be small would
+                            // clear the phone on the strength of a measurement
+                            // that never looked at the slow half.
+                            val arrived = demux.lastControlArrivalNanos
+                            val queued = if (arrived == 0L) 0L else (started - arrived) / 1_000_000
                             ControlKeepalive.answer(control, message, connection.cryptor != null)
                             val took = (System.nanoTime() - started) / 1_000_000
                             pingsAnswered++
-                            if (took > worstPingAnswerMillis) worstPingAnswerMillis = took
+                            if (took > worstPingSendMillis) worstPingSendMillis = took
+                            if (queued > worstPingQueueMillis) worstPingQueueMillis = queued
+                            val total = queued + took
+                            if (total > worstPingAnswerMillis) worstPingAnswerMillis = total
                         }
 
                         audio?.onControlMessage(message) == true -> Unit
@@ -1524,7 +1538,9 @@ open class HeadwayService : Service() {
                 }
                 step(
                     "keepalive: $pingsAnswered ping(s) from the car answered, " +
-                        "slowest answer took $worstPingAnswerMillis ms$verdict"
+                        "slowest answer took $worstPingAnswerMillis ms " +
+                        "($worstPingQueueMillis ms waiting to be read, " +
+                        "$worstPingSendMillis ms writing the reply)$verdict"
                 )
             }
             // Written here, at the end of the session, while every line from
@@ -2310,6 +2326,13 @@ open class HeadwayService : Service() {
 
     @Volatile
     private var worstPingAnswerMillis: Long = 0L
+
+    /** [worstPingAnswerMillis] split: waiting to be read, and writing the reply. */
+    @Volatile
+    private var worstPingQueueMillis: Long = 0L
+
+    @Volatile
+    private var worstPingSendMillis: Long = 0L
 
     /** The quirks in force for the current session; see where it is set. */
     @Volatile
