@@ -1103,7 +1103,7 @@ class CarShell(
         // the phone mid-drive, so a pill may name something that no longer
         // exists, and writing that name into the active pointer would send the
         // *next* session to the default with no error anywhere.
-        val wanted = store.list().firstOrNull { it.name == name }
+        val wanted = runCatching { store.list() }.getOrNull()?.firstOrNull { it.name == name }
         if (wanted == null) {
             onStep("car screen: the $name layout no longer exists; reloading the rail")
             reload()
@@ -1112,17 +1112,50 @@ class CarShell(
         show(wanted)
     }
 
+    /**
+     * Puts [target] on the car screen.
+     *
+     * ## Why the render is caught
+     *
+     * This is reached from a rail pill's click listener, which is the main
+     * thread with nothing above it. A tile that throws while building --
+     * an app pane whose surface has gone, a media browser that refuses a
+     * connection, anything -- took the process down with it, from a tap.
+     *
+     * Worse than the crash is what it leaves behind if it does not crash:
+     * `layout` is assigned before the tree is built, so a failed render leaves
+     * the shell believing it shows something it never drew. The next tap on
+     * that same tab then hits "already showing" and does nothing, which is
+     * exactly what a driver reported -- tabs that stop working after opening a
+     * pinned app.
+     *
+     * So a render that fails puts the previous layout back and says so. If the
+     * previous one will not draw either there is nothing left to fall back to,
+     * and the caption is better than an empty stage.
+     */
     private fun show(target: DashLayout) {
         if (target.name == layout.name && !editing) {
             onStep("car screen: already showing '${target.name}'; nothing to switch to")
             return
         }
         if (editing) setEditing(false)
+        val previous = layout
         layout = target
         runCatching { store.setActive(target.name) }
         fillRail()
         onStep("car screen: showing ${target.name}")
-        render()
+        val failure = runCatching { render() }.exceptionOrNull() ?: return
+        onStep(
+            "car screen: '${target.name}' would not draw (${failure.message ?: failure}); " +
+                "going back to '${previous.name}'"
+        )
+        if (previous.name == target.name) return
+        layout = previous
+        runCatching { store.setActive(previous.name) }
+        fillRail()
+        runCatching { render() }.exceptionOrNull()?.let {
+            onStep("car screen: '${previous.name}' would not draw either (${it.message ?: it})")
+        }
     }
 
     private fun setEditing(editing: Boolean) {
