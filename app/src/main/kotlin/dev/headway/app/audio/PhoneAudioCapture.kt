@@ -194,11 +194,20 @@ class PhoneAudioCapture(
         /**
          * Reads in flight inside `AudioRecord`.
          *
-         * Four is enough that a scheduling hiccup on the sending coroutine does
-         * not overrun the tap, and short enough that recovery after one is
-         * immediate rather than playing a backlog.
+         * Four was 160 ms, and the reasoning for it — "enough that a scheduling
+         * hiccup on the sending coroutine does not overrun the tap" — was
+         * measured against a hiccup rather than against what actually happened.
+         * The sending coroutine *was* the reading coroutine, so any wait for the
+         * head unit's credit was a wait on this buffer, and the 2026-08-19 12:15
+         * drive lost 34 seconds of music into it.
+         *
+         * `MediaQueue` is what fixes that; this is the headroom behind it. Eight
+         * is 320 ms, which is a scheduling delay far longer than any this thread
+         * should ever see now that it does nothing but read, and still short
+         * enough that recovering from one is immediate rather than playing a
+         * backlog. It costs 30 KB.
          */
-        const val BUFFERS_IN_FLIGHT = 4
+        const val BUFFERS_IN_FLIGHT = 8
 
         /** Audio per read. Matches the ~43 ms buffer real Android Auto uses at 48 kHz. */
         const val BUFFER_MICROS = 40_000L

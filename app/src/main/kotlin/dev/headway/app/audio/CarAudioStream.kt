@@ -42,6 +42,7 @@ import dev.headway.protocol.session.HeadUnitProfile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
@@ -54,6 +55,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.Executors
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -494,11 +496,32 @@ class CarAudioStream(
         // of music that way with no error anywhere.
         val queued = MediaQueue()
         mediaQueue = queued
+        // A thread of its own, at the priority Android reserves for audio.
+        //
+        // `AudioRecord.read` blocks, and it was blocking a `Dispatchers.Default`
+        // worker -- a pool sized to the CPU count, shared with video encoding,
+        // the demultiplexer pump and the sensor channel. `MediaQueue` stops the
+        // *car* delaying this loop; it cannot stop the dispatcher doing it, and
+        // the tap holds only a few hundred milliseconds before it overwrites.
+        // Reading the phone's own audio on time is exactly what
+        // THREAD_PRIORITY_URGENT_AUDIO exists for, and it is public and
+        // unprivileged.
+        val readerThread = Executors.newSingleThreadExecutor { runnable ->
+            Thread({
+                runCatching {
+                    android.os.Process.setThreadPriority(
+                        android.os.Process.THREAD_PRIORITY_URGENT_AUDIO,
+                    )
+                }
+                runnable.run()
+            }, "headway-audio-capture")
+        }
+        val reading = readerThread.asCoroutineDispatcher()
         try {
             coroutineScope {
                 val sender = launch { drainToCar(queued, channel) }
                 try {
-                    readCaptureInto(queued, capture, buffer)
+                    withContext(reading) { readCaptureInto(queued, capture, buffer) }
                 } finally {
                     // The reader is the only producer, so once it is done the
                     // sender has a finite amount left and can finish it.
@@ -521,6 +544,9 @@ class CarAudioStream(
             onStep("media stream ended: ${failed.message ?: failed::class.java.simpleName}")
             return true
         } finally {
+            // Closing the dispatcher shuts the executor down with it, so the
+            // thread does not outlive the capture that needed it.
+            runCatching { reading.close() }
             mediaQueue = null
             if (mediaFocusHeld) {
                 runCatching { releaseMediaFocus() }
