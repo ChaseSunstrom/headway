@@ -29,6 +29,7 @@ import android.view.accessibility.AccessibilityEvent
 import dev.headway.app.log.SessionLog
 import dev.headway.app.phone.PhoneAssistant
 import dev.headway.app.video.AppPaneHost
+import dev.headway.app.video.ForegroundApp
 import dev.headway.input.CarGestureDispatcher
 import dev.headway.input.GestureDispatchOutcome
 import kotlinx.coroutines.CoroutineScope
@@ -160,7 +161,7 @@ class HeadwayAccessibilityService : AccessibilityService() {
         val assistant = runCatching { PhoneAssistant.packageName(this) }.getOrNull()
         AppPaneHost.assistantInFront = assistant != null && name == assistant
         AppPaneHost.foregroundPackage =
-            AppPaneHost.foregroundAfterWindow(name, AppPaneHost.foregroundPackage, assistant)
+            ForegroundApp.after(name, AppPaneHost.foregroundPackage, assistant)
     }
 
     override fun onInterrupt() {

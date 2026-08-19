@@ -39,7 +39,7 @@ class AppPaneForegroundRuleTest {
     fun `an ordinary app coming forward replaces the remembered one`() {
         assertEquals(
             maps,
-            AppPaneHost.foregroundAfterWindow(maps, previous = "com.example.launcher", assistant = assistant),
+            ForegroundApp.after(maps, previous = "com.example.launcher", assistant = assistant),
         )
     }
 
@@ -47,7 +47,7 @@ class AppPaneForegroundRuleTest {
     fun `the assistant coming forward leaves the remembered app alone`() {
         assertEquals(
             maps,
-            AppPaneHost.foregroundAfterWindow(assistant, previous = maps, assistant = assistant),
+            ForegroundApp.after(assistant, previous = maps, assistant = assistant),
             "an assistant session is an overlay over the driver's app, not the driver leaving it",
         )
     }
@@ -56,7 +56,7 @@ class AppPaneForegroundRuleTest {
     fun `with no assistant configured every window is an ordinary one`() {
         assertEquals(
             assistant,
-            AppPaneHost.foregroundAfterWindow(assistant, previous = maps, assistant = null),
+            ForegroundApp.after(assistant, previous = maps, assistant = null),
             "a phone with no assistant set must not have some package treated as special",
         )
     }
@@ -68,7 +68,7 @@ class AppPaneForegroundRuleTest {
         // confident wrong answer.
         assertEquals(
             null,
-            AppPaneHost.foregroundAfterWindow(assistant, previous = null, assistant = assistant),
+            ForegroundApp.after(assistant, previous = null, assistant = assistant),
         )
     }
 }

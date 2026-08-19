@@ -272,16 +272,6 @@ object AppPaneHost {
         }
 
     /**
-     * What the remembered foreground app becomes when [window] comes forward.
-     *
-     * Pure, and separate from the setter, because it is the whole rule and the
-     * rule is worth holding in CI: an assistant window leaves the remembered
-     * app alone; anything else replaces it.
-     */
-    fun foregroundAfterWindow(window: String, previous: String?, assistant: String?): String? =
-        if (assistant != null && window == assistant) previous else window
-
-    /**
      * The app the driver last opened into a pane, if any.
      *
      * Set by `CarShell.openApp` rather than taken from the pane's own
