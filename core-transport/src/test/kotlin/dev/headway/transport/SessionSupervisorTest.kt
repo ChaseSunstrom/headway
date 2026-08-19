@@ -56,6 +56,17 @@ class SessionSupervisorTest {
             slept += millis
             yield()
         }
+
+        /**
+         * A clock the test moves by hand.
+         *
+         * The supervisor needs to know how long a session stayed up, and a real
+         * clock would make "a session that ran for a while" either a `Thread
+         * .sleep` or a flake. Tests advance this explicitly instead.
+         */
+        var clock = 0L
+
+        fun now(): Long = clock
     }
 
     @Test
@@ -404,5 +415,100 @@ class SessionSupervisorTest {
             sleep = h::sleep,
         ).run()
         assertTrue(round >= 20, "gave up after only $round rounds")
+    }
+
+    @Test
+    fun `a break after a real session retries at once instead of inheriting the backoff`() =
+        runBlocking {
+            // The 2026-08-19 drive: the car is plainly there -- eight minutes of
+            // video went to it -- and then the link breaks. Before this, the
+            // break inherited the ladder built by earlier failures and the
+            // driver heard 9.3 s of silence for a reconnect that takes 700 ms.
+            val h = Harness()
+            var attempt = 0
+            val supervisor = SessionSupervisor(
+                runSession = { onUp ->
+                    attempt++
+                    when {
+                        // Three failures to climb the ladder: 500, 1000, 2000.
+                        attempt <= 3 -> throw IllegalStateException("car not in range")
+                        // Then a session that really runs, and then breaks.
+                        attempt == 4 -> {
+                            onUp()
+                            h.clock += 8 * 60 * 1000
+                            throw EOFException("Connection reset")
+                        }
+                        else -> Unit
+                    }
+                },
+                onState = { h.states += it },
+                initialDelayMillis = 500,
+                maxAttempts = 5,
+                sleep = h::sleep,
+                now = h::now,
+            )
+            supervisor.run()
+
+            assertEquals(
+                listOf(500L, 1000L, 2000L, 500L),
+                h.slept,
+                "the break after a session that ran for eight minutes must start over from " +
+                    "the short delay, not continue the ladder",
+            )
+        }
+
+    @Test
+    fun `a session that dies as soon as it comes up still escalates`() = runBlocking {
+        // The other half of the rule. A link that reaches "up" and immediately
+        // falls over is not evidence the car is ready -- it is the failure the
+        // backoff was written for, and resetting on it would hammer the unit.
+        val h = Harness()
+        val supervisor = SessionSupervisor(
+            runSession = { onUp ->
+                onUp()
+                h.clock += 200
+                throw EOFException("dropped straight away")
+            },
+            onState = { h.states += it },
+            initialDelayMillis = 500,
+            maxAttempts = 5,
+            sleep = h::sleep,
+            now = h::now,
+        )
+        supervisor.run()
+
+        assertEquals(listOf(500L, 1000L, 2000L, 4000L), h.slept)
+    }
+
+    @Test
+    fun `a long session does not disarm the give-up backstop`() = runBlocking {
+        // The reset shortens the wait; it must not also keep Headway joining a
+        // network that is not there all night. The backstop is checked before
+        // the reset, so a run of failures after the last good session still
+        // ends the supervisor.
+        val h = Harness()
+        var attempt = 0
+        val supervisor = SessionSupervisor(
+            runSession = { onUp ->
+                attempt++
+                if (attempt == 1) {
+                    onUp()
+                    h.clock += 10 * 60 * 1000
+                }
+                throw EOFException("gone")
+            },
+            onState = { h.states += it },
+            initialDelayMillis = 500,
+            maxConsecutiveFailures = 3,
+            sleep = h::sleep,
+            now = h::now,
+        )
+        supervisor.run()
+
+        assertTrue(
+            h.states.last() is LinkState.GaveUp,
+            "the backstop must still fire: ${h.states.last()}",
+        )
+        assertEquals(4, supervisor.attempts)
     }
 }

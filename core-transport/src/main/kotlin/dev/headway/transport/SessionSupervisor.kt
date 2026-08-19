@@ -142,8 +142,38 @@ class SessionSupervisor(
      * few seconds, all night, with a foreground notification up.
      */
     private val maxConsecutiveFailures: Int? = null,
+    /**
+     * How long a session must stay up before breaking counts as an interruption
+     * rather than as a failed connect attempt.
+     *
+     * The backoff exists for one situation: the car is not there yet. Every
+     * word of the reasoning above is about range, radios warming up, and a
+     * phone in a driveway. A session that came up, ran service discovery,
+     * opened thirteen channels and streamed video for eight minutes has settled
+     * that question -- the car is there. Making the *next* attempt wait, and
+     * wait longer each time, answers a question nobody asked.
+     *
+     * It mattered on real hardware. The 2026-08-19 drive log breaks three times
+     * in half an hour, and the reconnect itself takes about 700 ms each time --
+     * Bluetooth, TCP, TLS and discovery, on a network the phone is still joined
+     * to. The silences the driver actually heard were 3.4 s, 5.1 s and 9.3 s,
+     * because each break inherited the backoff of the ones before it. Two
+     * thirds of the outage was this counter.
+     *
+     * So a session that lasted this long resets the run of failures before the
+     * delay is computed. This cannot spin: reaching "up" costs a full handshake,
+     * so the worst case is one short delay per real session rather than a busy
+     * loop. Sessions that die *before* this mark still escalate normally, which
+     * is the case the ladder was written for.
+     */
+    private val healthySessionMillis: Long = 20_000,
     /** Injected so tests can run the state machine without real waiting. */
     private val sleep: suspend (Long) -> Unit = { delay(it) },
+    /**
+     * Monotonic milliseconds. Injected for the same reason as [sleep]: the
+     * tests drive this state machine with induced failures and no real clock.
+     */
+    private val now: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
 
     /** Sessions that ran and ended without throwing. Diagnostics. */
@@ -168,10 +198,14 @@ class SessionSupervisor(
             attempts++
             report(LinkState.Connecting(attempts))
 
+            var upAt: Long? = null
             val failure = try {
                 // Connected is signalled from inside the session, when the link
                 // is up, not here on return -- return means it has ended.
-                runSession { report(LinkState.Connected) }
+                runSession {
+                    upAt = now()
+                    report(LinkState.Connected)
+                }
                 completedSessions++
                 // A session that ended cleanly is not a failure, so the next
                 // attempt starts from the short delay rather than inheriting the
@@ -231,6 +265,16 @@ class SessionSupervisor(
                     ),
                 )
                 return
+            }
+
+            // See healthySessionMillis. A session that ran is evidence the car
+            // is there, so the next attempt starts from the short delay however
+            // this one ended. Applied after the give-up checks above so a real
+            // session cannot silently disarm the backstop for a car that is
+            // gone -- it only shortens the wait.
+            val ranFor = upAt?.let { now() - it }
+            if (ranFor != null && ranFor >= healthySessionMillis) {
+                consecutiveFailures = 0
             }
 
             val delayMillis = failure?.let(delayOverrideFor)?.coerceAtLeast(0)
