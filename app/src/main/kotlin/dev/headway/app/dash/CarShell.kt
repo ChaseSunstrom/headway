@@ -1185,14 +1185,30 @@ class CarShell(
 
     /** Re-reads everything after an edit made somewhere else. */
     fun reload() {
-        tabs = store.list()
-        val wanted = store.active()
+        // Guarded for the same reason `show` is, and it is the same crash: this
+        // is reached from `switchTo` when a pill names a layout the store no
+        // longer has, which is a rail tap, which is the main thread with
+        // nothing above it. A store read that throws or a tile that will not
+        // build took the process down from a tap, and the guard added to `show`
+        // did not cover the path `show` is not on.
+        val listed = runCatching { store.list() }.getOrNull() ?: return
+        tabs = listed
+        val wanted = runCatching { store.active() }.getOrNull() ?: return
         val same = wanted == layout
+        val previous = layout
         layout = wanted
-        fillRail()
-        if (!same) {
-            onStep("car screen: layouts were edited; now showing ${layout.name}")
-            render()
+        runCatching { fillRail() }
+        if (same) return
+        onStep("car screen: layouts were edited; now showing ${layout.name}")
+        val failure = runCatching { render() }.exceptionOrNull() ?: return
+        onStep(
+            "car screen: '${wanted.name}' would not draw (${failure.message ?: failure}); " +
+                "going back to '${previous.name}'"
+        )
+        layout = previous
+        runCatching { fillRail() }
+        runCatching { render() }.exceptionOrNull()?.let {
+            onStep("car screen: '${previous.name}' would not draw either (${it.message ?: it})")
         }
     }
 
