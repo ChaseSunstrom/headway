@@ -349,6 +349,26 @@ What is still open: whether the car's access point, or the VPN present in every
 log so far, is behind the three abrupt ends. One drive with the VPN off would
 answer it.
 
+**And the drops were not the whole story.** The 12:15 drive on 2026-08-19 held
+one session for twenty-one minutes, ended by the car's own `BYEBYE_REQUEST`,
+and the music still cut out. The log's arithmetic found it: the capture was
+open for 1271.6 s, which at 48 kHz 16-bit stereo is 238,421 KiB, and it
+produced 231,990 — **34 seconds of audio the phone never recorded**, in a
+session with no errors, no stalls and nothing logged between 12:17 and 12:37.
+
+`AudioChannel.sendPcm` waits for the head unit's credit, and it was being
+called from the loop that read the capture. `AudioRecord`'s buffer is a ring:
+what arrives with no room is overwritten, with no error and no short read.
+`MediaQueue` now sits between them, and only video is made to queue for the
+wire — a late video frame is discarded by `VideoPump` and costs nothing, a
+late audio buffer is audio the driver never hears.
+
+Worth recording separately: the three counters that should have caught this —
+"worst wait for the car", "worst gap in capture", "stalls" — were declared,
+printed at the end of every session, and never assigned. They read zero
+through the drive that lost the audio, and that zero was read as evidence the
+audio path was healthy.
+
 ## Two APKs per release, since 2026-08-14
 
 A user could not install any build after 84 — "App not installed", no reason

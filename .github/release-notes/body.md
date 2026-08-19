@@ -3,11 +3,43 @@ Android and on-device gate passed before this was published.
 
 ## What is new in this build
 
-**Music that cut out, and Headway that "crashed", were one thing.** A
-drive log settled it: the app never died. The session to the car ended and
-came back, and everything went quiet while it did — the music, the screen,
-all of it. Two of the five ends in that drive were the car saying goodbye,
-at the times a driver would expect. Three were not.
+**The music that cut out has a cause, and it was not the car.** A drive
+that never dropped once — one session, twenty-one minutes, ended by the car
+saying goodbye — still cut out. The log's arithmetic says why: the capture
+was open long enough to produce 238,421 KiB of audio and produced 231,990.
+**Thirty-four seconds of music never reached the phone at all**, with no
+error anywhere.
+
+Headway asks the car for permission before each buffer of audio — the car
+sets that limit and it is right to. But it was waiting for that permission
+in the same loop that read the phone's audio. So whenever the car was slow,
+Headway stopped reading, and Android does not wait: its capture buffer is a
+ring, and audio that arrives with nowhere to go is overwritten and gone.
+
+There is now a queue between the two. The reader reads, the sender waits on
+the car, and nothing the car does can stop the phone draining its own
+capture on time. Music also goes out ahead of video now, which is the right
+way round: a late video frame is thrown away and costs nothing, a late
+audio buffer is audio you never hear.
+
+Three figures in the session summary — worst wait for the car, worst gap in
+capture, stalls — were printed at the end of every session and never once
+measured. They read zero through the drive that lost half a minute of
+music. They are real now, and the summary also prints captured against
+sent.
+
+**The car screen was being drawn in a loop that never stopped.** Binding an
+app pane told the dashboard to refresh, and refreshing an app pane re-bound
+it. One more piece of work on the drawing thread every pass, for the whole
+drive, on the same thread that encodes the picture the car shows. It did
+not freeze anything outright, which is why it read as everything being
+slightly slow rather than as a fault.
+
+**Session drops, which are a separate thing.** An
+earlier drive ended five sessions in half an hour. The app never died — the
+session to the car ended and came back, and everything went quiet while it
+did. Two of those five were the car saying goodbye at the times a driver
+would expect. Three were not.
 
 - **A reconnect no longer waits.** Reconnecting takes about 700 ms. The
   silences on that drive were 3.4, 5.1 and 9.3 seconds, because a session
