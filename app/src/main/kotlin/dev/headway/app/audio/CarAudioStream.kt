@@ -674,7 +674,6 @@ class CarAudioStream(
                 }
             }
             capturedBytes += read
-            }
         }
     }
 

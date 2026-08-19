@@ -544,6 +544,143 @@ def wrong_test_library(path: Path) -> list:
     return problems
 
 
+def unbalanced_braces(path: Path) -> list:
+    """Flags a file whose braces do not close, and says where.
+
+    The compiler catches this too, but not here: `:app` has no Kotlin compiler
+    outside CI, so a stray brace costs a full CI round to learn about. It cost
+    one on 2026-08-19, when a scripted re-indent left one closing brace too
+    many in `CarAudioStream` and every declaration after it fell outside the
+    class -- sixty errors, none of which named the actual mistake.
+
+    ## Why this is a state machine and not a `count("{")`
+
+    The first version was, and it reported `CarShell` as broken. `CarShell`
+    compiles. Kotlin string templates are why: `"${if (x) "a" else "b"}"` opens
+    a brace inside a string and closes it in code, and any scanner that treats
+    a string as opaque loses one and counts the other. A check that cries wolf
+    on a file that compiles is worse than no check, because the next person
+    edits the file to satisfy it.
+
+    So the contexts are tracked properly: code, string, raw string, character
+    literal, line comment, block comment, and the template expressions that
+    nest back into code from inside a string.
+    """
+    text = path.read_text(encoding="utf-8")
+    depth = 0
+    first_negative = None
+    line = 1
+    # Each entry is the brace depth at which a template expression began; when
+    # the depth comes back down to it, we are inside the string again.
+    templates = []
+    in_string = False
+    in_raw = False
+    in_line_comment = False
+    in_block_comment = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        pair = text[index:index + 2]
+        if char == "\n":
+            line += 1
+            in_line_comment = False
+            index += 1
+            continue
+        if in_line_comment:
+            index += 1
+            continue
+        if in_block_comment:
+            if pair == "*/":
+                in_block_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+        if in_raw:
+            if text[index:index + 3] == '\"\"\"':
+                in_raw = False
+                index += 3
+                continue
+            if pair == "${":
+                templates.append(depth)
+                depth += 1
+                in_raw = False
+                index += 2
+                continue
+            index += 1
+            continue
+        if in_string:
+            if char == "\\":
+                index += 2
+                continue
+            if char == '"':
+                in_string = False
+                index += 1
+                continue
+            if pair == "${":
+                templates.append(depth)
+                depth += 1
+                in_string = False
+                index += 2
+                continue
+            index += 1
+            continue
+        # Code.
+        if pair == "//":
+            in_line_comment = True
+            index += 2
+            continue
+        if pair == "/*":
+            in_block_comment = True
+            index += 2
+            continue
+        if text[index:index + 3] == '\"\"\"':
+            in_raw = True
+            index += 3
+            continue
+        if char == '"':
+            in_string = True
+            index += 1
+            continue
+        if char == "`":
+            # A backtick-quoted name. Kotlin test names live in these and are
+            # full of apostrophes -- `concurrent readers never steal each
+            # other's messages` -- which the character-literal branch below
+            # would otherwise read as an unterminated char and swallow every
+            # brace up to the next apostrophe in the file.
+            index += 1
+            while index < len(text) and text[index] not in ("`", "\n"):
+                index += 1
+            index += 1
+            continue
+        if char == "'":
+            index += 1
+            while index < len(text) and text[index] != "'":
+                index += 2 if text[index] == "\\" else 1
+            index += 1
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if templates and depth == templates[-1]:
+                # The template expression closed; back inside its string. Raw
+                # or not is not tracked per template, and does not need to be:
+                # either quoting ends the string correctly from here.
+                templates.pop()
+                in_string = True
+            elif depth < 0 and first_negative is None:
+                first_negative = line
+        index += 1
+    if depth != 0 or first_negative is not None:
+        where = f" (first unmatched close at line {first_negative})" if first_negative else ""
+        return [
+            f"{path}: braces do not balance -- ends at depth {depth}{where}. "
+            f"A file that closes early puts every later declaration outside its class"
+        ]
+    return []
+
+
 def main() -> int:
     problems = []
     objects = top_level_objects()
@@ -555,6 +692,7 @@ def main() -> int:
             problems += misnested(path, objects)
             problems += stranded_constants(path)
             problems += wrong_test_library(path)
+            problems += unbalanced_braces(path)
             text = path.read_text(encoding="utf-8")
             for line in text.split("\n"):
                 if not line.startswith("import "):
